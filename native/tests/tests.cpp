@@ -6,6 +6,8 @@
 #include "recognition.h"
 #include "recorder.h"
 #include "recording_settings.h"
+#include "scroll_capture.h"
+#include "native_windows.h"
 #include "hotkey.h"
 #include <BitMatrix.h>
 #include <MultiFormatWriter.h>
@@ -27,6 +29,7 @@
 #include <QtGui/QContextMenuEvent>
 #include <QtGui/QWheelEvent>
 #include <QtGui/QInputMethodEvent>
+#include <QtGui/QPaintEvent>
 #include <QtWidgets/QGraphicsTextItem>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QScrollBar>
@@ -110,6 +113,204 @@ class NativeTests : public QObject {
         line("10.49",220,70,{14,18,8,18,18})}}};
   }
 private slots:
+  void scrollDesktopManualAndAutomatic() {
+    if (QGuiApplication::platformName() != "windows") QSKIP("Requires the Windows desktop");
+    wchar_t desktopClass[256]{};
+    GetClassNameW(WindowFromPoint(POINT{300,270}),desktopClass,256);
+    if (QString::fromWCharArray(desktopClass).startsWith("LockScreen"))
+      QSKIP("Windows desktop is locked; real capture and wheel input cannot be verified");
+    const auto oldForeground=GetForegroundWindow();
+    POINT oldCursor{}; GetCursorPos(&oldCursor);
+    auto restoreDesktop=qScopeGuard([&] {
+      SetCursorPos(oldCursor.x,oldCursor.y);
+      if (IsWindow(oldForeground)) SetForegroundWindow(oldForeground);
+    });
+    struct Page : QWidget {
+      QImage document;
+      int offset=0, wheelCount=0;
+      Page() {
+        document=QImage(460,1000,QImage::Format_RGB32);
+        document.fill(QColor("#262834"));
+        QPainter p(&document); p.setFont(QFont("Consolas",12));
+        for (int y=0;y<document.height();y+=20) {
+          p.setPen(QColor::fromHsv((y*19)%360,140,240));
+          p.drawText(7,y+16,QString("Row_%1 : value_%2 = %3;").arg(y).arg(y*53).arg(y*97));
+        }
+        setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+      }
+      void paintEvent(QPaintEvent *) override { QPainter p(this); p.drawImage(0,-offset,document); }
+      void wheelEvent(QWheelEvent *event) override {
+        ++wheelCount; offset=qBound(0,offset-event->angleDelta().y()/120*80,document.height()-height());
+        update(); event->accept();
+      }
+    } page;
+    page.setGeometry(70,90,460,360); page.show(); page.activateWindow(); page.setFocus();
+    QTest::qWait(200);
+    auto hwnd=reinterpret_cast<HWND>(page.winId());
+    SetForegroundWindow(hwnd);
+    QTemporaryDir dir; Store store(dir.path());
+    DesktopSnapshot snapshot;
+    for (auto screen:QGuiApplication::screens()) snapshot.bounds=snapshot.bounds.united(screen->geometry());
+    QImage background(snapshot.bounds.size(),QImage::Format_RGB32); background.fill(QColor("#dddddd"));
+    snapshot.frames={{snapshot.bounds,background}};
+    snapshot.foreground=reinterpret_cast<quintptr>(hwnd);
+    auto source=std::make_unique<CaptureOverlay>(&store,false,std::move(snapshot));
+    source->setAttribute(Qt::WA_DeleteOnClose,false);
+    source->selectRegion(page.geometry().translated(-source->pos()));
+    source->show(); QTest::qWait(100);
+    source->toolbar->findChild<QToolButton *>("action_scroll")->click();
+    QVERIFY(source->scrollCapture);
+    QVERIFY(!source->isVisible());
+    auto session=source->scrollCapture.data();
+    auto cleanup=qScopeGuard([&] { if (session) { session->setAttribute(Qt::WA_DeleteOnClose,false); delete session; } });
+    QTRY_COMPARE_WITH_TIMEOUT(session->imageSize().width(),captureDesktopRegion(page.geometry()).width(),2000);
+    const int initialHeight=session->imageSize().height();
+    page.offset=123; page.update();
+    QTRY_VERIFY_WITH_TIMEOUT(session->imageSize().height()>initialHeight,3000);
+    const auto physical=physicalRect(page.geometry());
+    QCOMPARE(session->imageSize().height(),qRound(483.*physical.height()/page.height()));
+    auto automatic=session->findChild<QToolButton *>("scroll_automatic");
+    automatic->click();
+    QTRY_VERIFY_WITH_TIMEOUT(page.wheelCount>=3,6000);
+    QTRY_VERIFY_WITH_TIMEOUT(session->imageSize().height()>initialHeight+200,3000);
+    automatic->click();
+    QVERIFY(!automatic->isChecked());
+    automatic->click();
+    QTRY_VERIFY_WITH_TIMEOUT(!automatic->isChecked(),12000);
+    QCOMPARE(page.offset,page.document.height()-page.height());
+    QCOMPARE(session->imageSize().height(),qRound(1000.*physical.height()/page.height()));
+    QVERIFY(savePreview(session,"scroll-desktop-live.png"));
+    QImage captured;
+    bool completed=false;
+    source->output=[&](const QImage &image,const QRect &,const QString &action) {
+      completed=action=="copy";
+      captured=image;
+      return true;
+    };
+    session->setAttribute(Qt::WA_DeleteOnClose,false);
+    session->finish("copy");
+    QVERIFY(completed);
+    if (physical.width()==460)
+      QCOMPARE(captured,page.document.copy(0,0,460,captured.height()));
+  }
+  void scrollStitchingAndBacktracking() {
+    QImage document(420,3600,QImage::Format_RGB32);
+    document.fill(QColor("#262834"));
+    QPainter p(&document); p.setFont(QFont("Consolas",11));
+    for (int y=0; y<document.height(); y+=19) {
+      p.setPen(QColor::fromHsv((y*17)%360,140,240));
+      p.drawText(7,y+14,QString("%1  value_%2 = function(%3);").arg(y).arg(y*53).arg(y*97));
+    }
+    p.end();
+    ScrollStitcher stitcher;
+    QCOMPARE(stitcher.accept(document.copy(0,0,420,380)),ScrollStitcher::Started);
+    QCOMPARE(stitcher.accept(document.copy(0,103,420,380)),ScrollStitcher::Appended);
+    QCOMPARE(stitcher.size(),QSize(420,483));
+    QCOMPARE(stitcher.accept(document.copy(0,103,420,380)),ScrollStitcher::Unchanged);
+    QImage blinkingCaret=document.copy(0,103,420,380);
+    QPainter caret(&blinkingCaret); caret.fillRect(201,80,2,25,Qt::white); caret.end();
+    QCOMPARE(stitcher.accept(blinkingCaret),ScrollStitcher::Unchanged);
+    QCOMPARE(stitcher.accept(document.copy(0,48,420,380)),ScrollStitcher::Revisited);
+    QCOMPARE(stitcher.accept(document.copy(0,130,420,380)),ScrollStitcher::Appended);
+    for (int y=240; y<=2000; y+=110)
+      QCOMPARE(stitcher.accept(document.copy(0,y,420,380)),ScrollStitcher::Appended);
+    QCOMPARE(stitcher.image(),document.copy(0,0,420,stitcher.size().height()));
+    QVERIFY(stitcher.stripCount()>10);
+  }
+  void scrollRejectsInteriorViewportAndFixedEdges() {
+    QImage document(380,1400,QImage::Format_RGB32); document.fill(Qt::white);
+    QPainter p(&document); p.setFont(QFont("Consolas",11));
+    for (int y=0; y<1400; y+=17) {
+      p.setPen(QColor::fromHsv((y*23)%360,210,170));
+      p.drawText(3,y+13,QString("Row %1 - item %2 : %3").arg(y).arg(y*91).arg(y*31));
+    }
+    p.end();
+    auto frame=[&](int offset,int padding) {
+      QImage image(380,420,QImage::Format_RGB32); image.fill(QColor("#dfdfdf"));
+      QPainter painter(&image);
+      painter.setPen(Qt::black);
+      painter.drawText(5,17,"Stationary application header");
+      painter.drawText(5,410,"Stationary application footer");
+      painter.drawImage(0,padding,document.copy(0,offset,380,420-padding*2));
+      return image;
+    };
+    // Rejection depends on the boundaries, even when nearly the whole interior scrolls.
+    for (int padding : {24,100,150}) {
+      ScrollStitcher stitcher;
+      auto original=frame(0,padding);
+      QCOMPARE(stitcher.accept(original),ScrollStitcher::Started);
+      auto result=stitcher.accept(frame(71,padding));
+      QVERIFY(result==ScrollStitcher::BoundaryMismatch || result==ScrollStitcher::NoOverlap);
+      QCOMPARE(stitcher.image(),original);
+      QCOMPARE(stitcher.size(),original.size());
+    }
+    // The same small viewport works as soon as its actual edges are selected.
+    ScrollStitcher correctlySelected;
+    QCOMPARE(correctlySelected.accept(document.copy(0,0,380,180)),ScrollStitcher::Started);
+    QCOMPARE(correctlySelected.accept(document.copy(0,61,380,180)),ScrollStitcher::Appended);
+    QCOMPARE(correctlySelected.image(),document.copy(0,0,380,241));
+    // A stationary sidebar is allowed. Only vertical boundaries constrain
+    // the scrolling columns; even a narrow scrolling pane can reach both.
+    for (int fixedLeft : {80,290}) {
+      auto sideFrame=[&](int offset) {
+        QImage result(380,420,QImage::Format_RGB32); result.fill(QColor("#dddddd"));
+        QPainter painter(&result); painter.setPen(Qt::black);
+        for (int y=15;y<420;y+=25) painter.drawText(3,y,QString("Fixed %1").arg(y));
+        painter.drawImage(fixedLeft,0,document.copy(0,offset,380-fixedLeft,420));
+        return result;
+      };
+      auto first=sideFrame(0),second=sideFrame(71);
+      ScrollStitcher sidebar;
+      QCOMPARE(sidebar.accept(first),ScrollStitcher::Started);
+      QCOMPARE(sidebar.accept(second),ScrollStitcher::Appended);
+      QCOMPARE(sidebar.size(),QSize(380,491));
+      QImage expected(380,491,QImage::Format_RGB32);
+      QPainter joined(&expected); joined.drawImage(0,0,first);
+      joined.drawImage(0,420,second.copy(0,349,380,71)); joined.end();
+      QCOMPARE(sidebar.image(),expected);
+    }
+  }
+  void scrollPreviewShrinksAndKeepsOriginalPixels() {
+    QCOMPARE(ScrollStitcher::previewSize({800,500},{280,800}),QSize(280,175));
+    QCOMPARE(ScrollStitcher::previewSize({800,4000},{280,800}),QSize(160,800));
+    QCOMPARE(ScrollStitcher::previewSize({800,10000},{280,800}),QSize(64,800));
+    QTemporaryDir dir; Store store(dir.path());
+    auto session=new ScrollCapture(&store,{80,90,360,300},0);
+    QSignalSpy closed(session,&ScrollCapture::finished);
+    session->begin(false);
+    QImage frame(360,300,QImage::Format_RGB32); frame.fill(QColor("#1379bd"));
+    QCOMPARE(session->acceptFrame(frame),ScrollStitcher::Started);
+    auto screen=QGuiApplication::screenAt(session->previewGeometry().center());
+    QVERIFY(screen);
+    QVERIFY(screen->availableGeometry().contains(session->previewGeometry()));
+    bool copied=false;
+    session->output=[&](const QImage &image,const QString &action) {
+      copied=action=="copy" && image==frame; return true;
+    };
+    QVERIFY(savePreview(session,"scroll-workspace.png"));
+    session->finish("copy");
+    QVERIFY(copied); QCOMPARE(closed.count(),1); QVERIFY(closed.first().first().toBool());
+  }
+  void scrollToolbarEntryAndCancellation() {
+    QTemporaryDir dir; Store store(dir.path());
+    auto overlay=editingFixture(store,"rect");
+    auto ocr=overlay->toolbar->findChild<QToolButton *>("action_select_text");
+    auto scroll=overlay->toolbar->findChild<QToolButton *>("action_scroll");
+    QVERIFY(scroll && !scroll->isHidden());
+    QVERIFY(scroll->x()>ocr->x());
+    QCOMPARE(scroll->toolTip(),QString("滚动截屏"));
+    QTest::mouseClick(scroll,Qt::LeftButton);
+    QVERIFY(overlay->scrollCapture);
+    QVERIFY(!overlay->isVisible());
+    auto session=overlay->scrollCapture.data();
+    QSignalSpy finished(session,&ScrollCapture::finished);
+    session->finish("cancel");
+    QCOMPARE(finished.count(),1); QVERIFY(!finished.first().first().toBool());
+    QVERIFY(overlay->isVisible()); QVERIFY(!overlay->scrollCapture);
+    overlay->close();
+    Toolbar pinToolbar;
+    QVERIFY(pinToolbar.findChild<QToolButton *>("action_scroll")->isHidden());
+  }
   void recordingSettingsPersistenceAndCancel() {
     QTemporaryDir dir; Store store(dir.path());
     RecordingSettingsDialog dialog(&store,{30,40,500,300},false);

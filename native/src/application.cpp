@@ -166,6 +166,7 @@ bool ApplicationController::nativeEventFilter(const QByteArray &, void *raw,
                                               qintptr *) {
   auto message = static_cast<MSG *>(raw);
   if (message->message == WM_HOTKEY) {
+    if (message->wParam < 1 || message->wParam > 7) return false;
     if (hotkeysSuspended) return true;
     switch (message->wParam) {
     case 1:
@@ -328,7 +329,8 @@ void ApplicationController::beginCapture(bool recordingMode) {
     return;
   }
   if (overlay) {
-    overlay->raise();
+    if (overlay->scrollCapture) overlay->scrollCapture->raise();
+    else overlay->raise();
     return;
   }
   if (pending)
@@ -368,6 +370,11 @@ bool ApplicationController::imageOutput(const QImage &image, QRect region,
                                         QString action) {
   if (image.isNull())
     return false;
+  if (action == "edit") {
+    auto pin = pins.create(image);
+    pin->startEditing();
+    return true;
+  }
   if (action == "pin") {
     pins.create(image, region);
     auto output = store.config["auto_save"].toBool()

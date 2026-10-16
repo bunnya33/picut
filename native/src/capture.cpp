@@ -119,6 +119,19 @@ static QImage captureScreen(const QRect &area) {
   return image;
 }
 
+QImage captureDesktopRegion(QRect global) {
+  DesktopSnapshot snapshot;
+  for (auto screen : QGuiApplication::screens()) {
+    auto part = global.intersected(screen->geometry());
+    if (part.isEmpty()) continue;
+    auto image = captureScreen(physicalRect(part));
+    if (image.isNull()) return {};
+    snapshot.frames.append({part, image});
+    snapshot.bounds = snapshot.bounds.united(part);
+  }
+  return snapshot.crop(global);
+}
+
 DesktopSnapshot DesktopSnapshot::capture() {
   QElapsedTimer timer;
   timer.start();
@@ -239,6 +252,8 @@ CaptureOverlay::CaptureOverlay(Store *s, bool record,
                          Qt::Tool),
       desktop(snapshot ? std::move(*snapshot) : DesktopSnapshot::capture()),
       recording(record) {
+  sourceWindow = desktop.foreground;
+  setProperty("supportsScrolling", !recording);
   setAttribute(Qt::WA_DeleteOnClose);
   setGeometry(desktop.bounds);
   setCursor(Qt::CrossCursor);
@@ -276,6 +291,9 @@ void CaptureOverlay::selectRegion(QRect region) {
   rebuildAnnotation();
   updateSelectionToolbar(true);
   update();
+}
+CaptureOverlay::~CaptureOverlay() {
+  if (scrollCapture) { scrollCapture->disconnect(this); delete scrollCapture; }
 }
 void CaptureOverlay::updateSelectionToolbar(bool show) {
   if (!recording) {
@@ -779,6 +797,24 @@ bool CaptureOverlay::confirmExit() {
 }
 bool CaptureOverlay::complete(const QString &action) {
   commitText();
+  if (action == "scroll") {
+    if (recording || selection.width() < 12 || selection.height() < 64) return false;
+    if (scrollCapture) { scrollCapture->raise(); return true; }
+    if (annotation) annotation->savePreferences(store);
+    auto region = globalSelection();
+    scrollCapture = new ScrollCapture(store,region,sourceWindow);
+    scrollCapture->output = [this,region](const QImage &image,const QString &request) {
+      if (output && !output(image,request == "edit" ? QRect() : region,request)) return false;
+      store->config["last_capture_rect"] = QJsonArray{region.x(),region.y(),region.width(),region.height()};
+      store->saveConfig(); return true;
+    };
+    connect(scrollCapture,&ScrollCapture::finished,this,[this](bool accepted) {
+      scrollCapture = nullptr;
+      if (accepted) close();
+      else if (annotation) { show(); activateWindow(); setFocus(); }
+    });
+    hide(); scrollCapture->begin(); return true;
+  }
   if (action == "cancel") {
     if (!confirmExit())
       return false;
@@ -817,6 +853,11 @@ bool CaptureOverlay::complete(const QString &action) {
   return true;
 }
 void CaptureOverlay::closeEvent(QCloseEvent *event) {
+  if (scrollCapture) {
+    scrollCapture->disconnect(this);
+    delete scrollCapture;
+    scrollCapture = nullptr;
+  }
   if (annotation)
     annotation->savePreferences(store);
   annotation.reset();

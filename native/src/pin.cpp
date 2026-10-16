@@ -57,7 +57,7 @@ QImage PinWindow::displayedImage() const {
   return result;
 }
 void PinWindow::setScale(double value) {
-  scale = qBound(.05, value, 5.0);
+  scale = qBound(.002, value, 5.0);
   auto size = thumbnail.isEmpty() ? image.size() : thumbnail.size();
   resize(qMax(32, qRound(size.width() * scale)) + Margin * 2,
          qMax(24, qRound(size.height() * scale)) + Margin * 2);

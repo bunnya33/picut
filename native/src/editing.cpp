@@ -53,6 +53,7 @@ void EditingSurface::showToolbar() {
     return;
   if (!toolbar) {
     toolbar = new Toolbar(this);
+    toolbar->findChild<QToolButton *>("action_scroll")->setVisible(property("supportsScrolling").toBool());
     connect(toolbar, &Toolbar::toolChosen, this, &EditingSurface::chooseTool);
     connect(toolbar, &Toolbar::preferencesChanged, this,
             &EditingSurface::setPreference);

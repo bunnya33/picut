@@ -1,5 +1,6 @@
 #pragma once
 #include "editing.h"
+#include "scroll_capture.h"
 #include <QtCore/QPointer>
 #include <functional>
 
@@ -7,6 +8,7 @@ struct ScreenFrame {
   QRect rect;
   QImage image;
 };
+QImage captureDesktopRegion(QRect global);
 struct DesktopSnapshot {
   quintptr foreground = 0;
   QList<ScreenFrame> frames;
@@ -24,9 +26,11 @@ class CaptureOverlay : public EditingSurface {
 public:
   explicit CaptureOverlay(Store *store, bool recording = false,
                           std::optional<DesktopSnapshot> snapshot = {});
+  ~CaptureOverlay() override;
   DesktopSnapshot desktop;
   QRect selection;
   bool recording;
+  QPointer<ScrollCapture> scrollCapture;
   std::function<bool(const QImage &, const QRect &, const QString &)> output;
   QRect contentRect() const override { return selection; }
   QRect globalSelection() const { return selection.translated(pos()); }
@@ -55,6 +59,7 @@ private:
   QString selectionDrag;
   bool dragging = false, rgb = true, alt = false, space = false;
   bool includeCursor = false;
+  quintptr sourceWindow = 0;
   int screenSelectCount = 0;
   void rebuildAnnotation();
   void updateSelectionToolbar(bool show = false);
