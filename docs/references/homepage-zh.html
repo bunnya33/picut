@@ -1,0 +1,462 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="截图 + 贴图，提高您的工作效率">
+    <title>Snipaste - 截图 + 贴图</title>
+    <link rel="icon" href="favicon.ico">
+    <link href="//registry.npmmirror.com/bootstrap/3.4.1/files/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="css/main.css?20250901" rel="stylesheet">
+    <link href="css/award.css?20241213" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-inverse navbar-fixed-top">
+        <div class="container">
+            <div class="navbar-header">
+                <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#navbar" aria-expanded="false" aria-controls="navbar">
+                    <span class="sr-only">Toggle navigation</span>
+                    <span class="icon-bar"></span>
+                    <span class="icon-bar"></span>
+                    <span class="icon-bar"></span>
+                </button>
+                <a class="navbar-brand" href="#"><img class="logo" src="img/logo.svg">Snipaste</a>
+            </div>
+
+            <div id="navbar" class="collapse navbar-collapse">
+                <ul class="nav navbar-nav">
+                    <li><a href="#">主页</a></li>
+                    <li><a href="download.html">下载</a></li>
+                    <li><a href="faq.html">常见问题</a></li>
+                    <li><a href="//docs.snipaste.com/#/zh-cn/" target="_blank">用户手册</a></li>
+                    <li><a href="support.html">支持</a></li>
+                    <li><a href="donate.html">捐赠</a></li>
+                </ul>
+                <ul class="nav navbar-nav navbar-right">
+                    <li class="active"><a href="//www.snipaste.com">English</a></li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="jumbotron">
+        <div class="container">
+
+            <div class="row">
+                <div class="col-md-4">
+                    <h1 class="text-left">截图</h1>
+                    <h1>+ 贴图</h1>
+                    <div class="lead">
+                        <h4>
+                            <a data-toggle="collapse" data-target="#free" aria-expanded="false" href="#">*</a> 免费. 免安装. 可个性定制.
+                        </h4>
+                    </div>
+                    <div id="free" class="collapse" aria-expanded="true">
+                        <ul class="text-left">
+                            <li>Snipaste 始终对个人用户免费</li>
+                            <li>对于公司用户:
+                                <ul>
+                                    <li>Snipaste 1.x 保持免费使用</li>
+                                    <li>Snipaste 2.x 需购买专业版或商业授权</li>
+                                </ul>
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="award-container">
+                      <div class="popup" style="visibility: hidden;">
+                          <div class="popup-border"></div>
+                          <div class="popup-title">微软应用商店 2024 年度应用</div>
+                          <div class="popup-award">最佳创意工具奖</div>
+                          <div class="popup-description">Microsoft Store Awards 旨在表彰那些为用户带来卓越体验的应用和游戏。</div>
+                          <a class="popup-link" href="https://apps.microsoft.com/detail/9p1wxpkb68kx?hl=zh-cn&gl=CN&editorialId=Editorials%2FAwards_2024%2FChina%2FAwards_Winner_9P1WXPKB68KX" target="_blank">查看详细信息</a>
+                      </div>
+                      <div class="icon-container">
+                        <lottie-player class="icon-img" src="/lottie/AppAwardAnimation.json" hover speed="1" background="transparent"></lottie-player>
+                      </div>
+                      <div>
+                        微软应用商店 2024 年度应用
+                      </div>
+                    </div>
+                    <div>
+                        <div class="section-title">
+                          <span>解锁专业版</span>
+                        </div>
+                        <div class="flex-right">
+                            <a role="button" class="btn btn-default btn-xs" href="//docs.snipaste.com/zh-cn/pro" target="_blank">
+                                <svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" style="vertical-align: sub;">
+                                    <circle cx="12" cy="12" r="10" stroke="#1C274C" stroke-width="1.5"/>
+                                    <path d="M12 17V11" stroke="#1C274C" stroke-width="1.5" stroke-linecap="round"/>
+                                    <circle cx="1" cy="1" r="1" transform="matrix(1 0 0 -1 11 9)" fill="#1C274C"/>
+                                </svg>
+                                专业版介绍
+                            </a>
+                        </div>
+                        <div class="btn-group-vertical flex-col" role="group">
+                            <a role="button" class="btn btn-default w-100 flex-row purchase my-12" href="#apsdai-snipaste2desktoppro1device" title="从官方购买桌面版授权码(单设备)">
+                                <img src="img/logo.svg" />
+                                <div class="flex-col platform">
+                                    <div>
+                                        <span>跨平台桌面版</span>
+                                        <div class="badge">专业版</div>
+                                    </div>
+                                    <span><strong>单设备</strong> (Windows/Mac/Linux)</span>
+                                </div>
+                                <div class="flex-col price">
+                                    <div>
+                                        <span>45 元</span>
+                                    </div>
+                                    <strong class="label">点击购买</strong>
+                                </div>
+                            </a>
+                            <a role="button" class="btn btn-default w-100 flex-row purchase my-12" href="#apsdai-snipaste2desktoppro" title="从官方购买桌面版授权码(3设备)">
+                                <img src="img/logo.svg" />
+                                <div class="flex-col platform">
+                                    <div>
+                                        <span>跨平台桌面版</span>
+                                        <div class="badge">专业版</div>
+                                    </div>
+                                    <span><strong>3 设备</strong> (Windows/Mac/Linux)</span>
+                                </div>
+                                <div class="flex-col price">
+                                    <div>
+                                        <span>99 元</span>
+                                    </div>
+                                    <strong class="label">点击购买</strong>
+                                </div>
+                            </a>
+                            <a role="button" class="btn btn-default w-100 flex-row purchase my-12" href="#apsdai-snipaste2pro" title="从官方购买微软商店兑换码">
+                                <img src="img/logo.svg" />
+                                <div class="flex-col platform">
+                                    <div>
+                                        <span>微软商店版</span>
+                                        <div class="badge">专业版</div>
+                                    </div>
+                                    <span><strong>10 设备</strong> (Windows 11/10)</span>
+                                </div>
+                                <div class="flex-col price">
+                                    <span>99 元</span>
+                                    <strong class="label">点击购买</strong>
+                                </div>
+                            </a>
+                        </div>
+                        <div class="section-title">
+                          <span>免费下载/安装</span>
+                        </div>
+                        <div class="dropdown my-12">
+                            <button class="btn btn-default dropdown-toggle w-100" type="button" id="download-latest" data-toggle="dropdown">
+                                下载 Snipaste 2 桌面版
+                                <span class="caret"></span>
+                            </button>
+                            <ul class="dropdown-menu" aria-labelledby="download-latest">
+                                <li class="dropdown-item">
+                                    <a href="//dl.snipaste.com/win-x64-cn" title="适合 64 位 Windows 11 / 10 / 8 / 7 系统">
+                                        <img src="img/windows.svg"/>
+                                        <span class="platform">Windows</span>
+                                        <span class="build">便携版 (64 位)</span>
+                                        <span class="version win-desktop-version">&nbsp</span>
+                                    </a>
+                                </li>
+                                <li class="dropdown-item">
+                                    <a href="//dl.snipaste.com/win-x86-cn" title="适合 32 位 Windows 11 / 10 / 8 / 7 系统">
+                                        <img src="img/windows.svg"/>
+                                        <span class="platform">Windows</span>
+                                        <span class="build">便携版 (32 位)</span>
+                                        <span class="version win-desktop-version">&nbsp</span>
+                                    </a>
+                                </li>
+                                <li class="dropdown-item">
+                                    <a href="//dl.snipaste.com/win-arm64-cn" title="适合 ARM64 架构的 Windows 11 / 10 系统">
+                                        <img src="img/windows.svg"/>
+                                        <span class="platform">Windows</span>
+                                        <span class="build">便携版 (ARM64)</span>
+                                        <span class="version win-desktop-version">&nbsp</span>
+                                    </a>
+                                </li>
+                                <li role="separator" class="divider"></li>
+                                <li class="dropdown-item">
+                                    <a href="//dl.snipaste.com/mac-cn" title="适合 macOS 系统">
+                                        <img src="img/macos.svg"/>
+                                        <span class="platform">macOS</span>
+                                        <span class="build">通用版</span>
+                                        <span class="version mac-version">&nbsp</span>
+                                    </a>
+                                </li>
+                                <li role="separator" class="divider"></li>
+                                <li class="dropdown-item">
+                                    <a href="//dl.snipaste.com/linux-cn" title="适合 Linux 系统">
+                                        <img src="img/linux.svg"/>
+                                        <span class="platform">Linux</span>
+                                        <span class="build">AppImage (x86_64)</span>
+                                        <span class="version linux-version">&nbsp</span>
+                                    </a>
+                                </li>
+                            </ul>
+                        </div>
+
+                        <a class="btn btn-default w-100" role="button" href="https://apps.microsoft.com/detail/9p1wxpkb68kx" target="_blank" title="适合 Windows 11 / 10 系统" style="position: relative;">
+                            <span>下载 Snipaste 2 微软商店版</span>
+                            <span class="version win-store-version" style="position: absolute; right: 6px;">&nbsp</span>
+                        </a>
+
+                        <div class="dropdown no-hover flex-right my-12">
+                            <a class="f-sm my-auto" href="download.html#changelog" target="_blank">更新日志</a>
+                            <span class="bullet">•</span>
+                            <a class="dropdown-toggle f-sm my-auto" id="download-previous" href="#" data-toggle="dropdown">
+                                旧版本
+                            </a>
+                            <ul class="dropdown-menu" aria-labelledby="download-previous">
+                                <li class="dropdown-item">
+                                    <a href="//dl.snipaste.com/v1-win-x64-cn" title="适合 64 位 Windows 10 / 8 / 7 / Vista 系统">
+                                        <img src="img/windows.svg"/>
+                                        <span class="platform">Windows</span>
+                                        <span class="build">便携版 (64 位)</span>
+                                        <span class="version">v1.16.2</span>
+                                    </a>
+                                </li>
+                                <li class="dropdown-item">
+                                    <a href="//dl.snipaste.com/v1-win-x86-cn" title="适合 32 位 Windows 10 / 8 / 7 / Vista 系统">
+                                        <img src="img/windows.svg"/>
+                                        <span class="platform">Windows</span>
+                                        <span class="build">便携版 (32 位)</span>
+                                        <span class="version">v1.16.2</span>
+                                    </a>
+                                </li>
+                                <li class="dropdown-item">
+                                    <a href="//dl.snipaste.com/win-xp-cn" title="适合 Windows XP 系统">
+                                        <img src="img/windows.svg"/>
+                                        <span class="platform">Windows XP</span>
+                                        <span class="build">便携版</span>
+                                        <span class="version">v1.16.2</span>
+                                    </a>
+                                </li>
+                                <li role="separator" class="divider"></li>
+                                <li class="dropdown-item">
+                                    <a href="//dl.snipaste.com/v1-mac-cn" title="适合 macOS 系统">
+                                        <img src="img/macos.svg"/>
+                                        <span class="platform">macOS</span>
+                                        <span class="build">Intel</span>
+                                        <span class="version">v1.16.2</span>
+                                    </a>
+                                </li>
+                                <li role="separator" class="divider"></li>
+                                <li class="dropdown-item">
+                                    <a href="download.html#previous_versions">
+                                        <img class="filter-black" src="img/logo.svg"/>
+                                        <span class="platform">更多其他版本...</span>
+                                        <span class="build"></span>
+                                        <span class="version"></span>
+                                    </a>
+                                </li>
+                            </ul>
+                            <span class="bullet">•</span>
+                            <a class="f-sm my-auto" href="//docs.snipaste.com/zh-cn/troubleshooting" target="_blank">故障排除</a>
+                            <span class="bullet">•</span>
+                            <a class="f-sm my-auto" href="//dl.snipaste.com/sha-1.txt" target="_blank">SHA-1</a>
+                        </div>
+                    </div>
+                    <br />
+                </div><!--
+                --><div class="col-md-8">
+                    <img class="img-responsive" width="100%" src="//i.v2ex.co/N3QEb3VA.png" />
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="content">
+        <div id="intro-container" class="container">
+            <h2 style="text-align: center;">让 Snipaste 帮你提高工作效率</h2>
+            <p>
+                Snipaste 是一个简单但强大的截图工具，也可以让你将截图贴回到屏幕上！下载并打开 Snipaste，按下 <code>F1</code> 来开始截图，再按 <code>F3</code>，截图就在桌面置顶显示了。就这么简单！
+            </p>
+            <p>
+                你还可以将剪贴板里的文字或者颜色信息转化为图片窗口，并且将它们进行缩放、旋转、翻转、设为半透明，甚至让鼠标能穿透它们！如果你是程序员、设计师，或者是大部分工作时间都在电脑前，贴图功能将改变你的工作方式、提升工作效率。
+            </p>
+            <p>
+                Snipaste 使用很简单，但同时也有一些较高级的用法可以进一步提升你的工作效率。感兴趣的话，请抽空读一读<a href="//docs.snipaste.com/#/zh-cn/">用户手册</a>。
+            </p>
+            <p>
+                Snipaste 是免费软件，它也很安全，没有广告、不会扫描你的硬盘、更不会上传用户数据，它只做它应该做的事。
+            </p>
+            <hr />
+
+            <div class="row">
+                <div class="col-sm-8">
+                    <img class="img-responsive" src="//i.v2ex.co/N3038l46.png" />
+                </div>
+
+                <div class="col-sm-4">
+                    <h3>强大的截图</h3>
+                   <ul>
+                       <li>自动检测界面元素区域</li>
+                       <li>像素级的鼠标移动控制、截图范围控制</li>
+                       <li>取色器 (试试 <code>F1</code>, <code>C</code>, <code>F3</code>)</li>
+                       <li><strong>历史记录回放</strong> (<code>,</code>/<code>.</code>)</li>
+                       <li>支持多屏</li>
+                       <li>支持高分屏</li>
+                   </ul>
+                </div>
+            </div>
+
+            <hr />
+
+            <div class="row">
+                <div class="col-sm-4">
+                    <h3>把图片作为窗口置顶显示</h3>
+                    <ul>
+                        <li>
+                            支持将剪贴板中的以下内容转为图片
+                            <ul>
+                                <li>图像</li>
+                                <li>纯文本</li>
+                                <li>HTML 文本</li>
+                                <li>颜色信息</li>
+                                <li>图像文件：PNG, JPG, BMP, ICO, <strong>GIF</strong> 等</li>
+                            </ul>
+                        </li>
+                        <li>
+                            图片窗口支持的操作
+                            <ul>
+                                <li>缩放 (<code>鼠标滚轮</code> 或者 <code>+</code>/<code>-</code>)<br />
+                                    对于 GIF 图片则是加速/减速
+                                </li>
+                                <li>旋转 (<code>1</code>/<code>2</code>)<br />
+                                    对于 GIF 图片则是 上一帧/下一帧
+                                </li>
+                                <li>镜像翻转 (<code>3</code>/<code>4</code>)</li>
+                                <li>设置透明度 (<code>Ctrl</code> + <code>鼠标滚轮</code> 或者 <code>Ctrl</code> + <code>+</code>/<code>-</code>)</li>
+                                <li>鼠标穿透</li>
+                                <li>缩略图 (<code>Shift</code> + <code>双击</code>)</li>
+                                <li>图像标注 (<code>空格键</code>)</li>
+                                <li>隐藏 (<code>左键双击</code>)</li>
+                                <li>...</li>
+                            </ul>
+                        </li>
+                        <li>取色 (<code>Alt</code>)</li>
+                        <li>文件拖放</li>
+                        <li><strong>贴图分组</strong></li>
+                        <li><strong>自动备份、恢复</strong></li>
+                    </ul>
+                </div>
+
+                <div class="col-sm-8">
+                    <img class="img-responsive" src="//i.v2ex.co/P9A3LpoY.png" />
+                </div>
+
+            </div>
+
+            <hr />
+
+            <div class="row">
+                <div class="col-sm-9">
+                    <img class="img-responsive" src="//i.v2ex.co/vu1nkxdD.png" />
+                </div>
+
+                <div class="col-sm-3">
+                    <h3>方便地标注图像</h3>
+                    <ul>
+                        <li>
+                            丰富的画图工具
+                            <ul>
+                                <li>矩形</li>
+                                <li>椭圆</li>
+                                <li>线条</li>
+                                <li>箭头</li>
+                                <li>铅笔</li>
+                                <li>马克笔</li>
+                                <li>文字</li>
+                            </ul>
+                        </li>
+                        <li>
+                            高级标注工具
+                            <ul>
+                                <li>马赛克</li>
+                                <li>高斯模糊</li>
+                                <li>橡皮擦</li>
+                            </ul>
+                        </li>
+                        <li>撤销、重做</li>
+                    </ul>
+                    <br />
+                </div>
+        </div>
+
+        <hr />
+
+        <div class="row">
+            <div class="col-md-4">
+                <h3>自定义设置</h3>
+                <ul>
+                    <li>主题色、界面字体、通知栏图标等</li>
+                    <li>快捷键</li>
+                    <li>丰富的功能性选项</li>
+                    <li>还有你想要的选项？尽管 <a href="//github.com/liulex/Snipaste-Feedback/issues" target="_blank">告诉我</a></li>
+                </ul>
+                <br />
+            </div>
+
+            <div class="col-md-8">
+                <img class="img-responsive" src="//i.v2ex.co/TNqoS229.png" />
+            </div>
+        </div>
+
+    </div>
+
+    <br />
+    <hr />
+
+    <section class="support" id="support">
+        <div class="container">
+            <h3>支持</h3>
+            <br />
+            <p>
+                如有使用上的疑问，请参考：
+                <a href="//docs.snipaste.com/zh-cn/getting-started" target="_blank">基础操作</a> |
+                <a href="//docs.snipaste.com/zh-cn/troubleshooting" target="_blank">故障排除</a>
+            </p>
+            <br />
+            <p>如发现有 BUG，或希望添加新功能，请通过发 <a href="//github.com/liulex/Snipaste-Feedback/issues" target="_blank">issue</a> 的方式，便于问题的跟踪及解决。</p>
+            <br />
+            <p>也可以加入我们的 <a href="//t.me/+QK9AMsbC0YYxMDE1" target="_blank">Telegram 群</a>，热心的成员可以帮助你更快解决问题。</p>
+            <p>想要得知 Snipaste 的第一时间更新，请订阅我们的 <a href="//telegram.me/snipaste" target="_blank">Telegram 频道</a>，或者关注我们的 <a href="//weibo.com/snipaste" target="_blank">微博</a>  / <a href="https://twitter.com/Snipaste" target="_blank">Twitter</a>.</p>
+            <div class="column">
+                <br />
+                <p>
+                    <a href="eula.html">最终用户许可协议</a> | <a href="privacy_policy.html">隐私政策</a>
+                </p>
+                <p>
+                    联系作者：<a href="mailto:snipaste.app@gmail.com" target="_blank">snipaste.app@gmail.com</a>
+                </p>
+            </div>
+        </div>
+    </section>
+    </div>
+
+    <footer class="blog-footer">
+        <div style="border: 0px; clip: rect(0px 0px 0px 0px); height: 0px; overflow: hidden; padding: 0px; position: absolute; width: 0px;">
+            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+                <symbol viewBox="0 0 201.1 33.9" id="digitalocean"><path d="M16.9 33.9v-6.6c7 0 12.4-6.9 9.7-14.2-1-2.7-3.1-4.9-5.9-5.9C13.5 4.6 6.6 10 6.6 16.9H0C0 5.9 10.7-2.8 22.4.8c5.1 1.6 9.1 5.6 10.7 10.7 3.6 11.7-5.1 22.4-16.2 22.4z"></path><path d="M17 27.3h-6.6v-6.5H17zM10.4 32.4h-5v-5.1h5v5.1zM5.4 27.3H1.2v-4.2h4.2z"></path><g><path d="M60.3 9.8c-1.9-1.3-4.4-2-7.2-2H47v19.5h6.1c2.8 0 5.2-.7 7.2-2.1 1.1-.8 1.9-1.8 2.5-3.1.6-1.3.9-2.9.9-4.6 0-1.7-.3-3.3-.9-4.5-.6-1.5-1.4-2.5-2.5-3.2zm-9.7 1.3h1.9c2.1 0 3.9.4 5.3 1.3 1.5.9 2.2 2.6 2.2 5.1 0 2.5-.8 4.3-2.2 5.3-1.3.8-3 1.3-5.2 1.3h-2v-13zM68 7.5c-.6 0-1.1.2-1.5.6-.5.4-.7.9-.7 1.5s.2 1.1.6 1.5c.4.4.9.6 1.5.6s1.1-.2 1.5-.6c.4-.4.6-.9.6-1.5s-.2-1.1-.6-1.5c-.3-.4-.8-.6-1.4-.6zM66.2 13.5h3.5v13.7h-3.5zM82.2 14.7c-1-.9-2.2-1.5-3.5-1.5-1.9 0-3.5.7-4.7 2-1.2 1.3-1.9 2.9-1.9 4.9 0 1.9.6 3.6 1.8 4.9 1.2 1.3 2.8 1.9 4.7 1.9 1.3 0 2.5-.4 3.4-1.1v.3c0 1.1-.3 2-.9 2.6-.6.6-1.4.9-2.5.9-1.6 0-2.6-.6-3.8-2.3l-2.4 2.3.1.1c.5.7 1.3 1.4 2.3 2.1 1 .7 2.3 1 3.8 1 2.1 0 3.7-.6 4.9-1.9 1.2-1.3 1.9-2.9 1.9-5V13.5H82v1.2zm-.9 8.1c-.6.7-1.4 1-2.4 1s-1.8-.3-2.4-1c-.6-.7-.9-1.6-.9-2.7s.3-2 .9-2.7c.6-.7 1.4-1 2.4-1s1.8.3 2.4 1c.6.7.9 1.6.9 2.7s-.3 2-.9 2.7zM88.6 13.5h3.5v13.7h-3.5zM90.3 7.5c-.6 0-1.1.2-1.5.6-.4.4-.6.9-.6 1.5s.2 1.1.6 1.5c.4.4.9.6 1.5.6s1.1-.2 1.5-.6c.4-.4.6-.9.6-1.5s-.2-1.1-.6-1.5c-.4-.4-.9-.6-1.5-.6zM99.6 9.8h-3.4v3.7h-2v3.1h2v5.7c0 1.8.4 3.1 1.1 3.8.7.7 2 1.1 3.7 1.1.6 0 1.1 0 1.7-.1h.2V24l-1.2.1c-.8 0-1.4-.1-1.6-.4-.3-.3-.4-.9-.4-1.8v-5.2h3.2v-3.1h-3.2V9.8zM119 7.8h3.5v19.5H119zM157.4 22.4c-.6.7-1.3 1.3-1.7 1.6-.5.3-1.1.5-1.8.5-1 0-1.8-.4-2.5-1.1-.7-.8-1-1.7-1-2.9s.3-2.1 1-2.9c.7-.8 1.5-1.1 2.5-1.1 1.1 0 2.3.7 3.3 1.9l2.3-2.2c-1.5-1.9-3.4-2.8-5.7-2.8-1.9 0-3.5.7-4.9 2.1-1.3 1.4-2 3.1-2 5.1s.7 3.8 2 5.1c1.3 1.4 3 2.1 4.9 2.1 2.5 0 4.5-1.1 5.9-3.1l-2.3-2.3zM171.5 15.5c-.5-.7-1.2-1.2-2-1.6-.8-.4-1.8-.6-2.9-.6-1.9 0-3.5.7-4.7 2.1-1.1 1.4-1.7 3.1-1.7 5.1 0 2.1.6 3.8 1.9 5.1 1.3 1.3 2.9 2 5 2 2.3 0 4.2-.9 5.7-2.8l.1-.1-2.3-2.2c-.2.3-.5.5-.8.8-.3.3-.7.6-1 .7-.5.3-1.1.4-1.7.4-1 0-1.7-.3-2.4-.8-.6-.5-.9-1.2-1-2.1h9.2v-1.3c0-.9-.1-1.8-.4-2.6-.1-.7-.5-1.5-1-2.1zm-7.5 3.2c.2-.7.5-1.2.9-1.6.5-.5 1.1-.7 1.8-.7.8 0 1.5.2 1.9.7.4.4.6 1 .7 1.6H164zM184.8 14.6c-1-.9-2.5-1.3-4.3-1.3-1.1 0-2.2.3-3.2.7-.9.5-1.8 1.2-2.3 2.2l2.2 2.1c.9-1.5 1.9-2 3.3-2 .7 0 1.3.2 1.8.6.5.4.7.9.7 1.5v.7c-.9-.3-1.7-.4-2.5-.4-1.7 0-3.1.4-4.2 1.2-1.1.8-1.6 2-1.6 3.4 0 1.3.4 2.3 1.3 3.1.9.8 2 1.1 3.3 1.1 1.3 0 2.5-.5 3.7-1.4v1.1h3.4v-8.8c0-1.6-.5-2.9-1.6-3.8zm-6.1 7.4c.4-.3.9-.4 1.6-.4.8 0 1.7.2 2.6.5v1.3c-.8.7-1.8 1.1-3 1.1-.6 0-1.1-.1-1.4-.4-.3-.3-.5-.6-.5-1 .1-.5.3-.8.7-1.1zM199.7 14.8c-1-1.1-2.3-1.6-4-1.6-1.4 0-2.5.4-3.3 1.2v-.8H189v13.7h3.5v-7.6c0-1 .2-1.9.7-2.5.5-.6 1.2-.9 2-.9s1.4.3 1.8.8c.4.5.7 1.3.7 2.2v8h3.5v-8c-.1-1.9-.6-3.4-1.5-4.5zM114.7 14.6c-1-.9-2.5-1.3-4.3-1.3-1.1 0-2.2.3-3.2.7-.9.5-1.8 1.2-2.3 2.2l2.2 2.1c.9-1.5 1.9-2 3.3-2 .7 0 1.3.2 1.8.6.5.4.7.9.7 1.5v.7c-.9-.3-1.7-.4-2.5-.4-1.7 0-3.1.4-4.2 1.2-1.1.8-1.6 2-1.6 3.4 0 1.3.4 2.3 1.3 3.1.9.8 2 1.1 3.3 1.1 1.3 0 2.5-.5 3.7-1.4v1.1h3.4v-8.8c0-1.6-.6-2.9-1.6-3.8zm-6.2 7.4c.4-.3.9-.4 1.6-.4.8 0 1.7.2 2.6.5v1.3c-.8.7-1.8 1.1-3 1.1-.6 0-1.1-.1-1.4-.4-.3-.3-.5-.6-.5-1 .2-.5.4-.8.7-1.1zM135 27.6c-5.5 0-10-4.5-10-10s4.5-10 10-10 10 4.5 10 10-4.5 10-10 10zm0-16.6c-3.6 0-6.5 2.9-6.5 6.5s2.9 6.5 6.5 6.5 6.5-2.9 6.5-6.5-2.9-6.5-6.5-6.5z"></path></g></symbol>
+            </svg>
+        </div>
+
+        <div class="container">
+            <div class="pull-right">
+                <a href="//www.digitalocean.com/?refcode=490f0e7bee58" target="_blank" style="fill: #0080ff;">
+                    <svg style="width: 155px; height: 28px;">
+                        <use xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="#digitalocean"></use>
+                    </svg>
+                </a>
+            </div>
+            <p class="pull-left">&copy; 2016-2026 Snipaste. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script src="//registry.npmmirror.com/jquery/1.11.3/files/dist/jquery.min.js"></script>
+    <script src="//registry.npmmirror.com/bootstrap/3.3.7/files/dist/js/bootstrap.min.js"></script>
+    <script src="js/lottie-player@2.0.12.js"></script>
+    <script src="js/index.js?20240907"></script>
+    <script src="//i-cdn.softscdn.com/apsdai.min.js"></script>
+    <script>window.Apsdai = Object.assign(window.Apsdai || {}, { name: 'hmdg8urlsh', language:'zh-cn' })</script>
+</body>
+</html>

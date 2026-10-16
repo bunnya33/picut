@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "floatshot"
+version = "0.4.5"
+description = "Qt desktop screenshot, pin and screen recording tool"
+requires-python = ">=3.11"
+dependencies = [
+  "PySide6>=6.8,<6.11",
+  "mss>=10,<11",
+  "soundcard>=0.4.5,<0.5",
+  "numpy>=2,<3",
+  "imageio-ffmpeg>=0.6,<0.7",
+  "Pillow>=11,<13",
+  "zxing-cpp>=2.3,<3",
+  "comtypes>=1.4,<2; sys_platform == 'win32'",
+  "winrt-Windows.Media.Ocr>=3.2,<4; sys_platform == 'win32'",
+  "winrt-Windows.Graphics.Imaging>=3.2,<4; sys_platform == 'win32'",
+  "winrt-Windows.Storage>=3.2,<4; sys_platform == 'win32'",
+  "winrt-Windows.Storage.Streams>=3.2,<4; sys_platform == 'win32'",
+  "winrt-Windows.Globalization>=3.2,<4; sys_platform == 'win32'",
+  "winrt-Windows.Foundation>=3.2,<4; sys_platform == 'win32'",
+  "winrt-Windows.Foundation.Collections>=3.2,<4; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pyinstaller>=6.11,<7"]
+
+[project.gui-scripts]
+floatshot = "floatshot.app:main"
+
+[tool.setuptools.packages.find]
+include = ["floatshot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
