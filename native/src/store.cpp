@@ -121,7 +121,7 @@ bool Store::importLegacy(const QString &destination, const QString &source) {
          writeJson(target + "/migration.json",
                    QJsonObject{{"source", legacy},
                                {"old_data_preserved", true},
-                               {"version", "0.5.10"}}) &&
+                               {"version", "0.5.11"}}) &&
          writeJson(target + "/settings.json", settings);
 }
 QString Store::path(const QString &name) const {

@@ -2,6 +2,7 @@
 #include "annotation.h"
 #include "toolbar.h"
 #include "text_editor.h"
+#include "image_text.h"
 #include <memory>
 
 class EditingSurface : public QWidget {
@@ -9,8 +10,10 @@ class EditingSurface : public QWidget {
 public:
   explicit EditingSurface(Store *store, QWidget *parent = nullptr,
                           Qt::WindowFlags flags = {});
+  ~EditingSurface() override;
   std::unique_ptr<Annotation> annotation;
   Toolbar *toolbar = nullptr;
+  ImageTextOverlay *imageText = nullptr;
   Store *store;
   bool editing = false;
   virtual QRect contentRect() const = 0;
@@ -28,6 +31,7 @@ public:
   void annotationWheel(QWheelEvent *event);
   void commitText();
   void showMore();
+  void startImageText(const QImage &image = {}, bool recognize = true);
   QString editTarget(QPoint point) const;
 
 protected:

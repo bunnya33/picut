@@ -6,7 +6,7 @@ if (-not $QtDir) { $QtDir = Join-Path $floatshotRoot 'build/native-sdk/qt' }
 if (-not $Ffmpeg) { $Ffmpeg = Join-Path $floatshotRoot 'build/native-sdk/ffmpeg.exe' }
 if (-not (Test-Path -LiteralPath $Ffmpeg)) { throw 'FFmpeg missing. Run native/setup-sdk.ps1 or pass -Ffmpeg.' }
 if (-not $SkipBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -QtDir $QtDir }
-$floatshotPackage = Join-Path $floatshotRoot 'dist/FloatShot-Native-0.5.10'
+$floatshotPackage = Join-Path $floatshotRoot 'dist/FloatShot-Native-0.5.11-image-text-trial'
 New-Item -ItemType Directory -Path $floatshotPackage -Force | Out-Null
 foreach ($floatshotBinary in @('FloatShotNative.exe', 'NativeVideoPreview.dll', 'FloatShotPaddleOcr.exe', 'onnxruntime.dll')) {
     Copy-Item -LiteralPath (Join-Path $floatshotRoot ('build/native/' + $floatshotBinary)) -Destination $floatshotPackage -Force
@@ -44,41 +44,49 @@ Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.1.md') 
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.2.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.3.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.10.md') -Destination $floatshotPackage -Force
+Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.11-图片选字试用.md') -Destination $floatshotPackage -Force
+Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/版本回滚.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.9.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.8.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.7.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.6.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.5.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.4.md') -Destination $floatshotPackage -Force
-foreach ($floatshotPinReport in @('native-v0.5.5-pin-comparison.json', 'native-v0.5.10-pin-after/pin-latency-report.json')) {
+foreach ($floatshotPinReport in @('native-v0.5.5-pin-comparison.json', 'native-v0.5.11-pin-after/pin-latency-report.json')) {
     $floatshotPinSource = Join-Path $floatshotRoot ('.test-artifacts/' + $floatshotPinReport)
     if (Test-Path -LiteralPath $floatshotPinSource) { Copy-Item -LiteralPath $floatshotPinSource -Destination $floatshotPackage -Force }
 }
-$floatshotPortablePinReport = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.10-portable-pin/pin-latency-report.json'
+$floatshotPortablePinReport = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.11-portable-pin/pin-latency-report.json'
 if (Test-Path -LiteralPath $floatshotPortablePinReport) {
     Copy-Item -LiteralPath $floatshotPortablePinReport -Destination (Join-Path $floatshotPackage 'portable-pin-latency-report.json') -Force
 }
-foreach ($floatshotReport in @('native-build-tests.txt', 'native-build-recording-tests.txt', 'native-build-ocr-tests.txt', 'native-v0.5.10-portable-tests.txt')) {
+foreach ($floatshotReport in @('native-build-tests.txt', 'native-build-recording-tests.txt', 'native-build-ocr-tests.txt', 'native-v0.5.11-portable-tests.txt', 'native-v0.5.11-portable-ocr-tests.txt', 'native-v0.5.11-windows-selection-tests.txt')) {
     $floatshotReportSource = Join-Path $floatshotRoot ('.test-artifacts/' + $floatshotReport)
     if (Test-Path -LiteralPath $floatshotReportSource) {
         Copy-Item -LiteralPath $floatshotReportSource -Destination $floatshotPackage -Force
     }
 }
+$floatshotImageTextTarget = Join-Path $floatshotPackage 'image-text-previews'
+New-Item -ItemType Directory -Path $floatshotImageTextTarget -Force | Out-Null
+foreach ($floatshotPreview in @('image-text-source.png','image-text-partial-selection.png','image-text-all-selection.png')) {
+    $floatshotPreviewSource = Join-Path $floatshotRoot ('.test-artifacts/native-v0.5.11-ocr/' + $floatshotPreview)
+    if (Test-Path -LiteralPath $floatshotPreviewSource) { Copy-Item -LiteralPath $floatshotPreviewSource -Destination $floatshotImageTextTarget -Force }
+}
 foreach ($floatshotOcrReport in @('quality-report.json','cold-process.json','gpu-quality-report.json','dense-timing.json','dense-gpu-timing.json')) {
-    $floatshotOcrSource = Join-Path $floatshotRoot ('.test-artifacts/native-v0.5.10-ocr/' + $floatshotOcrReport)
+    $floatshotOcrSource = Join-Path $floatshotRoot ('.test-artifacts/native-v0.5.11-ocr/' + $floatshotOcrReport)
     if (Test-Path -LiteralPath $floatshotOcrSource) { Copy-Item -LiteralPath $floatshotOcrSource -Destination $floatshotPackage -Force }
 }
-$floatshotMemorySource = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.10-ocr-memory/ocr-memory-report.json'
+$floatshotMemorySource = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.11-ocr-memory/ocr-memory-report.json'
 if (Test-Path -LiteralPath $floatshotMemorySource) { Copy-Item -LiteralPath $floatshotMemorySource -Destination $floatshotPackage -Force }
-$floatshotPortableMemorySource = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.10-portable-memory/ocr-memory-report.json'
+$floatshotPortableMemorySource = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.11-portable-memory/ocr-memory-report.json'
 if (Test-Path -LiteralPath $floatshotPortableMemorySource) { Copy-Item -LiteralPath $floatshotPortableMemorySource -Destination (Join-Path $floatshotPackage 'portable-ocr-memory-report.json') -Force }
-$floatshotComparison = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.10-model-comparison/comparison-report.json'
+$floatshotComparison = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.11-model-comparison/comparison-report.json'
 if (Test-Path -LiteralPath $floatshotComparison) { Copy-Item -LiteralPath $floatshotComparison -Destination $floatshotPackage -Force }
-$floatshotControlPreview = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.10-recording-ui/region-controls.png'
+$floatshotControlPreview = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.11-recording-ui/region-controls.png'
 if (Test-Path -LiteralPath $floatshotControlPreview) {
     Copy-Item -LiteralPath $floatshotControlPreview -Destination (Join-Path $floatshotPackage 'recording-controls-preview.png') -Force
 }
-$floatshotAnnotationPreviews = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.10-annotation-ui'
+$floatshotAnnotationPreviews = Join-Path $floatshotRoot '.test-artifacts/native-v0.5.11-annotation-ui'
 if (Test-Path -LiteralPath $floatshotAnnotationPreviews) {
     $floatshotAnnotationTarget = Join-Path $floatshotPackage 'annotation-previews'
     New-Item -ItemType Directory -Path $floatshotAnnotationTarget -Force | Out-Null

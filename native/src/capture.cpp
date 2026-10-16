@@ -373,12 +373,13 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
             QString::number(annotation ? annotation->original.height()
                                        : r.height()));
   }
-  paintEditing(p);
+  const bool selectingText = imageText && imageText->isVisible();
+  if (!selectingText) paintEditing(p);
   bool brush = annotation &&
                QStringList{"pen", "line", "arrow", "marker", "eraser"}.contains(
                    annotation->tool) &&
                selection.contains(pointer);
-  if (alt || (!brush && (!annotation || (!annotation->draft && !dragOriginal))))
+  if (!selectingText && (alt || (!brush && (!annotation || (!annotation->draft && !dragOriginal)))))
     paintMagnifier(p, preview);
   p.setPen(Qt::white);
   p.drawText(

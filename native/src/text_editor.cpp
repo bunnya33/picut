@@ -248,7 +248,7 @@ void InlineTextEditor::keyPressEvent(QKeyEvent *event) {
     emit commitRequested();
     return;
   }
-  if (event->key() == Qt::Key_F3 || event->matches(QKeySequence::Save) ||
+  if (event->key() == Qt::Key_F3 || event->key() == Qt::Key_F4 || event->matches(QKeySequence::Save) ||
       (ctrl && event->key() >= Qt::Key_1 && event->key() <= Qt::Key_8)) {
     emit commandRequested(event->key(), event->modifiers());
     return;

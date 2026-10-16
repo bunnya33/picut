@@ -70,6 +70,13 @@ QIcon toolIcon(const QString &name, QColor color) {
     p.rotate(35);
     p.drawRoundedRect(QRectF(-5, -8, 10, 16), 1, 1);
     p.drawLine(-5, 1, 5, 1);
+  } else if (name == "select_text") {
+    p.drawPolyline(QPolygonF{{3, 8}, {3, 3}, {8, 3}});
+    p.drawPolyline(QPolygonF{{16, 3}, {21, 3}, {21, 8}});
+    p.drawPolyline(QPolygonF{{3, 16}, {3, 21}, {8, 21}});
+    p.drawPolyline(QPolygonF{{16, 21}, {21, 21}, {21, 16}});
+    auto f = p.font(); f.setPixelSize(15); f.setBold(true); p.setFont(f);
+    p.drawText(image.rect(), Qt::AlignCenter, "T");
   } else if (name == "number") {
     p.drawEllipse(QRectF(3, 3, 18, 18));
     auto f = p.font();
@@ -223,7 +230,7 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
   };
   separator();
   for (const auto &action :
-       QStringList{"undo", "redo", "cancel", "pin", "save", "copy"}) {
+       QStringList{"undo", "redo", "select_text", "cancel", "pin", "save", "copy"}) {
     if (action == "cancel")
       separator();
     auto b = new QToolButton;
@@ -233,6 +240,7 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
     b->setFixedSize(32, 32);
     b->setToolTip(QMap<QString, QString>{{"undo", "撤销 · Ctrl+Z"},
                                          {"redo", "重做 · Ctrl+Y"},
+                                         {"select_text", "图片选字（试用） · F4"},
                                          {"cancel", "取消 · Esc"},
                                          {"pin", "贴图 · F3"},
                                          {"save", "保存 · Ctrl+S"},

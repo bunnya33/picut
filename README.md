@@ -1,4 +1,8 @@
-# 浮光 FloatShot · v0.5.10 原生版
+# 浮光 FloatShot · v0.5.11 图片选字试用版
+
+本分支是 **图片选字试用版**：运行 `run-image-text-trial.ps1` 或 `dist/FloatShot-Native-0.5.11-image-text-trial/FloatShotNative.exe`。截图选区确定后，或在贴图上按 **F4**，识别后直接拖选图片中文字，Ctrl+C 复制、Ctrl+A 全选、Esc 返回。原有“文字识别”全文窗口保留。详见 [试用说明](docs/更新记录-v0.5.11-图片选字试用.md)。
+
+稳定版 v0.5.10 的源码已提交并打标签，`main` 和 `v0.5.10` 指向该基线；试用开发在 `codex/image-text-trial`。`run.ps1` 继续启动稳定版，稳定版目录和压缩包保留。试用版使用单独的配置与历史目录，回退方法见 [版本回滚](docs/版本回滚.md)。
 
 当前默认实现为 **C++20 + Qt 6.8.3 Widgets**。运行、构建和打包均不需要 Python。
 
@@ -24,7 +28,7 @@ v0.5.4 的文字检测和识别都改为 **PP-OCRv6 small**，仍覆盖官方声
 
 迁移范围、实测内存及尚未迁移的扩展功能见 [原生迁移说明](docs/原生迁移-v0.5.0.md)。原生第一版尚未与旧版所有扩展功能完全等价。录屏的系统声音和麦克风、暂停、MP4 与预览已实现；本轮实测覆盖系统声音轨道，双设备和长录制仍待验收。
 
-首次启动自动复制旧版设置、历史和贴图到 `%LOCALAPPDATA%\FloatShot\FloatShotNative`，旧数据保留。图片、视频目录可在设置修改。
+稳定版首次启动自动复制旧版设置、历史和贴图到 `%LOCALAPPDATA%\FloatShot\FloatShotNative`，旧数据保留。试用版独立使用 `%LOCALAPPDATA%\FloatShot\FloatShotNative-ImageTextTrial`，不自动导入旧版数据。图片、视频目录可在设置修改。
 
 ## 开发
 
@@ -33,10 +37,10 @@ v0.5.4 的文字检测和识别都改为 **PP-OCRv6 small**，仍覆盖官方声
 ```powershell
 ./native/setup-sdk.ps1
 ./build.ps1
-./run.ps1
+./run-image-text-trial.ps1
 ```
 
-`build.ps1` 编译原生代码、运行原生测试并打包；录屏 UI 测试使用真实 Windows 平台，会短暂显示测试边框、控制条和纯色测试画面。`run.ps1` 默认托盘启动，可传 `--verify-features` 等参数。也可双击 EXE 打开工作台。详细构建、测试与 SDK 参数见 [native/README.md](native/README.md)。
+`build.ps1` 编译当前分支、运行原生测试并打包到试用目录；录屏 UI 测试使用真实 Windows 平台，会短暂显示测试边框、控制条和纯色测试画面。两个启动脚本默认托盘启动，可传 `--verify-features` 等参数。也可双击 EXE 打开工作台。详细构建、测试与 SDK 参数见 [native/README.md](native/README.md)。
 
 | 目录/文件 | 内容 |
 | --- | --- |

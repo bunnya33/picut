@@ -17,6 +17,9 @@
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QScopeGuard>
 #include <QtCore/QTimer>
+#include <QtCore/QJsonArray>
+#include <QtCore/QMimeData>
+#include <QtGui/QClipboard>
 #include <QtGui/QFontDatabase>
 #include <QtGui/QImageReader>
 #include <QtGui/QContextMenuEvent>
@@ -28,6 +31,7 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QMenu>
+#include <QtWidgets/QPlainTextEdit>
 #include <winrt/base.h>
 
 class NativeTests : public QObject {
@@ -76,7 +80,172 @@ class NativeTests : public QObject {
     return folder.isEmpty() ||
            (QDir().mkpath(folder) && widget->grab().save(folder + "/" + name));
   }
+  static QJsonObject imageTextFixture() {
+    auto quad = [](double left, double top, double right, double bottom) {
+      return QJsonArray{QJsonArray{left, top}, QJsonArray{right, top},
+                        QJsonArray{right, bottom}, QJsonArray{left, bottom}};
+    };
+    auto line = [&](QString text, double x, double y, QList<double> widths) {
+      QJsonArray chars;
+      double left = x;
+      for (int n = 0; n < text.size(); ++n) {
+        const double right = left + widths.value(n, 20.);
+        chars.append(QJsonObject{{"text", text.mid(n, 1)}, {"quad", quad(left,y,right,y+28)}});
+        left = right;
+      }
+      return QJsonObject{{"text", text}, {"quad", quad(x,y,left,y+28)}, {"characters", chars}};
+    };
+    // Deliberately unsorted rows, columns and unequal character widths.
+    return {{"lines", QJsonArray{
+        line("2026/10/03",220,130,{18,18,18,18,10,18,18,10,18,18}),
+        line("记账日期",30,130,{28,28,28,28}),
+        line("金额",30,70,{28,28}),
+        line("10.49",220,70,{14,18,8,18,18})}}};
+  }
 private slots:
+  void imageTextModelReadingOrderAndMixedWidths() {
+    ImageTextPage page;
+    page.load(imageTextFixture());
+    QCOMPARE(page.text, QString("金额\t10.49\n记账日期\t2026/10/03"));
+    QCOMPARE(page.caretAt({219,84}), -1);
+    QCOMPARE(page.caretAt({221,84}), 3);
+    QCOMPARE(page.caretAt({235,84}), 4);
+    QCOMPARE(page.caretAt({253,84}), 5);
+    QCOMPARE(page.caretAt({261,84}), 6);
+    auto selected = page.highlights(5,8);
+    QCOMPARE(selected.size(), 3);
+    QCOMPARE(selected.first().boundingRect().width(), 8.);
+    QCOMPARE(page.highlights(8,5), selected);
+    auto oldResult = imageTextFixture();
+    auto lines = oldResult["lines"].toArray();
+    auto oldLine = lines.first().toObject(); oldLine.remove("characters");
+    page.load({{"lines",QJsonArray{oldLine}}});
+    QCOMPARE(page.lines.first().glyphs.size(), 1);
+    QCOMPARE(page.text, QString("2026/10/03"));
+  }
+  void imageTextSelectionCopyCacheAndExport() {
+    QTemporaryDir dir;
+    Store store(dir.path());
+    auto overlay = editingFixture(store, "rect");
+    QPointer<CaptureOverlay> alive = overlay;
+    auto cleanup = qScopeGuard([&] { if (alive) delete alive; });
+    const auto original = overlay->annotation->render();
+    auto savedClipboard = std::make_unique<QMimeData>();
+    if (auto mime = QApplication::clipboard()->mimeData())
+      for (const auto &format : mime->formats())
+        savedClipboard->setData(format, mime->data(format));
+    auto restoreClipboard = qScopeGuard([&] { QApplication::clipboard()->setMimeData(savedClipboard.release()); });
+    overlay->startImageText({}, false);
+    auto text = overlay->imageText;
+    QVERIFY(text->isVisible());
+    QVERIFY(!overlay->toolbar->isVisible());
+    text->setResult(imageTextFixture());
+    QTest::mousePress(text,Qt::LeftButton,Qt::NoModifier,{353,164});
+    dragMove(text,{396,164});
+    QTest::mouseRelease(text,Qt::LeftButton,Qt::NoModifier,{396,164});
+    QCOMPARE(text->selectedText(), QString(".49"));
+    QTest::keyClick(text,Qt::Key_C,Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), QString(".49"));
+    QTest::keyClick(text,Qt::Key_A,Qt::ControlModifier);
+    QCOMPARE(text->selectedText(), QString("金额\t10.49\n记账日期\t2026/10/03"));
+    QCOMPARE(overlay->annotation->render(), original);
+    QCOMPARE(text->sourceImage(), original);
+    QVERIFY(savePreview(overlay,"image-text-all-selected.png"));
+    QTest::keyClick(text,Qt::Key_Escape);
+    QVERIFY(!text->isVisible());
+    QVERIFY(overlay->toolbar->isVisible());
+    overlay->startImageText({},true);
+    QCOMPARE(text->recognitionStarts(),0); // Same image/settings reuse the cached result.
+    QVERIFY(!text->page().text.isEmpty());
+    QTimer::singleShot(0, text, [&] {
+      auto dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+      if (dialog) {
+        auto editor = dialog->findChild<QPlainTextEdit *>("imageTextFullEditor");
+        if (editor) editor->setPlainText("修正全文");
+        dialog->reject();
+      }
+    });
+    QTest::mouseClick(text->findChild<QToolButton *>("imageTextFull"),Qt::LeftButton);
+    QCOMPARE(text->page().text,QString("金额\t10.49\n记账日期\t2026/10/03"));
+    QTest::keyClick(text,Qt::Key_F4);
+    Mark mark;
+    mark.kind="rect"; mark.points={{10,10},{25,25}};
+    overlay->annotation->add(mark);
+    overlay->startImageText({},false);
+    QVERIFY(text->page().text.isEmpty()); // Pixel changes invalidate the cache.
+    text->setResult({{"error","synthetic failure"}});
+    QVERIFY(!text->findChild<QToolButton *>("imageTextCopy")->isEnabled());
+    QTest::keyClick(text,Qt::Key_Escape);
+  }
+  void imageTextPinScaleAndToolbarLifecycle() {
+    QTemporaryDir dir;
+    Store store(dir.path());
+    QImage image(480,300,QImage::Format_ARGB32); image.fill(Qt::white);
+    auto pin = new PinWindow(image,&store,{100,80,480,300});
+    QPointer<PinWindow> alive = pin;
+    auto cleanup = qScopeGuard([&] { if (alive) delete alive; });
+    pin->show();
+    pin->startImageText(image,false);
+    auto text = pin->imageText;
+    text->setResult(imageTextFixture());
+    QVERIFY(text->controlBar()->isWindow());
+    auto before = text->controlBar()->pos();
+    pin->move(pin->pos()+QPoint(20,15));
+    QCOMPARE(text->controlBar()->pos(),before+QPoint(20,15));
+    pin->setScale(.5);
+    auto start = pin->contentRect().topLeft()+QPoint(111,42);
+    auto end = pin->contentRect().topLeft()+QPoint(148,42);
+    QTest::mousePress(text,Qt::LeftButton,Qt::NoModifier,start);
+    QTest::mouseRelease(text,Qt::LeftButton,Qt::NoModifier,end);
+    QCOMPARE(text->selectedText(),QString("10.49"));
+    QVERIFY(savePreview(pin,"image-text-pin-half-scale.png"));
+    QCOMPARE(pin->displayedImage(),image);
+    pin->hide();
+    QVERIFY(!text->isVisible());
+    QVERIFY(!text->controlBar()->isVisible());
+    pin->show(); pin->startEditing();
+    pin->startImageText(pin->displayedImage(),false);
+    QTest::keyClick(text,Qt::Key_Escape);
+    QVERIFY(pin->toolbar->isVisible());
+  }
+  void imageTextIncludesPendingInlineText_data() {
+    QTest::addColumn<bool>("pinWindow");
+    QTest::newRow("capture") << false;
+    QTest::newRow("pin") << true;
+  }
+  void imageTextIncludesPendingInlineText() {
+    QFETCH(bool,pinWindow);
+    QTemporaryDir dir; Store store(dir.path());
+    store.config["annotation_last_tool"]="text";
+    QImage image(480,300,QImage::Format_ARGB32); image.fill(Qt::white);
+    EditingSurface *surface;
+    if (pinWindow) {
+      auto pin=new PinWindow(image,&store,{100,80,480,300});
+      pin->show(); pin->startEditing(); surface=pin;
+    } else surface=editingFixture(store,"text");
+    auto cleanup=qScopeGuard([&] { delete surface; });
+    QTest::mouseClick(surface,Qt::LeftButton,Qt::NoModifier,surface->contentRect().topLeft()+QPoint(60,60));
+    auto editor=surface->findChild<InlineTextEditor *>(); QVERIFY(editor);
+    QTest::keyClicks(editor,"Pending text 123");
+    auto expected=surface->annotation->render(); paintMark(expected,editor->value());
+    QTest::keyClick(editor,Qt::Key_F4);
+    QVERIFY(!editor->isVisible()); QVERIFY(surface->imageText->isVisible());
+    QCOMPARE(surface->imageText->sourceImage(),expected);
+    QVERIFY(!surface->toolbar->isVisible());
+    QTest::keyClick(surface->imageText,Qt::Key_Escape);
+    QVERIFY(surface->toolbar->isVisible());
+    QVERIFY(!surface->imageText->findChild<PaddleOcrJob *>()->running());
+  }
+  void imageTextDestroyDuringRecognition() {
+    QTemporaryDir dir; Store store(dir.path());
+    QImage image(480,300,QImage::Format_ARGB32); image.fill(Qt::white);
+    auto pin=new PinWindow(image,&store,{100,80,480,300}); pin->show();
+    pin->startImageText(image);
+    auto job=pin->imageText->findChild<PaddleOcrJob *>(); QVERIFY(job->running());
+    auto temporary=job->temporaryPath(); QVERIFY(QFileInfo::exists(temporary));
+    delete pin;
+    QVERIFY(!QFileInfo::exists(temporary));
+  }
   void selectionToolbarTracksDragFrames_data() {
     QTest::addColumn<bool>("recording");
     QTest::newRow("screenshot") << false;
@@ -147,13 +316,17 @@ private slots:
     const auto rendered = bar.mainBar->grab().toImage();
     const QImage expected(":/fixtures/toolbar-reference.png");
     QVERIFY(!expected.isNull());
-    // The eighth (number) tool extends the original reference by 32 pixels.
-    QCOMPARE(rendered.size(), expected.size() + QSize(32, 0));
-    const int insertedAt = bar.findChild<QToolButton *>("tool_number")->x();
+    // Number and image-text tools extend the unchanged original glyphs.
+    QCOMPARE(rendered.size(), expected.size() + QSize(64, 0));
+    const QList<int> insertedAt{bar.findChild<QToolButton *>("tool_number")->x(),
+                                bar.findChild<QToolButton *>("action_select_text")->x()};
     int different = 0;
     for (int y = 0; y < expected.height(); ++y)
       for (int x = 0; x < expected.width(); ++x) {
-        auto actual = rendered.pixelColor(x >= insertedAt ? x + 32 : x, y),
+        int actualX = x;
+        for (int insertion : insertedAt)
+          if (actualX >= insertion) actualX += 32;
+        auto actual = rendered.pixelColor(actualX, y),
              target = expected.pixelColor(x, y);
         if (qAbs(actual.red() - target.red()) > 3 ||
             qAbs(actual.green() - target.green()) > 3 ||

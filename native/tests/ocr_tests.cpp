@@ -1,10 +1,13 @@
 #include "recognition.h"
+#include "image_text.h"
 #include "store.h"
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
+#include <QtCore/QMimeData>
+#include <QtGui/QClipboard>
 #include <QtGui/QFontMetrics>
 #include <QtGui/QFontDatabase>
 #include <QtGui/QPainter>
@@ -13,6 +16,7 @@
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QPlainTextEdit>
+#include <QtWidgets/QLabel>
 #include <winrt/base.h>
 #include <algorithm>
 #include <numeric>
@@ -55,6 +59,31 @@ class OcrTests : public QObject {
     QFile file(arguments.value(outputIndex+1));
     if (!file.open(QIODevice::ReadOnly)) return {{"error","Missing output: " + QString::fromUtf8(process.readAllStandardError())}};
     return QJsonDocument::fromJson(file.readAll()).object();
+  }
+  void verifyCharacterGeometry(const QJsonObject &result, QSize imageSize) {
+    QCOMPARE(result["coordinate_space"].toString(),QString("original"));
+    QCOMPARE(result["image_width"].toInt(),imageSize.width());
+    QCOMPARE(result["image_height"].toInt(),imageSize.height());
+    ImageTextPage page; page.load(result);
+    for (const auto &line : page.lines) {
+      QString joined;
+      for (const auto &glyph : line.glyphs) {
+        joined += glyph.text;
+        QVERIFY(glyph.quad.boundingRect().width()>0);
+        QVERIFY(glyph.quad.boundingRect().height()>0);
+        for (auto point : glyph.quad) {
+          QVERIFY(point.x()>=0 && point.x()<=imageSize.width());
+          QVERIFY(point.y()>=0 && point.y()<=imageSize.height());
+        }
+        const auto start=(glyph.quad[0]+glyph.quad[3])/2,
+                   end=(glyph.quad[1]+glyph.quad[2])/2;
+        QCOMPARE(page.caretAt(start*.95+end*.05),glyph.offset);
+        QCOMPARE(page.caretAt(start*.05+end*.95),glyph.offset+glyph.text.size());
+      }
+      QCOMPARE(joined,line.text);
+      // Every tested worker result must contain actual CTC character positions.
+      QVERIFY(line.glyphs.size()>1 || line.text.size()==1);
+    }
   }
 private slots:
   void initTestCase() {
@@ -112,6 +141,7 @@ private slots:
         paddleErrors+=errors; windowsErrors+=distance(truth[id],windows); total+=normalized(truth[id]).toUcs4().size();
       }
       report.append(item);
+      verifyCharacterGeometry(item,images[id].size());
       qInfo().noquote() << id << "errors:" << errors << "text:" << actual;
       if (id=="blank") QVERIFY(actual.isEmpty());
       if (id=="traditional" || id=="japanese" || id=="transparent" || id=="upside-down" || id=="rotated-90")
@@ -150,6 +180,12 @@ private slots:
     QVERIFY(sample("文字识别 12345",32).transformed(QTransform().rotate(90)).save(path));
     auto result=run({"--models",PaddleOcrJob::modelsPath(),"--input",path,"--rotation","270","--output",artifact+"/中文结果.json"});
     QVERIFY2(result["text"].toString().contains("12345"),qPrintable(result["error"].toString()));
+    verifyCharacterGeometry(result,QImage(path).size());
+    // The same original pixels with the opposite manual rotation exercise both
+    // inverse transforms, while automatic classification handles the upside-down crop.
+    result=run({"--models",PaddleOcrJob::modelsPath(),"--input",path,"--rotation","90","--output",artifact+"/manual-90.json"});
+    QVERIFY2(result["text"].toString().contains("12345"),qPrintable(result["error"].toString()));
+    verifyCharacterGeometry(result,QImage(path).size());
   }
   void largeImageTiles() {
     auto words=sample("区域边界文字 0123456789",28);
@@ -161,6 +197,7 @@ private slots:
     QVERIFY2(text.contains("区域边界文字0123456789"),qPrintable(text));
     QCOMPARE(text.count("0123456789"),1);
     QVERIFY2(text.contains("底部测试ABC123"),qPrintable(text));
+    verifyCharacterGeometry(result,image.size());
   }
   void denseTextPerformance() {
     QFont font("Microsoft YaHei UI"); font.setPixelSize(16);
@@ -181,6 +218,68 @@ private slots:
     if(gpu.value("error").toString()=="没有可用的 DirectX 12 显卡。") QSKIP("CPU corpus passed; this machine has no supported GPU.");
     QVERIFY2(!gpu.contains("error"),qPrintable(gpu["error"].toString()));
     QCOMPARE(normalized(gpu["text"].toString()),normalized(result["text"].toString()));
+    verifyCharacterGeometry(gpu,image.size());
+  }
+  void imageSelectionWithRealOcr() {
+    QTemporaryDir data; Store store(data.path());
+    store.config["ocr_acceleration"]="cpu";
+    QImage image(600,360,QImage::Format_RGB32); image.fill(Qt::white);
+    {
+      QPainter p(&image); QFont font("Microsoft YaHei UI"); font.setPixelSize(28);
+      p.setFont(font); p.setPen(Qt::black);
+      p.drawText(30,65,"交易记录");
+      p.drawText(30,140,"金额"); p.drawText(290,140,"10.49");
+      p.drawText(30,210,"记账日期"); p.drawText(290,210,"2026/10/03");
+      p.drawText(30,280,"商户名称"); p.drawText(290,280,"FloatShot");
+    }
+    QVERIFY(image.save(artifact+"/image-text-source.png"));
+    auto savedClipboard=std::make_unique<QMimeData>();
+    if (auto mime=QApplication::clipboard()->mimeData())
+      for (const auto &format:mime->formats()) savedClipboard->setData(format,mime->data(format));
+    auto restore=qScopeGuard([&] { QApplication::clipboard()->setMimeData(savedClipboard.release()); });
+    QWidget window; window.resize(740,510);
+    QRect content(70,40,600,360);
+    ImageTextOverlay overlay(&window,&store,[&] { return content; },false);
+    window.show(); overlay.begin(image);
+    auto job=overlay.findChild<PaddleOcrJob *>(); QVERIFY(job);
+    auto temporary=job->temporaryPath();
+    QTRY_VERIFY_WITH_TIMEOUT(!job->running(),60000);
+    QVERIFY2(overlay.page().text.contains("10.49"),qPrintable(overlay.page().text));
+    QVERIFY(overlay.page().text.contains("2026/10/03"));
+    QVERIFY(!QFileInfo::exists(temporary));
+    int first=overlay.page().text.indexOf(".49"), last=first+3;
+    auto quads=overlay.page().highlights(first,last); QCOMPARE(quads.size(),3);
+    auto left=(quads.first()[0]+quads.first()[3])/2,
+         right=(quads.last()[1]+quads.last()[2])/2;
+    auto drag=[&] {
+      auto map=[&](QPointF pt) { return content.topLeft()+QPoint(qRound(pt.x()*content.width()/image.width()),qRound(pt.y()*content.height()/image.height())); };
+      QTest::mousePress(&overlay,Qt::LeftButton,Qt::NoModifier,map(left*.98+right*.02));
+      QTest::mouseRelease(&overlay,Qt::LeftButton,Qt::NoModifier,map(left*.02+right*.98));
+    };
+    drag(); QCOMPARE(overlay.selectedText(),QString(".49"));
+    QTest::keyClick(&overlay,Qt::Key_C,Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(),QString(".49"));
+    QCOMPARE(overlay.sourceImage(),image);
+    QVERIFY(window.grab().save(artifact+"/image-text-partial-selection.png"));
+    QTest::keyClick(&overlay,Qt::Key_A,Qt::ControlModifier);
+    QVERIFY(overlay.selectedText().contains("记账日期"));
+    QVERIFY(window.grab().save(artifact+"/image-text-all-selection.png"));
+    for (const auto &line:overlay.page().lines) if (line.text=="FloatShot") {
+      const auto quad=line.glyphs.last().quad;
+      auto point=(quad[0]+quad[3])*.05+(quad[1]+quad[2])*.45;
+      QTest::mouseDClick(&overlay,Qt::LeftButton,Qt::NoModifier,content.topLeft()+point.toPoint());
+      QCOMPARE(overlay.selectedText(),QString("FloatShot"));
+    }
+    overlay.finish(); overlay.begin(image);
+    QCOMPARE(overlay.recognitionStarts(),1); QVERIFY(!job->running());
+    // Resizing the surface remaps the same result without another inference.
+    content=QRect(120,70,420,252); window.resize(720,490); drag();
+    QCOMPARE(overlay.selectedText(),QString(".49"));
+    overlay.finish();
+    image.setPixelColor(0,0,Qt::red); overlay.begin(image);
+    QCOMPARE(overlay.recognitionStarts(),2); QVERIFY(job->running());
+    temporary=job->temporaryPath(); overlay.finish();
+    QVERIFY(!job->running()); QVERIFY(!QFileInfo::exists(temporary));
   }
   void gpuAccuracyAndCancellation() {
     const QString expected="中文截图识别测试，录屏已暂停。 FloatShot ABC abc 0123456789 100.50 2026-10-10";

@@ -4,6 +4,7 @@
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
 #include <QtCore/QLoggingCategory>
+#include <QtCore/QStandardPaths>
 #include <QtCore/QTimer>
 #include <QtNetwork/QLocalServer>
 #include <QtNetwork/QLocalSocket>
@@ -14,7 +15,12 @@ int main(int argc, char **argv) {
   QApplication app(argc, argv);
   app.setApplicationName("FloatShotNative");
   app.setOrganizationName("FloatShot");
-  app.setApplicationVersion("0.5.10");
+  app.setApplicationVersion("0.5.11");
+  // This trial has its own configuration/history. Stable v0.5.10 remains usable.
+  if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
+    qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(
+                QStandardPaths::GenericDataLocation) +
+                "/FloatShot/FloatShotNative-ImageTextTrial").toUtf8());
   app.setQuitOnLastWindowClosed(false);
   app.setStyle("Fusion");
   QCommandLineParser parser;

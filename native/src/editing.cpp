@@ -20,6 +20,15 @@ EditingSurface::EditingSurface(Store *s, QWidget *parent, Qt::WindowFlags flags)
   setMouseTracking(true);
   setFocusPolicy(Qt::StrongFocus);
 }
+EditingSurface::~EditingSurface() {
+  // Remove the parent event filter before annotation members are destroyed.
+  // Also stop an in-flight worker before QWidget begins hiding its children.
+  if (imageText) {
+    imageText->disconnect(this);
+    delete imageText;
+    imageText = nullptr;
+  }
+}
 QPointF EditingSurface::imagePoint(QPoint point) const {
   if (!annotation || contentRect().isEmpty())
     return {};
@@ -55,6 +64,8 @@ void EditingSurface::showToolbar() {
                 annotation->redo();
               else if (action == "more")
                 showMore();
+              else if (action == "select_text")
+                startImageText();
               else
                 complete(action == "save" && QApplication::keyboardModifiers() &
                                                  Qt::ShiftModifier
@@ -451,6 +462,10 @@ void EditingSurface::annotationWheel(QWheelEvent *e) {
 bool EditingSurface::annotationKey(QKeyEvent *e) {
   if (!annotation)
     return false;
+  if (e->key() == Qt::Key_F4) {
+    startImageText();
+    return true;
+  }
   auto ctrl = e->modifiers() & Qt::ControlModifier;
   if (ctrl && e->key() >= Qt::Key_1 && e->key() <= Qt::Key_8) {
     chooseTool(QStringList{"rect", "arrow", "pen", "marker", "mosaic", "text",
@@ -526,6 +541,26 @@ void EditingSurface::commitText() {
   setFocus();
   update();
 }
+void EditingSurface::startImageText(const QImage &input, bool recognize) {
+  if (imageText && imageText->isVisible()) { imageText->setFocus(); return; }
+  commitText();
+  const auto image = input.isNull() && annotation ? annotation->render() : input;
+  if (image.isNull()) return;
+  if (!imageText) {
+    imageText = new ImageTextOverlay(this, store, [this] { return contentRect(); },
+                                     property("isPinWindow").toBool());
+    connect(imageText, &ImageTextOverlay::closed, this, [this] {
+      if (isVisible() && property("imageTextToolbarVisible").toBool() && annotation && toolbar) {
+        toolbar->sync(*annotation); positionToolbar(); toolbar->show();
+      }
+      setFocus(); update();
+    });
+  }
+  setProperty("imageTextToolbarVisible", toolbar && toolbar->isVisible());
+  setProperty("imageTextWasEditing", editing);
+  if (toolbar) toolbar->hide();
+  imageText->begin(image, recognize);
+}
 void EditingSurface::showMore() {
   QMenu menu(this);
   menu.setObjectName("annotationMenu");
@@ -540,6 +575,8 @@ void EditingSurface::showMore() {
     update();
   });
   menu.addSeparator();
+  menu.addAction(menuLabel("图片选字（试用）", "F4"), this,
+                   [this] { startImageText(); });
   menu.addAction("文字识别", this, [this] {
     commitText();
     showRecognition(annotation->render(), false, this, store);

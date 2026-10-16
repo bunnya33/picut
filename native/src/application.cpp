@@ -227,7 +227,7 @@ void ApplicationController::showHome() {
   if (!home) {
     home = new QMainWindow;
     home->setAttribute(Qt::WA_DeleteOnClose);
-    home->setWindowTitle("浮光 FloatShot · 0.5.10 原生版");
+    home->setWindowTitle("浮光 FloatShot · 0.5.11 图片选字试用版");
     home->setStyleSheet(theme);
     home->resize(880, 630);
     auto content = new QWidget;

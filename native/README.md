@@ -1,4 +1,8 @@
-# FloatShot Native v0.5.10
+# FloatShot Native v0.5.11 image text trial
+
+This branch adds an F4 image text overlay to captures and pins. OCR produces CTC-aligned character quadrilaterals, mapped back through crop orientation, perspective, tiling and manual rotation into the original bitmap. Dragging selects partial text; Ctrl+C copies, Ctrl+A selects all, Esc/F4 returns to annotation. The original full-text OCR dialog remains available. Completed results are cached per surface until pixels or OCR settings change. The overlay never burns text or highlights into exports.
+
+The trial defaults to `%LOCALAPPDATA%/FloatShot/FloatShotNative-ImageTextTrial`, skips legacy migration and packages to `dist/FloatShot-Native-0.5.11-image-text-trial*`. `run-image-text-trial.ps1` starts it; `run.ps1` continues to start the preserved v0.5.10 release. Git `main` and tag `v0.5.10` retain the stable source baseline. See `docs/版本回滚.md` and `docs/更新记录-v0.5.11-图片选字试用.md`.
 
 Windows C++20 / Qt 6.8.3 Widgets application. No Python interpreter, bindings, build scripts, or runtime are required. Qt Multimedia is an optional DLL loaded on first video preview. Recording uses a separately deployed FFmpeg executable; audio capture uses Windows WASAPI.
 
@@ -14,7 +18,7 @@ Install Visual Studio 2022 or newer with C++ desktop tools and a Windows 10/11 S
 
 `setup-sdk.ps1` fetches the official Qt MSVC x64 SDK, pinned ZXing-C++ source, and standalone FFmpeg, verifies SHA-256 hashes, and uses Windows tar / Expand-Archive. It does not install anything globally. An existing Qt installation can be used with `build.ps1 -QtDir C:/Qt/6.8.3/msvc2022_64`. `build-native.cmd` is a convenience wrapper. Packaging supports `-QtDir`, `-Ffmpeg`, and `-NoZip`.
 
-Executables are built in `build/native/`. The complete runtime folder and ZIP are in `dist/FloatShot-Native-0.5.10*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
+Executables are built in `build/native/`. The complete runtime folder and ZIP are in `dist/FloatShot-Native-0.5.11-image-text-trial*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
 
 v0.5.10 makes the width/dot button a direct stroke/outline selector for tools that have fill/area modes. Left-click switches back without a popup; repeated selection is a no-op. Right-click opens the size slider while preserving the current mode. Screenshot and pin editing share this behavior. Pen, arrow and number tools keep their size-button behavior.
 

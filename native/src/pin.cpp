@@ -24,6 +24,7 @@ PinWindow::PinWindow(const QImage &value, Store *s, QRect source, QString key)
       image(value),
       id(key.isEmpty() ? QUuid::createUuid().toString(QUuid::Id128) : key) {
   setAttribute(Qt::WA_TranslucentBackground);
+  setProperty("isPinWindow", true);
   setAttribute(Qt::WA_DeleteOnClose);
   if (!source.isEmpty()) {
     scale = double(source.width()) / image.width();
@@ -154,7 +155,7 @@ void PinWindow::paintEvent(QPaintEvent *) {
              : displayedImage());
   p.setPen(QPen(QColor(170, 207, 249), 1));
   p.drawRect(frame);
-  paintEditing(p);
+  if (!imageText || !imageText->isVisible()) paintEditing(p);
   if (selected) {
     p.setPen(QColor("#1688ef"));
     p.drawRect(r.adjusted(-1, -1, 0, 0));
@@ -220,6 +221,11 @@ void PinWindow::wheelEvent(QWheelEvent *e) {
   }
 }
 void PinWindow::keyPressEvent(QKeyEvent *e) {
+  if (e->key() == Qt::Key_F4) {
+    commitText();
+    startImageText(displayedImage());
+    return;
+  }
   if (editing && annotationKey(e))
     return;
   if (e->key() == Qt::Key_Space) {
@@ -284,7 +290,8 @@ void PinWindow::contextMenuEvent(QContextMenuEvent *e) {
   QMenu menu(this);
   menu.setObjectName("pinMenu");
   for (const auto &pair :
-       QList<QPair<QString, QString>>{{"edit", "标注"},
+       QList<QPair<QString, QString>>{{"select_text", "图片选字（试用）"},
+                                      {"edit", "标注"},
                                       {"copy", "复制"},
                                       {"save", "保存"},
                                       {"size", "输入缩放比例…"},
@@ -298,7 +305,7 @@ void PinWindow::contextMenuEvent(QContextMenuEvent *e) {
                                       {"scan", "二维码 / 条形码"},
                                       {"close", "关闭"},
                                       {"destroy", "销毁"}}) {
-    auto shortcut = QMap<QString, QString>{{"edit", "Space"}, {"copy", "Ctrl+C"},
+    auto shortcut = QMap<QString, QString>{{"select_text", "F4"}, {"edit", "Space"}, {"copy", "Ctrl+C"},
         {"save", "Ctrl+S"}, {"gray", "5"}, {"close", "Esc"},
         {"destroy", "Shift+Esc"},
         {"through", store->config["hotkeys"].toObject()["through"].toString()}}[pair.first];
@@ -401,6 +408,9 @@ void PinManager::handle(PinWindow *pin, const QString &action) {
       }
       return QString();
     });
+  } else if (action == "select_text") {
+    pin->commitText();
+    pin->startImageText(pin->displayedImage());
   } else if (action == "ocr" || action == "scan")
     showRecognition(pin->displayedImage(), action == "scan", pin, store);
   else if (action == "edit")

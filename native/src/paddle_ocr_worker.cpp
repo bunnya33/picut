@@ -86,6 +86,13 @@ public:
 };
 using Quad = std::array<cv::Point2f, 4>;
 struct Box { Quad quad; cv::Rect bounds; float score; };
+struct Token { QString text; int first, last; };
+struct DecodedLine {
+  QString text;
+  double confidence = 0;
+  std::vector<Token> tokens;
+  double contentSteps = 1;
+};
 Quad ordered(cv::RotatedRect rectangle) {
   cv::Point2f p[4]; rectangle.points(p);
   std::sort(p, p + 4, [](auto a, auto b) { return a.x < b.x; });
@@ -215,16 +222,20 @@ public:
     }
     return boxes;
   }
-  cv::Mat crop(const cv::Mat &image, const Quad &p) {
+  cv::Mat crop(const cv::Mat &image, const Quad &p, Quad &readingQuad) {
+    readingQuad = p;
     int w = std::max(4, int(std::max(cv::norm(p[0]-p[1]), cv::norm(p[2]-p[3]))));
     int h = std::max(4, int(std::max(cv::norm(p[0]-p[3]), cv::norm(p[1]-p[2]))));
     Quad destination{cv::Point2f(0,0), cv::Point2f(float(w-1),0), cv::Point2f(float(w-1),float(h-1)), cv::Point2f(0,float(h-1))};
     cv::Mat out;
     cv::warpPerspective(image, out, cv::getPerspectiveTransform(p.data(), destination.data()), {w,h}, cv::INTER_CUBIC, cv::BORDER_REPLICATE);
-    if (h >= w * 1.5) cv::rotate(out, out, cv::ROTATE_90_COUNTERCLOCKWISE);
+    if (h >= w * 1.5) {
+      cv::rotate(out, out, cv::ROTATE_90_COUNTERCLOCKWISE);
+      readingQuad = {p[1], p[2], p[3], p[0]};
+    }
     return out;
   }
-  void orient(std::vector<cv::Mat> &images) {
+  void orient(std::vector<cv::Mat> &images, std::vector<Quad> &quads) {
     int ch = classifier->shape[2] > 0 ? int(classifier->shape[2]) : 48;
     int cw = classifier->shape[3] > 0 ? int(classifier->shape[3]) : 192;
     for (size_t start=0;start<images.size();start+=16) {
@@ -234,12 +245,15 @@ public:
       if (result.GetTensorTypeAndShapeInfo().GetElementCount() != batch.size()*2) fail("方向模型输出错误。");
       auto values = result.GetTensorData<float>();
       for (size_t i=0;i<batch.size();++i)
-        if (values[i*2+1] > values[i*2] && values[i*2+1] > .9)
+        if (values[i*2+1] > values[i*2] && values[i*2+1] > .9) {
           cv::rotate(images[start+i], images[start+i], cv::ROTATE_180);
+          auto p = quads[start+i];
+          quads[start+i] = {p[2], p[3], p[0], p[1]};
+        }
     }
   }
-  std::vector<std::pair<QString,double>> recognize(const std::vector<cv::Mat> &images) {
-    std::vector<std::pair<QString,double>> decoded(images.size());
+  std::vector<DecodedLine> recognize(const std::vector<cv::Mat> &images) {
+    std::vector<DecodedLine> decoded(images.size());
     std::vector<size_t> order(images.size()); std::iota(order.begin(),order.end(),0);
     std::sort(order.begin(),order.end(),[&](size_t a,size_t b){return double(images[a].cols)/images[a].rows<double(images[b].cols)/images[b].rows;});
     int height = recognizer->shape[2] > 0 ? int(recognizer->shape[2]) : 48;
@@ -265,13 +279,23 @@ public:
       int classes = int(shape[2]);
       for(size_t n=0;n<batch.size();++n) {
         int previous = -1, count = 0; QString text; double score = 0;
+        std::vector<Token> tokens;
         for (int64_t t = 0; t < shape[1]; ++t) {
           auto row = values + (n*shape[1]+t)*classes;
           int current = int(std::max_element(row, row + classes) - row);
-          if (current != 0 && current != previous) { text += dictionary[current]; score += row[current]; ++count; }
+          if (current != 0 && current != previous) {
+            text += dictionary[current]; score += row[current]; ++count;
+            tokens.push_back({dictionary[current], int(t), int(t)});
+          } else if (current != 0 && !tokens.empty()) {
+            tokens.back().last = int(t);
+          }
           previous = current;
         }
-        decoded[order[start+n]]={text.trimmed(), count ? score / count : 0};
+        while (!tokens.empty() && tokens.front().text.trimmed().isEmpty()) tokens.erase(tokens.begin());
+        while (!tokens.empty() && tokens.back().text.trimmed().isEmpty()) tokens.pop_back();
+        int resizedWidth = std::min(width, int(std::ceil(double(height) * batch[n].cols / batch[n].rows)));
+        decoded[order[start+n]]={text.trimmed(), count ? score / count : 0,
+                                std::move(tokens), double(shape[1]) * resizedWidth / width};
       }
       start=end;
       reportProgress("recognize",int(end),int(order.size()));
@@ -281,6 +305,7 @@ public:
   QJsonObject process(const QString &path, int rotation) {
     QElapsedTimer timer; timer.start();
     auto image = loadImage(path);
+    const int originalWidth = image.cols, originalHeight = image.rows;
     if (rotation == 90) cv::rotate(image, image, cv::ROTATE_90_CLOCKWISE);
     if (rotation == 180) cv::rotate(image, image, cv::ROTATE_180);
     if (rotation == 270) cv::rotate(image, image, cv::ROTATE_90_COUNTERCLOCKWISE);
@@ -336,19 +361,59 @@ public:
     QJsonArray lines; QStringList text;
     auto before=timer.elapsed(); std::vector<cv::Mat> crops;
     reportProgress("recognize",0,int(boxes.size()));
-    for (const auto &box : boxes) crops.push_back(crop(image,box.quad));
-    orient(crops); auto directionMs=timer.elapsed()-before;
+    std::vector<Quad> readingQuads;
+    for (const auto &box : boxes) {
+      Quad quad;
+      crops.push_back(crop(image,box.quad,quad));
+      readingQuads.push_back(quad);
+    }
+    orient(crops,readingQuads); auto directionMs=timer.elapsed()-before;
     before=timer.elapsed(); auto decoded=recognize(crops); auto recognitionMs=timer.elapsed()-before;
     for (size_t i=0;i<boxes.size();++i) {
-      const auto &box=boxes[i]; auto [line,confidence]=decoded[i];
+      const auto &recognized = decoded[i];
+      const auto &line = recognized.text;
+      const auto confidence = recognized.confidence;
       if (line.isEmpty() || confidence < .45) continue;
-      QJsonArray quad; for (auto p : box.quad) quad.append(QJsonArray{p.x, p.y});
-      lines.append(QJsonObject{{"text", line}, {"confidence", confidence}, {"quad", quad}});
+      auto originalPoint = [&](cv::Point2f p) -> cv::Point2f {
+        if (rotation == 90) return {p.y, originalHeight - 1.f - p.x};
+        if (rotation == 180) return {originalWidth - 1.f - p.x, originalHeight - 1.f - p.y};
+        if (rotation == 270) return {originalWidth - 1.f - p.y, p.x};
+        return p;
+      };
+      auto jsonQuad = [&](const std::vector<cv::Point2f> &points) {
+        QJsonArray result;
+        for (auto p : points) {
+          p = originalPoint(p);
+          result.append(QJsonArray{qBound(0., double(p.x), double(originalWidth)),
+                                   qBound(0., double(p.y), double(originalHeight))});
+        }
+        return result;
+      };
+      const auto &reading = readingQuads[i];
+      Quad unit{cv::Point2f(0,0), cv::Point2f(1,0), cv::Point2f(1,1), cv::Point2f(0,1)};
+      auto transform = cv::getPerspectiveTransform(unit.data(), reading.data());
+      QJsonArray characters;
+      const auto &tokens = recognized.tokens;
+      auto center = [&](size_t n) {
+        return std::clamp((tokens[n].first + tokens[n].last + 1.) /
+                              (2 * recognized.contentSteps), 0., 1.);
+      };
+      for (size_t n = 0; n < tokens.size(); ++n) {
+        double left = n ? (center(n-1) + center(n)) / 2 : 0;
+        double right = n+1 < tokens.size() ? (center(n) + center(n+1)) / 2 : 1;
+        std::vector<cv::Point2f> band{{float(left),0},{float(right),0},{float(right),1},{float(left),1}}, mapped;
+        cv::perspectiveTransform(band, mapped, transform);
+        characters.append(QJsonObject{{"text", tokens[n].text}, {"quad", jsonQuad(mapped)}});
+      }
+      lines.append(QJsonObject{{"text", line}, {"confidence", confidence},
+                               {"quad", jsonQuad(std::vector<cv::Point2f>(reading.begin(),reading.end()))},
+                               {"characters", characters}});
       text.append(line);
     }
     return {{"text", text.join('\n')}, {"lines", lines}, {"model", modelName}, {"profile", profileName}, {"elapsed_ms", double(timer.elapsed())}, {"rotation", rotation},
       {"timing",QJsonObject{{"decode_ms",double(decodeMs)},{"detect_ms",double(detectMs)},{"direction_ms",double(directionMs)},{"recognition_ms",double(recognitionMs)}}},
-      {"tiles",tileCount},{"detected_lines",int(boxes.size())},{"device",deviceName},{"gpu",gpuEnabled}};
+      {"tiles",tileCount},{"detected_lines",int(boxes.size())},{"device",deviceName},{"gpu",gpuEnabled},
+      {"image_width",originalWidth},{"image_height",originalHeight},{"coordinate_space","original"}};
   }
 };
 }
