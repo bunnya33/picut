@@ -21,7 +21,7 @@ DefaultGroupName=picut
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-MinVersion=10.0.19041
+MinVersion=10.0.17763
 DisableDirPage=no
 DisableProgramGroupPage=yes
 AllowNoIcons=yes
@@ -50,6 +50,10 @@ chinesesimplified.LaunchPicut=启动 picut
 english.LaunchPicut=Launch picut
 chinesesimplified.ReadmeShortcut=使用说明
 english.ReadmeShortcut=User guide
+
+[Messages]
+chinesesimplified.WindowsVersionNotSupported=picut 需要 Windows 10 1809（内部版本 17763）或更新的 Windows 系统。
+english.WindowsVersionNotSupported=picut requires Windows 10 version 1809 (build 17763) or later.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked

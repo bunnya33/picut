@@ -80,7 +80,7 @@ class RecordingOverlayTests : public QObject {
     preview.save(artifacts + "/" + name + ".png");
   }
   void recordAndCheck(QRect region, const QString &name, bool checkPause,
-                      bool liveCapture) {
+                      bool liveCapture, bool compatibility = false) {
     QTemporaryDir dir;
     QWidget canvas(nullptr, Qt::Tool | Qt::FramelessWindowHint |
                                 Qt::WindowStaysOnTopHint);
@@ -105,18 +105,23 @@ class RecordingOverlayTests : public QObject {
               "session; no desktop video was saved.");
     }
     Recorder recorder(dir.path() + "/recording");
-    RecordingOverlay overlay(&recorder, region, false, false);
+    RecordingOverlay overlay(&recorder, region, false, false, nullptr,
+        compatibility ? std::function<bool(QWidget *)>([](QWidget *){return false;}) : std::function<bool(QWidget *)>());
     QVERIFY(overlay.show());
-    QVERIFY(overlay.captureExcluded());
-    QCOMPARE(overlay.boundary()->geometry(), region);
-    QVERIFY(region.contains(overlay.controls()->geometry()));
+    if (compatibility) {
+      QVERIFY(overlay.compatibilityMode()); QVERIFY(!overlay.captureExcluded());
+      if (overlay.controls()->isVisible()) QVERIFY(!region.intersects(overlay.controls()->geometry()));
+    } else {
+      QVERIFY(overlay.captureExcluded()); QCOMPARE(overlay.boundary()->geometry(), region);
+      QVERIFY(region.contains(overlay.controls()->geometry()));
+    }
     auto frameWindow = reinterpret_cast<HWND>(overlay.boundary()->winId());
     QVERIFY(GetWindowLongPtrW(frameWindow, GWL_EXSTYLE) & WS_EX_TRANSPARENT);
     for (auto widget : {overlay.boundary(), overlay.controls()}) {
       DWORD affinity = 0;
       QVERIFY(GetWindowDisplayAffinity(reinterpret_cast<HWND>(widget->winId()),
                                        &affinity));
-      QCOMPARE(affinity, DWORD(WDA_EXCLUDEFROMCAPTURE));
+      QCOMPARE(affinity, DWORD(compatibility ? WDA_NONE : WDA_EXCLUDEFROMCAPTURE));
     }
     auto time = overlay.controls()->findChild<QLabel *>("recordingTime");
     auto state = overlay.controls()->findChild<QLabel *>("recordingState");
@@ -174,9 +179,8 @@ class RecordingOverlayTests : public QObject {
          {static_cast<QWidget *>(time), static_cast<QWidget *>(pause),
           static_cast<QWidget *>(stop)})
       for (int x : {2, widget->width() / 2, widget->width() - 3})
-        samplePoints.append(
-            widget->mapToGlobal(QPoint(x, widget->height() / 2)) -
-            region.topLeft());
+        if (!compatibility) samplePoints.append(
+            widget->mapToGlobal(QPoint(x, widget->height() / 2)) - region.topLeft());
     QTest::mouseClick(stop, Qt::LeftButton);
     QVERIFY(!stop->isEnabled());
     QVERIFY(!pause->isEnabled());
@@ -253,6 +257,12 @@ private slots:
   }
   void regionControlsTimePauseAndSave() {
     recordAndCheck(standardRegion(), "region", true, false);
+  }
+  void compatibilityRegionRecordsWithoutOverlay() {
+    recordAndCheck(standardRegion(), "compatibility-region", true, true, true);
+  }
+  void compatibilityFullscreenRecordsWithoutOverlay() {
+    recordAndCheck(QGuiApplication::primaryScreen()->geometry(), "compatibility-fullscreen", false, true, true);
   }
   void countdownShowsBoundaryAndSupportsCancel() {
     QTemporaryDir dir; Recorder recorder(dir.path());

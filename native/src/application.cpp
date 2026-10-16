@@ -2,6 +2,8 @@
 #include "menu.h"
 #include "recording_settings.h"
 #include "compact_ui.h"
+#include "hotkey.h"
+#include "panel_theme.h"
 #include <future>
 #include "native_windows.h"
 #include "recognition.h"
@@ -15,6 +17,7 @@
 #include <QtCore/QLibrary>
 #include <QtCore/QMimeData>
 #include <QtCore/QSaveFile>
+#include <QtCore/QScopeGuard>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtCore/QtMath>
@@ -42,17 +45,6 @@
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QVBoxLayout>
 
-static const char *theme =
-    "QMainWindow,QDialog{background:#101820;}QWidget{font-family:'Microsoft "
-    "Yahei "
-    "UI';font-size:13px;color:#e6edf4;}QPushButton{background:#223140;border:"
-    "1px solid #32475a;border-radius:5px;padding:8px "
-    "14px;}QPushButton:hover{background:#2d4354;}QLineEdit,QSpinBox,QComboBox,"
-    "QListWidget,QTabWidget::pane{background:#14252d;border:1px solid "
-    "#334658;padding:4px;}QCheckBox{spacing:7px;}QMenu{background:#172430;}"
-    "QMenu::item:selected{background:#24564c;}QTabBar::tab{background:#18232f;"
-    "padding:9px "
-    "16px;}QTabBar::tab:selected{background:#24564c;color:#70ecd6;}";
 ApplicationController::ApplicationController(bool test)
     : QObject(), store(), pins(&store, this), testing(test) {
   connect(&store, &Store::historyChanged, this, &ApplicationController::refreshHistory);
@@ -137,6 +129,17 @@ void ApplicationController::updateTrayMenu() {
     if (key == "pause" || key == "stop")
       action->setEnabled(recording() && !recorder->finalizing());
   }
+  if (home) {
+    for (auto button : home->findChildren<QPushButton *>()) {
+      const auto key = button->property("hotkey_action").toString();
+      if (key.isEmpty()) continue;
+      const auto label = button->property("base_label").toString();
+      const auto shortcut = bindings[key].toString();
+      button->setText(label + (shortcut.isEmpty() ? QString() : " · " + shortcut));
+    }
+    home->statusBar()->showMessage(QString("%1 截图 · %2 区域录屏 · %3 贴图")
+        .arg(bindings["capture"].toString(), bindings["record"].toString(), bindings["pin"].toString()));
+  }
 }
 void ApplicationController::registerHotkeys() {
   updateTrayMenu();
@@ -148,33 +151,10 @@ void ApplicationController::registerHotkeys() {
                       "record",  "pause", "stop"};
   QStringList failures;
   for (int n = 0; n < actions.size(); ++n) {
-    auto value = bindings[actions[n]].toString().toUpper();
-    auto parts = value.split('+');
-    UINT modifiers = MOD_NOREPEAT;
-    for (auto part : parts) {
-      if (part == "CTRL")
-        modifiers |= MOD_CONTROL;
-      else if (part == "ALT")
-        modifiers |= MOD_ALT;
-      else if (part == "SHIFT")
-        modifiers |= MOD_SHIFT;
-      else if (part == "META" || part == "WIN")
-        modifiers |= MOD_WIN;
-    }
-    auto key = parts.last();
-    UINT vk = 0;
-    if (key.startsWith('F')) {
-      bool ok;
-      int number = key.mid(1).toInt(&ok);
-      if (ok && number >= 1 && number <= 24)
-        vk = VK_F1 + number - 1;
-    } else if (key.size() == 1)
-      vk = key[0].unicode();
-    else if (key == "SPACE")
-      vk = VK_SPACE;
-    else if (key == "ESC")
-      vk = VK_ESCAPE;
-    if (vk && RegisterHotKey(nullptr, n + 1, modifiers, vk))
+    const auto value = bindings[actions[n]].toString();
+    if (value.isEmpty()) continue;
+    UINT modifiers = 0, vk = 0;
+    if (nativeHotkey(hotkeySequence(value), modifiers, vk) && RegisterHotKey(nullptr, n + 1, modifiers, vk))
       hotkeyIds.append(n + 1);
     else
       failures.append(value);
@@ -186,6 +166,7 @@ bool ApplicationController::nativeEventFilter(const QByteArray &, void *raw,
                                               qintptr *) {
   auto message = static_cast<MSG *>(raw);
   if (message->message == WM_HOTKEY) {
+    if (hotkeysSuspended) return true;
     switch (message->wParam) {
     case 1:
       beginCapture();
@@ -227,8 +208,8 @@ void ApplicationController::showHome() {
   if (!home) {
     home = new QMainWindow;
     home->setAttribute(Qt::WA_DeleteOnClose);
-    home->setWindowTitle("picut · 0.5.13");
-    home->setStyleSheet(theme);
+    home->setWindowTitle("picut · " + QCoreApplication::applicationVersion());
+    applyPanelTheme(home);
     home->resize(880, 630);
     auto content = new QWidget;
     auto layout = new QVBoxLayout(content);
@@ -240,11 +221,13 @@ void ApplicationController::showHome() {
     layout->addSpacing(20);
     auto row = new QHBoxLayout;
     for (const auto &pair : QList<QPair<QString, std::function<void()>>>{
-             {"截图与标注 · F1", [this] { beginCapture(); }},
-             {"剪贴板贴图 · F3", [this] { pinClipboard(); }},
+             {"截图与标注", [this] { beginCapture(); }},
+             {"剪贴板贴图", [this] { pinClipboard(); }},
              {"区域录屏", [this] { beginCapture(true); }},
              {"设置", [this] { openSettings(); }}}) {
       auto b = new QPushButton(pair.first);
+      const auto key = QMap<QString, QString>{{"截图与标注", "capture"}, {"剪贴板贴图", "pin"}, {"区域录屏", "record"}}.value(pair.first);
+      if (!key.isEmpty()) { b->setProperty("hotkey_action", key); b->setProperty("base_label", pair.first); }
       b->setMinimumHeight(60);
       row->addWidget(b);
       connect(b, &QPushButton::clicked, this, pair.second);
@@ -295,10 +278,10 @@ void ApplicationController::showHome() {
     layout->addLayout(actions);
     layout->addWidget(new QLabel("关闭工作台后常驻托盘 · 退出请使用托盘菜单"));
     home->setCentralWidget(content);
-    home->statusBar()->showMessage("F1 截图 · F2 区域录屏 · F3 贴图");
     historyDirty = true;
   }
   home->show();
+  updateTrayMenu();
   if (historyDirty) refreshHistory();
   home->raise();
   home->activateWindow();
@@ -493,9 +476,18 @@ void ApplicationController::pinClipboard() {
   notify("剪贴板内容已贴到桌面");
 }
 void ApplicationController::openSettings() {
+  if (hotkeysSuspended) return;
+  hotkeysSuspended = true;
+  for (int id : hotkeyIds) UnregisterHotKey(nullptr, id);
+  hotkeyIds.clear();
+  auto resumeHotkeys = qScopeGuard([this] {
+    hotkeysSuspended = false;
+    if (!testing) registerHotkeys();
+  });
   QDialog dialog(home);
+  dialog.setObjectName("settingsDialog");
   dialog.setWindowTitle("picut · 设置");
-  dialog.setStyleSheet(theme);
+  applyPanelTheme(&dialog);
   dialog.resize(640, 560);
   auto root = new QVBoxLayout(&dialog);
   auto tabs = new QTabWidget;
@@ -552,7 +544,7 @@ void ApplicationController::openSettings() {
   tabs->addTab(general, "常规与存储");
   auto hotkeys = new QWidget;
   auto hotkeyForm = new QFormLayout(hotkeys);
-  QMap<QString, QLineEdit *> bindings;
+  QMap<QString, HotkeyEdit *> bindings;
   for (const auto &pair :
        QList<QPair<QString, QString>>{{"capture", "截图"},
                                       {"pin", "贴图"},
@@ -561,11 +553,19 @@ void ApplicationController::openSettings() {
                                       {"record", "区域录屏"},
                                       {"pause", "暂停 / 继续"},
                                       {"stop", "停止录屏"}}) {
-    auto edit = new QLineEdit(
+    auto edit = new HotkeyEdit(
         store.config["hotkeys"].toObject()[pair.first].toString());
+    edit->setObjectName("hotkey_" + pair.first);
     bindings[pair.first] = edit;
     hotkeyForm->addRow(pair.second, edit);
   }
+  auto hotkeyHelp = new QLabel("点击快捷键框后直接按组合键，按 Tab 切换下一项；点击 × 可停用。设置期间暂停全局热键，保存或取消后恢复。");
+  hotkeyHelp->setWordWrap(true); hotkeyForm->addRow(hotkeyHelp);
+  auto hotkeyError = new QLabel;
+  hotkeyError->setObjectName("hotkeyError"); hotkeyError->setWordWrap(true);
+  hotkeyError->setStyleSheet("color:#b00020;"); hotkeyError->hide();
+  hotkeyForm->addRow(hotkeyError);
+  for (auto edit : bindings) connect(edit,&QKeySequenceEdit::keySequenceChanged,hotkeyError,&QWidget::hide);
   tabs->addTab(hotkeys, "全局快捷键");
   auto ocr = new QWidget;
   auto ocrForm = new QFormLayout(ocr);
@@ -591,7 +591,22 @@ void ApplicationController::openSettings() {
   buttons->button(QDialogButtonBox::Save)->setText("保存设置");
   buttons->button(QDialogButtonBox::Cancel)->setText("取消");
   root->addWidget(buttons);
-  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+    QSet<quint64> used;
+    for (auto edit : bindings) {
+      const auto sequence = edit->keySequence();
+      if (sequence.isEmpty()) continue;
+      UINT modifiers = 0, vk = 0;
+      const bool valid = nativeHotkey(sequence, modifiers, vk);
+      const quint64 signature = (quint64(modifiers) << 32) | vk;
+      if (!valid || used.contains(signature)) {
+        hotkeyError->setText(valid ? "快捷键重复，请为不同操作选择不同组合键。" : "此按键不能用作全局快捷键，请重新按下组合键。");
+        hotkeyError->show(); tabs->setCurrentWidget(hotkeys); edit->setFocus(); return;
+      }
+      used.insert(signature);
+    }
+    dialog.accept();
+  });
   connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
   if (dialog.exec() != QDialog::Accepted)
     return;
@@ -604,7 +619,7 @@ void ApplicationController::openSettings() {
     config[i.key()] = i.value()->text();
   QJsonObject keys;
   for (auto i = bindings.begin(); i != bindings.end(); ++i)
-    keys[i.key()] = i.value()->text();
+    keys[i.key()] = i.value()->keySequence().toString(QKeySequence::PortableText);
   config["hotkeys"] = keys;
   config["ocr_engine"] = "paddle";
   config["ocr_profile"] = ocrProfile->currentData().toString();
@@ -612,8 +627,6 @@ void ApplicationController::openSettings() {
   store.config = config;
   store.saveConfig();
   updateTrayMenu();
-  if (!testing)
-    registerHotkeys();
   if (home && !config["notifications_enabled"].toBool())
     home->statusBar()->clearMessage();
   notify("设置已保存");
@@ -647,7 +660,7 @@ void ApplicationController::prepareRecord(QRect region, bool showSettings) {
   }
   recordSetup=true;
   if (showSettings) {
-    RecordingSettingsDialog dialog(&store,region,true,home); dialog.setStyleSheet(theme);
+    RecordingSettingsDialog dialog(&store,region,true,home);
     if (dialog.exec()!=QDialog::Accepted) { recordSetup=false; return; }
   }
   const auto options=savedRecordingOptions(store.config,physicalRect(region),

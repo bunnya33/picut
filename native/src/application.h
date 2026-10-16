@@ -43,7 +43,7 @@ private:
   QMenu *trayMenu = nullptr;
   QPointer<QListWidget> historyList;
   QPointer<QWidget> recordCountdown;
-  bool testing = false, pending = false, recordSetup = false;
+  bool testing = false, pending = false, recordSetup = false, hotkeysSuspended = false;
   bool historyDirty = true;
   QCache<QString, QPixmap> historyThumbnails{128};
   QList<int> hotkeyIds;

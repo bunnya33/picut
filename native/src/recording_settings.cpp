@@ -1,4 +1,5 @@
 #include "recording_settings.h"
+#include "panel_theme.h"
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialogButtonBox>
@@ -27,6 +28,7 @@ RecordOptions savedRecordingOptions(const QJsonObject &config, QRect region,cons
 RecordingSettingsDialog::RecordingSettingsDialog(Store *store,QRect region,bool start,QWidget *parent)
     : QDialog(parent) {
   setObjectName("recordingSettings"); setWindowTitle("picut · 录屏设置");
+  applyPanelTheme(this);
   auto root=new QVBoxLayout(this); auto form=new QFormLayout; root->addLayout(form);
   form->addRow(new QLabel(QString("录制区域 %1 × %2").arg(region.width()).arg(region.height())));
   auto system=new QCheckBox("录入系统声音"); system->setObjectName("recordSystemAudio");

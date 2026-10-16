@@ -1,6 +1,5 @@
 #pragma once
 #include "recognition.h"
-#include <QtCore/QElapsedTimer>
 #include <QtGui/QPolygonF>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QLabel>
@@ -80,13 +79,8 @@ private:
   QImage source;
   QString profile, acceleration;
   QFrame *bar;
-  QLabel *status;
   QTextEdit *editor;
   QWidget *divider;
-  QToolButton *copyButton, *allButton, *copyAllButton, *expandButton;
-  QElapsedTimer elapsed;
-  QTimer timer;
-  QString phase;
   bool ready = false, dragging = false, active = false;
   bool syncing = false, collapsed = false, panning = false, space = false;
   bool resizingPanel = false;

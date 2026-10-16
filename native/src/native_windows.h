@@ -9,7 +9,10 @@
 #include <psapi.h>
 
 inline void enableDpi() {
-  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  using SetAwareness = BOOL(WINAPI *)(DPI_AWARENESS_CONTEXT);
+  auto setAwareness = reinterpret_cast<SetAwareness>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext"));
+  if (!setAwareness || !setAwareness(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+    SetProcessDPIAware();
 }
 inline bool excludeCapture(QWidget *widget) {
   auto window = reinterpret_cast<HWND>(widget->winId());

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FloatShotNative VERSION 0.5.13 LANGUAGES CXX RC)
+project(FloatShotNative VERSION 0.5.14 LANGUAGES CXX RC)
 # CMake can misdecode the Chinese MSVC /showIncludes prefix on UTF-8 consoles.
 if(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX MATCHES "娉ㄦ剰")
     set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件: ")
@@ -71,6 +71,7 @@ target_compile_options(FloatShotNative PRIVATE /utf-8 /W4 /permissive-)
 target_link_libraries(FloatShotNative PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network
     user32 gdi32 ole32 uuid shell32 dwmapi psapi avrt windowsapp ZXing::ZXing)
 set(TOOLBAR_GLYPHS
+    assets/toolbar/panel-check.png assets/toolbar/panel-up.png assets/toolbar/panel-down.png
     assets/toolbar/shapes.png assets/toolbar/arrow.png assets/toolbar/pen.png
     assets/toolbar/marker.png assets/toolbar/mosaic.png assets/toolbar/text.png
     assets/toolbar/eraser.png assets/toolbar/undo.png assets/toolbar/redo.png

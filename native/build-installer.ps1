@@ -2,7 +2,7 @@
 param([string]$PackageDir, [string]$Iscc)
 $ErrorActionPreference = 'Stop'
 $picutRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.13' }
+if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.14' }
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $picutMain = Join-Path $PackageDir 'picut.exe'
 $picutVersion = (Get-Item -LiteralPath $picutMain).VersionInfo.ProductVersion
@@ -13,7 +13,7 @@ $picutRequired = @(
     'FloatShotPaddleOcr.exe', 'onnxruntime.dll', 'qt.conf',
     'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'vcruntime140.dll', 'msvcp140.dll',
     'platforms/qwindows.dll', 'gpu/FloatShotPaddleOcr.exe', 'gpu/onnxruntime.dll',
-    'gpu/DirectML.dll', 'ocr/models.json', 'licenses', 'THIRD_PARTY_NOTICES.md', '使用说明.txt'
+    'gpu/DirectML.dll', 'ocr/models.json', 'licenses', 'THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd'
 )
 foreach ($picutRelative in $picutRequired) {
     if (-not (Test-Path -LiteralPath (Join-Path $PackageDir $picutRelative))) {
@@ -46,7 +46,7 @@ $picutPayload = Join-Path $picutStage 'payload'
 New-Item -ItemType Directory -Path $picutPayload -Force | Out-Null
 Get-ChildItem -LiteralPath $PackageDir -File | Where-Object {
     $_.Extension -in @('.exe', '.dll', '.ico', '.conf') -or
-    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt')
+    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd')
 } | Copy-Item -Destination $picutPayload
 Get-ChildItem -LiteralPath $PackageDir -Directory | Where-Object {
     $_.Name -notin @('annotation-previews', 'image-text-previews')

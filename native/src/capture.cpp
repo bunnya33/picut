@@ -102,7 +102,9 @@ static QImage captureScreen(const QRect &area) {
   if (source && target && bitmap) {
     auto previous = SelectObject(target, bitmap);
     if (BitBlt(target, 0, 0, area.width(), area.height(), source, area.x(),
-               area.y(), SRCCOPY | CAPTUREBLT))
+               area.y(), SRCCOPY | CAPTUREBLT) ||
+        BitBlt(target, 0, 0, area.width(), area.height(), source, area.x(),
+               area.y(), SRCCOPY))
       image = QImage(static_cast<uchar *>(pixels), area.width(), area.height(),
                      QImage::Format_RGB32)
                   .copy();

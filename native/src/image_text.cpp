@@ -15,6 +15,7 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QTextEdit>
+#include <QtWidgets/QPushButton>
 #include <QtGui/QCursor>
 #include <QtWidgets/QVBoxLayout>
 #include <algorithm>
@@ -160,20 +161,6 @@ ImageTextLayout ImageTextLayout::arrange(QRect image, QRect available,
   }
   return result;
 }
-static QIcon textActionIcon(bool all, bool retry = false) {
-  QPixmap pixmap(24,24); pixmap.fill(Qt::transparent);
-  QPainter p(&pixmap); p.setRenderHint(QPainter::Antialiasing);
-  p.setPen(QPen(QColor("#555555"),1.3));
-  if (retry) {
-    p.drawArc(QRectF(5,5,14,14),35*16,290*16);
-    p.drawPolyline(QPolygonF{{18,3},{19,8},{14,7}});
-  } else {
-    p.drawRoundedRect(QRectF(8,7,10,14),1,1);
-    p.drawPolyline(QPolygonF{{14,5},{14,3},{4,3},{4,17},{6,17}});
-    if (all) { p.drawLine(10,11,16,11); p.drawLine(10,14,16,14); p.drawLine(10,17,14,17); }
-  }
-  return QIcon(pixmap);
-}
 ImageTextOverlay::ImageTextOverlay(QWidget *parent, Store *s,
                                    std::function<QRect()> rect)
     : QWidget(parent, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint),
@@ -185,35 +172,13 @@ ImageTextOverlay::ImageTextOverlay(QWidget *parent, Store *s,
   if (parent) parent->installEventFilter(this);
   setStyleSheet(
       "QFrame#imageTextControls{background:#f8f8f8;border:1px solid #e2e2e2;}"
-      "QFrame#imageTextControls QLabel{color:#333;background:transparent;border:0;}"
-      "QTextEdit#imageTextResult{background:transparent;border:0;color:#222;"
+      "QTextEdit#imageTextResult{background:white;border:1px solid #d8d8d8;color:#222;"
       "selection-background-color:#b6d8ff;selection-color:#172332;}"
-      "QToolButton{color:#444;background:transparent;border:0;padding:5px;}"
-      "QToolButton:hover{background:#e9e9e9;}QToolButton:disabled{color:#aaa;}"
-      "QToolButton#imageTextExpand{background:#f8f8f8;border:1px solid #ddd;}");
+      "QPushButton{color:#222;background:#fafafa;border:1px solid #c5c5c5;border-radius:3px;padding:5px 18px;}"
+      "QPushButton:hover{background:#eaf3fc;border-color:#7eb4ea;}");
   bar = new QFrame(this); bar->setObjectName("imageTextControls");
   auto root = new QVBoxLayout(bar);
-  root->setContentsMargins(16,12,16,14); root->setSpacing(8);
-  auto header = new QHBoxLayout; header->setSpacing(3);
-  auto title = new QLabel("识别文字");
-  auto titleFont = title->font(); titleFont.setPointSizeF(11);
-  title->setFont(titleFont);
-  header->addWidget(title); header->addStretch();
-  auto button = [&](const QString &name, const QString &label, const QString &tip) {
-    auto b = new QToolButton(bar); b->setObjectName(name);
-    b->setText(label); b->setToolTip(tip); b->setFocusPolicy(Qt::NoFocus);
-    return b;
-  };
-  allButton = button("imageTextSelectAll","全选","全选 · Ctrl+A");
-  auto collapse = button("imageTextCollapse","›","收起文字面板");
-  auto close = button("imageTextExit","×","退出文字识别 · Esc / F4");
-  collapse->setFixedSize(28,28); close->setFixedSize(28,28);
-  header->addWidget(allButton); header->addWidget(collapse); header->addWidget(close);
-  root->addLayout(header);
-  status = new QLabel(bar); status->setObjectName("imageTextStatus");
-  status->setWordWrap(true); status->setMinimumHeight(20);
-  status->setStyleSheet("color:#777;font-size:12px;");
-  root->addWidget(status);
+  root->setContentsMargins(10,10,10,10); root->setSpacing(8);
   editor = new QTextEdit(bar); editor->setObjectName("imageTextResult");
   editor->setAcceptRichText(false);
   editor->setReadOnly(true); editor->setUndoRedoEnabled(false);
@@ -230,52 +195,16 @@ ImageTextOverlay::ImageTextOverlay(QWidget *parent, Store *s,
   editor->setPalette(palette);
   editor->installEventFilter(this); editor->viewport()->installEventFilter(this);
   root->addWidget(editor,1);
-  auto zoomRow = new QHBoxLayout; zoomRow->setSpacing(4);
-  auto hint = new QLabel("图片"); hint->setStyleSheet("color:#888;font-size:12px;");
-  auto fit = button("imageTextFit","适应窗口","显示完整图片");
-  auto actual = button("imageTextActualSize","100%","按原始像素查看");
-  zoomRow->addWidget(hint); zoomRow->addStretch();
-  zoomRow->addWidget(fit); zoomRow->addWidget(actual);
-  root->addLayout(zoomRow);
-  auto actions = new QHBoxLayout; actions->setSpacing(6);
-  copyButton = button("imageTextCopy","复制选中","Ctrl+C");
-  copyAllButton = button("imageTextCopyAll","复制全文","复制全部识别文字");
-  auto retry = button("imageTextRetry","重试","重新识别当前原图");
-  for (auto b : {copyButton,copyAllButton,retry}) {
-    b->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-    b->setIcon(textActionIcon(b==copyAllButton,b==retry));
-    b->setIconSize({22,22}); actions->addWidget(b,1);
-  }
+  auto actions = new QHBoxLayout; actions->addStretch();
+  auto cancel = new QPushButton("取消",bar); cancel->setObjectName("imageTextCancel");
+  cancel->setFocusPolicy(Qt::NoFocus); actions->addWidget(cancel);
   root->addLayout(actions);
+  connect(cancel,&QPushButton::clicked,this,&ImageTextOverlay::finish);
   divider = new QWidget(this); divider->setObjectName("imageTextDivider");
   divider->setCursor(Qt::SplitHCursor); divider->setStyleSheet("background:#e1e1e1;");
   divider->installEventFilter(this);
-  expandButton = new QToolButton(this); expandButton->setObjectName("imageTextExpand");
-  expandButton->setText("‹ 文字面板"); expandButton->setToolTip("展开文字面板 · Esc 退出");
-  expandButton->setFocusPolicy(Qt::NoFocus);
-  connect(expandButton,&QToolButton::clicked,this,[this]{setPanelCollapsed(false);});
-  connect(collapse,&QToolButton::clicked,this,[this]{setPanelCollapsed(true);});
-  connect(close,&QToolButton::clicked,this,&ImageTextOverlay::finish);
-  connect(allButton,&QToolButton::clicked,this,&ImageTextOverlay::selectAll);
-  connect(copyButton,&QToolButton::clicked,this,&ImageTextOverlay::copySelection);
-  connect(copyAllButton,&QToolButton::clicked,this,&ImageTextOverlay::copyAll);
-  connect(retry,&QToolButton::clicked,this,&ImageTextOverlay::recognize);
-  connect(fit,&QToolButton::clicked,this,&ImageTextOverlay::fitImage);
-  connect(actual,&QToolButton::clicked,this,[this] {
-    const auto r=previewRect();
-    if (r.width()>0) zoomAt(source.width()/(r.width()*devicePixelRatioF()),layout.viewport.center());
-  });
   connect(editor,&QTextEdit::selectionChanged,this,&ImageTextOverlay::editorSelectionChanged);
   connect(&job,&PaddleOcrJob::finished,this,&ImageTextOverlay::setResult);
-  connect(&job,&PaddleOcrJob::progress,this,[this](const QString &name,int done,int total) {
-    if (name=="recognize") phase=QString("识别中 %1/%2").arg(done).arg(total);
-    else if (name=="detect") phase="查找文字中";
-    else if (name=="fallback") phase="切换 CPU 识别";
-    else phase="准备识别中";
-  });
-  connect(&timer,&QTimer::timeout,this,[this] {
-    status->setText(phase+QString(" · %1 秒").arg(elapsed.elapsed()/1000.,0,'f',1));
-  });
   hide();
 }
 void ImageTextOverlay::begin(const QImage &image,bool autoRecognize) {
@@ -283,24 +212,22 @@ void ImageTextOverlay::begin(const QImage &image,bool autoRecognize) {
   auto selectedProfile=store?store->config["ocr_profile"].toString("common"):QString("common");
   auto selectedAcceleration=store?store->config["ocr_acceleration"].toString("auto"):QString("auto");
   const bool cached=ready && image==source && profile==selectedProfile && acceleration==selectedAcceleration;
-  job.cancel(); timer.stop();
+  job.cancel();
   source=image; profile=selectedProfile; acceleration=selectedAcceleration;
   anchor=caret=-1; dragging=panning=space=false; active=true; collapsed=false;
   if (!cached) { ready=false; document={}; }
   updateEditor();
   editor->setPlaceholderText("等待识别结果…");
   place(); show(); raise(); activateWindow(); setFocus(Qt::OtherFocusReason);
-  if (cached) { status->setText("拖选文字 · 两侧同步（已缓存）"); selectionChanged(); }
-  else if (autoRecognize) recognize();
-  else { status->setText("等待识别结果"); selectionChanged(); }
+  if (!cached && autoRecognize) recognize();
+  selectionChanged();
   update();
 }
 void ImageTextOverlay::recognize() {
   job.cancel(); ready=false; document={}; anchor=caret=-1;
   { QSignalBlocker blocker(editor); editor->clear(); }
   editor->setPlaceholderText("正在识别文字…");
-  phase="准备识别中"; status->setText(phase); status->setToolTip({});
-  elapsed.start(); timer.start(100); ++starts;
+  ++starts;
   selectionChanged(); job.start(source,profile,0,acceleration);
 }
 void ImageTextOverlay::updateEditor() {
@@ -313,16 +240,13 @@ void ImageTextOverlay::updateEditor() {
   editor->document()->setModified(false);
 }
 void ImageTextOverlay::setResult(const QJsonObject &result) {
-  timer.stop(); if (!active) return;
+  if (!active) return;
   anchor=caret=-1; dragging=false;
   if (result.contains("error")) {
     ready=false; document={};
-    status->setText("识别失败 · 可重试"); status->setToolTip(result["error"].toString());
     editor->setPlaceholderText(result["error"].toString());
   } else {
     document.load(result); ready=true;
-    status->setText(document.text.isEmpty()?"没有识别到文字 · 可重试":"拖选文字 · 两侧同步 · Ctrl+C 复制");
-    status->setToolTip("图片滚轮缩放，按住空格拖动；Esc 返回");
     editor->setPlaceholderText("没有识别到文字");
   }
   updateEditor();
@@ -331,7 +255,7 @@ void ImageTextOverlay::setResult(const QJsonObject &result) {
 void ImageTextOverlay::finish() {
   if (!active) return;
   active=false; dragging=panning=space=resizingPanel=false;
-  job.cancel(); timer.stop(); hide(); emit closed();
+  job.cancel(); hide(); emit closed();
 }
 void ImageTextOverlay::closeEvent(QCloseEvent *event) { finish(); event->accept(); }
 QRect ImageTextOverlay::sourceGlobalRect() const {
@@ -352,8 +276,6 @@ void ImageTextOverlay::place(bool resetView) {
   setGeometry(layout.window);
   bar->setGeometry(layout.panel); bar->setVisible(!collapsed);
   divider->setGeometry(layout.divider); divider->setVisible(!collapsed && !layout.divider.isEmpty());
-  expandButton->setGeometry(qMax(0,width()-118),10,106,32);
-  expandButton->setVisible(collapsed); expandButton->raise();
   if (resetView) { zoom=1; pan={}; }
   clampPan(); update();
 }
@@ -464,9 +386,6 @@ void ImageTextOverlay::selectionChanged(bool fromEditor) {
     }
     editor->setExtraSelections(selections);
   }
-  copyButton->setEnabled(ready && anchor>=0 && caret>=0 && anchor!=caret);
-  allButton->setEnabled(ready && !document.text.isEmpty());
-  copyAllButton->setEnabled(ready && !document.text.isEmpty());
   syncing=false; update();
 }
 void ImageTextOverlay::editorSelectionChanged() {
@@ -497,12 +416,10 @@ void ImageTextOverlay::copySelection() {
   const auto text=selectedText();
   if (text.isEmpty()) return;
   QApplication::clipboard()->setText(text);
-  status->setText(QString("已复制 %1 个字符 · 可继续选择").arg(text.size()));
 }
 void ImageTextOverlay::copyAll() {
   if (document.text.isEmpty()) return;
   QApplication::clipboard()->setText(document.text);
-  status->setText("已复制全文");
 }
 void ImageTextOverlay::mousePressEvent(QMouseEvent *event) {
   if (event->button()!=Qt::LeftButton && event->button()!=Qt::MiddleButton) return;
@@ -572,6 +489,11 @@ void ImageTextOverlay::contextMenuEvent(QContextMenuEvent *event) {
   menu.addAction("全选\tCtrl+A",this,&ImageTextOverlay::selectAll)->setEnabled(!document.text.isEmpty());
   menu.addAction(collapsed?"展开文字面板":"收起文字面板",this,[this]{setPanelCollapsed(!collapsed);});
   menu.addAction("适应窗口\tCtrl+0",this,&ImageTextOverlay::fitImage);
+  menu.addAction("100%",this,[this] {
+    const auto r=previewRect();
+    if (r.width()>0) zoomAt(source.width()/(r.width()*devicePixelRatioF()),layout.viewport.center());
+  });
+  menu.addAction("重新识别",this,&ImageTextOverlay::recognize);
   menu.addSeparator(); menu.addAction("退出文字识别\tEsc",this,&ImageTextOverlay::finish);
   menu.exec(event->globalPos());
 }

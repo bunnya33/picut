@@ -4,6 +4,8 @@
 #include <QtGui/QCloseEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
+#include <QtGui/QRegion>
+#include <limits>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
@@ -22,6 +24,13 @@ public:
     setAttribute(Qt::WA_TranslucentBackground);
     setAttribute(Qt::WA_ShowWithoutActivating);
     setGeometry(region);
+    captureRegion = region;
+  }
+  void setExterior(bool value) {
+    if (exterior == value) return;
+    exterior = value;
+    setGeometry(value ? captureRegion.adjusted(-4,-4,4,4) : captureRegion);
+    update();
   }
   void setPaused(bool paused) {
     QColor next = paused ? QColor("#f5b84b") : QColor("#ff4c5e");
@@ -37,6 +46,7 @@ protected:
     p.setCompositionMode(QPainter::CompositionMode_Source);
     p.fillRect(rect(), Qt::transparent);
     p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    if (exterior) p.setClipRegion(QRegion(rect()).subtracted(QRegion(captureRegion.translated(-pos()))));
     p.setPen(QPen(color, 2));
     p.setBrush(Qt::NoBrush);
     p.drawRect(QRectF(rect()).adjusted(1, 1, -1, -1));
@@ -54,6 +64,8 @@ protected:
 
 private:
   QColor color = QColor("#ff4c5e");
+  QRect captureRegion;
+  bool exterior = false;
 };
 
 class RecordingControls : public QWidget {
@@ -126,6 +138,22 @@ public:
   }
   QLabel *state, *time;
   QPushButton *pause, *stop;
+  bool placeOutside(QRect capture) {
+    QRect best;
+    int distance = std::numeric_limits<int>::max();
+    for (auto screen : QGuiApplication::screens()) {
+      const QRegion free = QRegion(screen->availableGeometry()).subtracted(QRegion(capture));
+      for (auto area : free) {
+        if (area.width() < width() || area.height() < height()) continue;
+        QPoint point(qBound(area.left(), x(), area.right()-width()+1),
+                     qBound(area.top(), y(), area.bottom()-height()+1));
+        const int next = (point-pos()).manhattanLength();
+        if (next < distance) { distance=next; best=area; }
+      }
+    }
+    if (best.isEmpty()) return false;
+    dragBounds=best; move(clamped(pos())); return true;
+  }
 
 protected:
   void closeEvent(QCloseEvent *event) override {
@@ -171,11 +199,11 @@ private:
 
 RecordingOverlay::RecordingOverlay(Recorder *recorder, QRect region,
                                    bool systemAudio, bool microphone,
-                                   QObject *parent)
+                                   QObject *parent, std::function<bool(QWidget *)> exclusion)
     : QObject(parent), recorder(recorder), logicalRegion(region),
       frame(std::make_unique<RecordingFrame>(region)),
       panel(std::make_unique<RecordingControls>(region, systemAudio,
-                                                microphone)) {
+                                                microphone)), exclusion(std::move(exclusion)) {
   connect(&timer, &QTimer::timeout, this, &RecordingOverlay::refresh);
   timer.setInterval(100);
   connect(recorder, &Recorder::started, this, [this] {
@@ -210,30 +238,36 @@ RecordingOverlay::~RecordingOverlay() { timer.stop(); }
 QWidget *RecordingOverlay::boundary() const { return frame.get(); }
 QWidget *RecordingOverlay::controls() const { return panel.get(); }
 bool RecordingOverlay::show() {
-  const bool windows = QGuiApplication::platformName() == "windows";
-  excluded =
-      windows && excludeCapture(frame.get()) && excludeCapture(panel.get());
-  if (windows && !excluded) {
-    hide();
-    return false;
+  if (compatibility) {
+    shown=true; frame->show(); refresh(); timer.start(); return true;
   }
+  const bool windows = QGuiApplication::platformName() == "windows";
+  auto exclude = [this](QWidget *widget) { return exclusion ? exclusion(widget) : excludeCapture(widget); };
+  excluded = windows && !compatibility && exclude(frame.get()) && exclude(panel.get());
   frame->show();
   frame->raise();
   panel->show();
   panel->raise();
-  if (windows) {
-    excluded = excludeCapture(frame.get()) && excludeCapture(panel.get());
-    if (!excluded) {
-      hide();
-      return false;
-    }
+  if (windows && !compatibility) {
+    excluded = exclude(frame.get()) && exclude(panel.get());
     DwmFlush();
   }
+  if ((windows || exclusion) && !excluded && !compatibility) {
+    compatibility=true;
+    // Never leave WDA_MONITOR's black rectangle over the captured pixels.
+    if (windows) {
+      SetWindowDisplayAffinity(reinterpret_cast<HWND>(frame->winId()), WDA_NONE);
+      SetWindowDisplayAffinity(reinterpret_cast<HWND>(panel->winId()), WDA_NONE);
+    }
+    outsideControls=panel->placeOutside(logicalRegion);
+  }
+  shown=true;
   refresh();
   timer.start();
   return true;
 }
 void RecordingOverlay::hide() {
+  shown=false;
   timer.stop();
   frame->hide();
   panel->hide();
@@ -245,6 +279,11 @@ void RecordingOverlay::refresh() {
   const bool saving = recorder->finalizing();
   const bool paused = recorder->paused();
   const bool counting=countdown>=0 && !begun;
+  if (shown && compatibility) {
+    frame->setExterior(!counting);
+    panel->setVisible(counting || outsideControls);
+    panel->setToolTip("系统不支持捕获排除，控制条放在录制范围外；全屏无空余位置时使用托盘或录屏快捷键控制。");
+  }
   qint64 seconds = begun ? qint64(recorder->elapsed()) : 0;
   panel->time->setText(QString("%1:%2:%3")
                            .arg(seconds / 3600, 2, 10, QChar('0'))

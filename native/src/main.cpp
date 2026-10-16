@@ -1,5 +1,6 @@
 #include "application.h"
 #include "native_windows.h"
+#include "startup_log.h"
 #include <QtCore/QCommandLineParser>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
@@ -10,13 +11,13 @@
 #include <QtNetwork/QLocalSocket>
 #include <QtWidgets/QApplication>
 
-int main(int argc, char **argv) {
+static int runApplication(int argc, char **argv) {
   enableDpi();
   QApplication app(argc, argv);
   app.setApplicationName("picut");
   app.setApplicationDisplayName("picut");
   app.setOrganizationName("picut");
-  app.setApplicationVersion("0.5.13");
+  app.setApplicationVersion("0.5.14");
   // This trial has its own configuration/history. Stable v0.5.10 remains usable.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(
@@ -28,6 +29,7 @@ int main(int argc, char **argv) {
   parser.addHelpOption();
   parser.addVersionOption();
   parser.addOption(QCommandLineOption("tray", "Start in the system tray."));
+  parser.addOption(QCommandLineOption("show-home", "Open the workbench explicitly."));
   parser.addOption(
       QCommandLineOption("smoke-test", "Render the home and exit."));
   parser.addOption(QCommandLineOption(
@@ -73,7 +75,7 @@ int main(int argc, char **argv) {
     QLocalSocket socket;
     socket.connectToServer(lock);
     if (socket.waitForConnected(250)) {
-      socket.write("home\n");
+      socket.write(parser.isSet("show-home") ? "home\n" : "tray\n");
       socket.waitForBytesWritten(250);
       return 0;
     }
@@ -83,13 +85,18 @@ int main(int argc, char **argv) {
     QObject::connect(&server, &QLocalServer::newConnection, &app, [&] {
       auto connection = server.nextPendingConnection();
       if (connection) {
-        controller.showHome();
-        connection->disconnectFromServer();
-        connection->deleteLater();
+        QObject::connect(connection, &QLocalSocket::disconnected, connection, &QObject::deleteLater);
+        auto receive = [connection, &controller] {
+          if (!connection->canReadLine()) return;
+          if (connection->readLine().trimmed() == "home") controller.showHome();
+          connection->disconnectFromServer();
+        };
+        QObject::connect(connection, &QLocalSocket::readyRead, connection, receive);
+        receive();
       }
     });
   }
-  if (!parser.isSet("tray"))
+  if (parser.isSet("show-home") || parser.isSet("smoke-test"))
     controller.showHome();
   if (parser.isSet("smoke-test"))
     QTimer::singleShot(500, &app, [&] {
@@ -97,4 +104,15 @@ int main(int argc, char **argv) {
       app.quit();
     });
   return app.exec();
+}
+
+int main(int argc, char **argv) {
+  installStartupLog();
+  try { return runApplication(argc, argv); }
+  catch (const std::exception &error) {
+    const auto message=QString::fromUtf8(error.what())+"\n启动日志："+startupLogPath();
+    qCritical().noquote()<<message;
+    MessageBoxW(nullptr,reinterpret_cast<LPCWSTR>(message.utf16()),L"picut 启动失败",MB_OK|MB_ICONERROR);
+    return 1;
+  }
 }

@@ -27,8 +27,8 @@ createVideoPreview(const QString &path, QWidget *parent) {
   dialog->setAttribute(Qt::WA_DeleteOnClose);
   dialog->setWindowTitle("picut · 录屏预览");
   dialog->resize(860, 590);
-  dialog->setStyleSheet("QDialog{background:#101820;color:white;}QPushButton{"
-                        "padding:8px 14px;}QLabel{color:white;}");
+  dialog->setStyleSheet("QDialog{background:#f0f0f0;color:#202020;}QPushButton{"
+                        "background:#fafafa;color:#202020;border:1px solid #c5c5c5;padding:6px 14px;}QLabel{color:#202020;}");
   auto root = new QVBoxLayout(dialog);
   root->addWidget(new QLabel(QFileInfo(path).fileName()));
   auto video = new QVideoWidget;

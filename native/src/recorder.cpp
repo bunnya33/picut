@@ -135,7 +135,9 @@ public:
   }
   QImage grab(bool cursor) {
     if (!BitBlt(memory, 0, 0, region.width(), region.height(), desktop,
-                region.x(), region.y(), SRCCOPY | CAPTUREBLT))
+                region.x(), region.y(), SRCCOPY | CAPTUREBLT) &&
+        !BitBlt(memory, 0, 0, region.width(), region.height(), desktop,
+                region.x(), region.y(), SRCCOPY))
       throw std::runtime_error("画面采集中断。");
     if (cursor) {
       CURSORINFO c{sizeof(CURSORINFO)};
@@ -346,7 +348,7 @@ void Recorder::run(const RecordOptions &options,
   auto video = work + "/screen.mp4";
   std::vector<std::unique_ptr<AudioTrack>> tracks;
   QProcess encoder;
-  encoder.setProcessChannelMode(QProcess::ForwardedErrorChannel);
+  encoder.setStandardErrorFile(work + "/ffmpeg-video.log");
   try {
     if (options.systemAudio)
       tracks.push_back(std::make_unique<AudioTrack>(
@@ -414,7 +416,7 @@ void Recorder::run(const RecordOptions &options,
                      video};
     encoder.start(ffmpegPath(), args);
     if (!encoder.waitForStarted(10000))
-      throw std::runtime_error("无法启动 FFmpeg 编码器。");
+      throw std::runtime_error(("无法启动 FFmpeg 编码器：" + encoder.errorString()).toUtf8().constData());
     auto thumbnail = QFileInfo(root).absolutePath() + "/history/" +
                      QUuid::createUuid().toString(QUuid::Id128) + ".png";
     first.scaled(384, 216, Qt::KeepAspectRatio, Qt::SmoothTransformation)
@@ -553,6 +555,12 @@ void Recorder::run(const RecordOptions &options,
       encoder.waitForFinished(5000);
     }
     running = false;
-    emit failed(QString::fromUtf8(e.what()) + "\n原始录制目录：" + work);
+    QFile log(work + "/ffmpeg-video.log");
+    QString detail;
+    if (log.open(QIODevice::ReadOnly)) {
+      log.seek(qMax(qint64(0), log.size()-1600));
+      detail=QString::fromUtf8(log.readAll()).trimmed();
+    }
+    emit failed(QString::fromUtf8(e.what()) + (detail.isEmpty()?QString():"\n编码器详情：\n"+detail) + "\n原始录制目录：" + work);
   }
 }

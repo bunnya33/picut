@@ -1,4 +1,5 @@
 #include "recognition.h"
+#include <QtWidgets/QPushButton>
 #include "image_text.h"
 #include "store.h"
 #include <QtCore/QDir>
@@ -279,7 +280,8 @@ private slots:
     overlay.finish();
     image.setPixelColor(0,0,Qt::red); overlay.begin(image);
     QCOMPARE(overlay.recognitionStarts(),2); QVERIFY(job->running());
-    temporary=job->temporaryPath(); overlay.finish();
+    temporary=job->temporaryPath();
+    QTest::mouseClick(overlay.findChild<QPushButton *>("imageTextCancel"),Qt::LeftButton);
     QVERIFY(!job->running()); QVERIFY(!QFileInfo::exists(temporary));
   }
   void gpuAccuracyAndCancellation() {
