@@ -290,7 +290,7 @@ void PinWindow::contextMenuEvent(QContextMenuEvent *e) {
   QMenu menu(this);
   menu.setObjectName("pinMenu");
   for (const auto &pair :
-       QList<QPair<QString, QString>>{{"select_text", "图片选字（试用）"},
+       QList<QPair<QString, QString>>{{"select_text", "文字识别"},
                                       {"edit", "标注"},
                                       {"copy", "复制"},
                                       {"save", "保存"},
@@ -301,7 +301,6 @@ void PinWindow::contextMenuEvent(QContextMenuEvent *e) {
                                       {"through", "鼠标穿透"},
                                       {"topmost", "置顶开关"},
                                       {"solo", "Solo"},
-                                      {"ocr", "文字识别"},
                                       {"scan", "二维码 / 条形码"},
                                       {"close", "关闭"},
                                       {"destroy", "销毁"}}) {
@@ -408,11 +407,11 @@ void PinManager::handle(PinWindow *pin, const QString &action) {
       }
       return QString();
     });
-  } else if (action == "select_text") {
+  } else if (action == "select_text" || action == "ocr") {
     pin->commitText();
     pin->startImageText(pin->displayedImage());
-  } else if (action == "ocr" || action == "scan")
-    showRecognition(pin->displayedImage(), action == "scan", pin, store);
+  } else if (action == "scan")
+    showRecognition(pin->displayedImage(), true, pin, store);
   else if (action == "edit")
     pin->startEditing();
   else if (action == "through")

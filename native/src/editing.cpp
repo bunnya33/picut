@@ -547,13 +547,13 @@ void EditingSurface::startImageText(const QImage &input, bool recognize) {
   const auto image = input.isNull() && annotation ? annotation->render() : input;
   if (image.isNull()) return;
   if (!imageText) {
-    imageText = new ImageTextOverlay(this, store, [this] { return contentRect(); },
-                                     property("isPinWindow").toBool());
+    imageText = new ImageTextOverlay(this, store, [this] { return contentRect(); });
     connect(imageText, &ImageTextOverlay::closed, this, [this] {
       if (isVisible() && property("imageTextToolbarVisible").toBool() && annotation && toolbar) {
         toolbar->sync(*annotation); positionToolbar(); toolbar->show();
       }
-      setFocus(); update();
+      if (isVisible()) { activateWindow(); setFocus(); }
+      update();
     });
   }
   setProperty("imageTextToolbarVisible", toolbar && toolbar->isVisible());
@@ -575,12 +575,8 @@ void EditingSurface::showMore() {
     update();
   });
   menu.addSeparator();
-  menu.addAction(menuLabel("图片选字（试用）", "F4"), this,
+  menu.addAction(menuLabel("文字识别", "F4"), this,
                    [this] { startImageText(); });
-  menu.addAction("文字识别", this, [this] {
-    commitText();
-    showRecognition(annotation->render(), false, this, store);
-  });
   menu.addAction("二维码 / 条形码", this, [this] {
     commitText();
     showRecognition(annotation->render(), true, this);

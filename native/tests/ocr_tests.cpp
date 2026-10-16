@@ -239,7 +239,7 @@ private slots:
     auto restore=qScopeGuard([&] { QApplication::clipboard()->setMimeData(savedClipboard.release()); });
     QWidget window; window.resize(740,510);
     QRect content(70,40,600,360);
-    ImageTextOverlay overlay(&window,&store,[&] { return content; },false);
+    ImageTextOverlay overlay(&window,&store,[&] { return content; });
     window.show(); overlay.begin(image);
     auto job=overlay.findChild<PaddleOcrJob *>(); QVERIFY(job);
     auto temporary=job->temporaryPath();
@@ -252,22 +252,23 @@ private slots:
     auto left=(quads.first()[0]+quads.first()[3])/2,
          right=(quads.last()[1]+quads.last()[2])/2;
     auto drag=[&] {
-      auto map=[&](QPointF pt) { return content.topLeft()+QPoint(qRound(pt.x()*content.width()/image.width()),qRound(pt.y()*content.height()/image.height())); };
+      auto map=[&](QPointF pt) { return overlay.imageToView(pt).toPoint(); };
       QTest::mousePress(&overlay,Qt::LeftButton,Qt::NoModifier,map(left*.98+right*.02));
       QTest::mouseRelease(&overlay,Qt::LeftButton,Qt::NoModifier,map(left*.02+right*.98));
     };
     drag(); QCOMPARE(overlay.selectedText(),QString(".49"));
+    QCOMPARE(overlay.resultEditor()->textCursor().selectedText(),QString(".49"));
     QTest::keyClick(&overlay,Qt::Key_C,Qt::ControlModifier);
     QCOMPARE(QApplication::clipboard()->text(),QString(".49"));
     QCOMPARE(overlay.sourceImage(),image);
-    QVERIFY(window.grab().save(artifact+"/image-text-partial-selection.png"));
+    QVERIFY(overlay.grab().save(artifact+"/image-text-partial-selection.png"));
     QTest::keyClick(&overlay,Qt::Key_A,Qt::ControlModifier);
     QVERIFY(overlay.selectedText().contains("记账日期"));
-    QVERIFY(window.grab().save(artifact+"/image-text-all-selection.png"));
+    QVERIFY(overlay.grab().save(artifact+"/image-text-all-selection.png"));
     for (const auto &line:overlay.page().lines) if (line.text=="FloatShot") {
       const auto quad=line.glyphs.last().quad;
       auto point=(quad[0]+quad[3])*.05+(quad[1]+quad[2])*.45;
-      QTest::mouseDClick(&overlay,Qt::LeftButton,Qt::NoModifier,content.topLeft()+point.toPoint());
+      QTest::mouseDClick(&overlay,Qt::LeftButton,Qt::NoModifier,overlay.imageToView(point).toPoint());
       QCOMPARE(overlay.selectedText(),QString("FloatShot"));
     }
     overlay.finish(); overlay.begin(image);
@@ -332,27 +333,72 @@ private slots:
     QVERIFY(unavailableDone.first()[0].toJsonObject().contains("error"));
     QVERIFY(!unavailable.running()); QVERIFY(!QFileInfo::exists(path));
   }
-  void dialogCompletionAndCancellation() {
+  void workspaceCompletionAndCancellation() {
     QTemporaryDir data; Store store(data.path());
     QTimer poll;
     bool completed=false;
     connect(&poll,&QTimer::timeout,this,[&] {
-      auto dialog=qobject_cast<QDialog *>(QApplication::activeModalWidget());
+      auto dialog=qobject_cast<ImageTextOverlay *>(QApplication::activeModalWidget());
+      if (!dialog) for (auto widget:QApplication::topLevelWidgets())
+        if (auto workspace=qobject_cast<ImageTextOverlay *>(widget);workspace && workspace->isVisible()) dialog=workspace;
       if (!dialog) return;
-      auto text=dialog->findChild<QPlainTextEdit *>("recognitionText");
+      auto text=dialog->resultEditor();
       if (text && text->toPlainText().contains("12345")) {
         completed=true;
-        dialog->grab().save(artifact+"/recognition-dialog.png"); dialog->reject();
+        QVERIFY(text->isReadOnly());
+        QVERIFY(dialog->windowFlags()&Qt::FramelessWindowHint);
+        dialog->grab().save(artifact+"/recognition-workspace.png"); dialog->finish();
       }
     });
     poll.start(100);
-    QTimer::singleShot(60000,this,[] { if (auto d=qobject_cast<QDialog *>(QApplication::activeModalWidget())) d->reject(); });
+    QTimer timeout; timeout.setSingleShot(true);
+    connect(&timeout,&QTimer::timeout,this,[] {
+      for (auto widget:QApplication::topLevelWidgets())
+        if (auto d=qobject_cast<ImageTextOverlay *>(widget)) d->finish();
+    });
+    timeout.start(60000);
     showRecognition(sample("中文识别 12345",32),false,nullptr,&store);
-    poll.stop(); QVERIFY(completed); QCOMPARE(store.config["ocr_engine"].toString(),QString("paddle"));
-    QTimer::singleShot(20,this,[] { if (auto d=qobject_cast<QDialog *>(QApplication::activeModalWidget())) d->reject(); });
+    poll.stop(); timeout.stop(); QVERIFY(completed);
+    QTimer::singleShot(20,this,[] {
+      for (auto widget:QApplication::topLevelWidgets())
+        if (auto d=qobject_cast<ImageTextOverlay *>(widget)) d->finish();
+    });
     QElapsedTimer timer; timer.start();
     showRecognition(sample("立即取消",32),false,nullptr,&store);
     QVERIFY(timer.elapsed()<3000);
+  }
+  void fullscreenWorkspaceRealOcrAndScroll() {
+    QTemporaryDir data; Store store(data.path()); store.config["ocr_acceleration"]="cpu";
+    QImage image(1600,1000,QImage::Format_RGB32); image.fill(Qt::white);
+    {
+      QPainter p(&image); QFont font("Microsoft YaHei UI"); font.setPixelSize(28);
+      p.setFont(font); p.setPen(Qt::black);
+      p.drawText(48,60,"交易明细 · 图片与文字同步选择");
+      for (int row=0;row<20;++row)
+        p.drawText(48,120+row*38,QString("第%1行 账单记录 金额 100.50 日期 2026/10/03").arg(row+1));
+      p.drawText(1100,950,"图像底部 ABC123");
+    }
+    QWidget owner; owner.setGeometry(QGuiApplication::primaryScreen()->availableGeometry()); owner.show();
+    ImageTextOverlay workspace(&owner,&store,[&]{return owner.rect();});
+    workspace.begin(image);
+    auto job=workspace.findChild<PaddleOcrJob *>(); QTRY_VERIFY_WITH_TIMEOUT(!job->running(),60000);
+    const int offset=workspace.page().text.indexOf("ABC123");
+    QVERIFY2(offset>=0,qPrintable(workspace.page().text));
+    QCOMPARE(workspace.placement(),ImageTextLayout::Split);
+    // Enlarge the image, then select text outside the initial visible viewport.
+    QWheelEvent wheel(workspace.imageViewport().center(),workspace.mapToGlobal(workspace.imageViewport().center()),
+                      {},{0,720},Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
+    QApplication::sendEvent(&workspace,&wheel);
+    auto cursor=workspace.resultEditor()->textCursor(); cursor.setPosition(offset);
+    cursor.setPosition(offset+6,QTextCursor::KeepAnchor); workspace.resultEditor()->setTextCursor(cursor);
+    QCOMPARE(workspace.selectedText(),QString("ABC123"));
+    auto quads=workspace.page().highlights(offset,offset+6); QCOMPARE(quads.size(),6);
+    QVERIFY(QRectF(workspace.imageViewport()).contains(workspace.imageToView(quads.last().boundingRect().center())));
+    QVERIFY(workspace.grab().save(artifact+"/image-text-fullscreen-zoomed.png"));
+    workspace.fitImage();
+    QVERIFY(workspace.grab().save(artifact+"/image-text-fullscreen.png"));
+    QCOMPARE(workspace.sourceImage(),image);
+    workspace.finish();
   }
 };
 QTEST_MAIN(OcrTests)

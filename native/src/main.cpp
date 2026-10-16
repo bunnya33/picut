@@ -15,7 +15,7 @@ int main(int argc, char **argv) {
   QApplication app(argc, argv);
   app.setApplicationName("FloatShotNative");
   app.setOrganizationName("FloatShot");
-  app.setApplicationVersion("0.5.11");
+  app.setApplicationVersion("0.5.12");
   // This trial has its own configuration/history. Stable v0.5.10 remains usable.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(

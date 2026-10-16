@@ -227,7 +227,7 @@ void ApplicationController::showHome() {
   if (!home) {
     home = new QMainWindow;
     home->setAttribute(Qt::WA_DeleteOnClose);
-    home->setWindowTitle("浮光 FloatShot · 0.5.11 图片选字试用版");
+    home->setWindowTitle("浮光 FloatShot · 0.5.12 图片选字试用版");
     home->setStyleSheet(theme);
     home->resize(880, 630);
     auto content = new QWidget;
@@ -569,16 +569,13 @@ void ApplicationController::openSettings() {
   tabs->addTab(hotkeys, "全局快捷键");
   auto ocr = new QWidget;
   auto ocrForm = new QFormLayout(ocr);
-  auto ocrEngine = new QComboBox;
-  ocrEngine->addItem("PaddleOCR · 离线识别", "paddle");
-  ocrEngine->addItem("Windows OCR", "windows");
-  ocrEngine->setCurrentIndex(qMax(0, ocrEngine->findData(store.config["ocr_engine"].toString("paddle"))));
+  auto ocrEngine = new QLabel("PaddleOCR · Small（离线识别）");
   auto ocrProfile = new QComboBox;
   auto ocrModels = PaddleOcrJob::profiles();
   for (auto it = ocrModels.begin(); it != ocrModels.end(); ++it)
     ocrProfile->addItem(it.value().toObject()["label"].toString(), it.key());
   ocrProfile->setCurrentIndex(qMax(0, ocrProfile->findData(store.config["ocr_profile"].toString("common"))));
-  ocrForm->addRow("默认识别器", ocrEngine);
+  ocrForm->addRow("识别器", ocrEngine);
   ocrForm->addRow("文字语言组", ocrProfile);
   auto ocrAcceleration=new QComboBox;
   ocrAcceleration->addItem("自动 · 大图显卡加速","auto");
@@ -588,12 +585,6 @@ void ApplicationController::openSettings() {
   ocrForm->addRow("运算设备",ocrAcceleration);
   auto ocrHelp = new QLabel("所有识别都在本机完成，不上传截图。PaddleOCR 使用 Small 模型，按需启动，识别结束后退出释放内存。支持中简繁、英文、日文及拉丁字母语种；结果不会自动纠正或猜测数字。");
   ocrHelp->setWordWrap(true); ocrForm->addRow(ocrHelp);
-  connect(ocrEngine, &QComboBox::currentIndexChanged, &dialog, [=] {
-    ocrProfile->setEnabled(ocrEngine->currentData() == "paddle");
-    ocrAcceleration->setEnabled(ocrEngine->currentData()=="paddle");
-  });
-  ocrProfile->setEnabled(ocrEngine->currentData() == "paddle");
-  ocrAcceleration->setEnabled(ocrEngine->currentData()=="paddle");
   tabs->addTab(ocr, "文字识别");
   auto buttons =
       new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
@@ -615,7 +606,7 @@ void ApplicationController::openSettings() {
   for (auto i = bindings.begin(); i != bindings.end(); ++i)
     keys[i.key()] = i.value()->text();
   config["hotkeys"] = keys;
-  config["ocr_engine"] = ocrEngine->currentData().toString();
+  config["ocr_engine"] = "paddle";
   config["ocr_profile"] = ocrProfile->currentData().toString();
   config["ocr_acceleration"]=ocrAcceleration->currentData().toString();
   store.config = config;

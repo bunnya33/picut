@@ -240,7 +240,7 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
     b->setFixedSize(32, 32);
     b->setToolTip(QMap<QString, QString>{{"undo", "撤销 · Ctrl+Z"},
                                          {"redo", "重做 · Ctrl+Y"},
-                                         {"select_text", "图片选字（试用） · F4"},
+                                         {"select_text", "文字识别 · F4"},
                                          {"cancel", "取消 · Esc"},
                                          {"pin", "贴图 · F3"},
                                          {"save", "保存 · Ctrl+S"},

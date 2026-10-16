@@ -27,6 +27,7 @@
 #include <QtGui/QInputMethodEvent>
 #include <QtWidgets/QGraphicsTextItem>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QScrollBar>
 #include <QtTest/QtTest>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QMessageBox>
@@ -140,34 +141,42 @@ private slots:
     QVERIFY(text->isVisible());
     QVERIFY(!overlay->toolbar->isVisible());
     text->setResult(imageTextFixture());
-    QTest::mousePress(text,Qt::LeftButton,Qt::NoModifier,{353,164});
-    dragMove(text,{396,164});
-    QTest::mouseRelease(text,Qt::LeftButton,Qt::NoModifier,{396,164});
+    auto start=text->imageToView({253,84}).toPoint(), end=text->imageToView({296,84}).toPoint();
+    QTest::mousePress(text,Qt::LeftButton,Qt::NoModifier,start);
+    dragMove(text,end);
+    QTest::mouseRelease(text,Qt::LeftButton,Qt::NoModifier,end);
     QCOMPARE(text->selectedText(), QString(".49"));
+    auto editor=text->resultEditor();
+    QVERIFY(editor->isReadOnly());
+    QCOMPARE(editor->textCursor().selectionStart(),5);
+    QCOMPARE(editor->textCursor().selectionEnd(),8);
+    QVERIFY(!editor->extraSelections().isEmpty());
     QTest::keyClick(text,Qt::Key_C,Qt::ControlModifier);
     QCOMPARE(QApplication::clipboard()->text(), QString(".49"));
     QTest::keyClick(text,Qt::Key_A,Qt::ControlModifier);
     QCOMPARE(text->selectedText(), QString("金额\t10.49\n记账日期\t2026/10/03"));
     QCOMPARE(overlay->annotation->render(), original);
     QCOMPARE(text->sourceImage(), original);
-    QVERIFY(savePreview(overlay,"image-text-all-selected.png"));
+    QVERIFY(savePreview(text,"image-text-all-selected.png"));
     QTest::keyClick(text,Qt::Key_Escape);
     QVERIFY(!text->isVisible());
     QVERIFY(overlay->toolbar->isVisible());
     overlay->startImageText({},true);
     QCOMPARE(text->recognitionStarts(),0); // Same image/settings reuse the cached result.
     QVERIFY(!text->page().text.isEmpty());
-    QTimer::singleShot(0, text, [&] {
-      auto dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
-      if (dialog) {
-        auto editor = dialog->findChild<QPlainTextEdit *>("imageTextFullEditor");
-        if (editor) editor->setPlainText("修正全文");
-        dialog->reject();
-      }
-    });
-    QTest::mouseClick(text->findChild<QToolButton *>("imageTextFull"),Qt::LeftButton);
+    auto cursor=editor->textCursor(); cursor.setPosition(14); cursor.setPosition(24,QTextCursor::KeepAnchor);
+    editor->setTextCursor(cursor);
+    QCOMPARE(text->selectedText(),QString("2026/10/03"));
+    QCOMPARE(text->page().highlights(14,24).size(),10);
+    editor->setFocus();
+    QTest::keyClick(editor,Qt::Key_C,Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(),QString("2026/10/03"));
+    QTest::keyClicks(editor,"cannot edit");
+    QCOMPARE(editor->toPlainText(),text->page().text);
+    QTest::keyClick(editor,Qt::Key_A,Qt::ControlModifier);
+    QCOMPARE(text->selectedText(),text->page().text);
     QCOMPARE(text->page().text,QString("金额\t10.49\n记账日期\t2026/10/03"));
-    QTest::keyClick(text,Qt::Key_F4);
+    QTest::keyClick(editor,Qt::Key_F4);
     Mark mark;
     mark.kind="rect"; mark.points={{10,10},{25,25}};
     overlay->annotation->add(mark);
@@ -188,17 +197,24 @@ private slots:
     pin->startImageText(image,false);
     auto text = pin->imageText;
     text->setResult(imageTextFixture());
-    QVERIFY(text->controlBar()->isWindow());
-    auto before = text->controlBar()->pos();
+    QVERIFY(text->isWindow());
+    QVERIFY(text->windowFlags()&Qt::FramelessWindowHint);
+    QVERIFY(!text->controlBar()->isWindow());
     pin->move(pin->pos()+QPoint(20,15));
-    QCOMPARE(text->controlBar()->pos(),before+QPoint(20,15));
+    if (text->placement()!=ImageTextLayout::Split)
+      QCOMPARE(text->mapToGlobal(text->imageViewport().topLeft()),pin->mapToGlobal(pin->contentRect().topLeft()));
     pin->setScale(.5);
-    auto start = pin->contentRect().topLeft()+QPoint(111,42);
-    auto end = pin->contentRect().topLeft()+QPoint(148,42);
+    auto start = text->imageToView({222,84}).toPoint();
+    auto end = text->imageToView({296,84}).toPoint();
     QTest::mousePress(text,Qt::LeftButton,Qt::NoModifier,start);
     QTest::mouseRelease(text,Qt::LeftButton,Qt::NoModifier,end);
     QCOMPARE(text->selectedText(),QString("10.49"));
-    QVERIFY(savePreview(pin,"image-text-pin-half-scale.png"));
+    QVERIFY(savePreview(text,"image-text-pin-half-scale.png"));
+    auto pinGeometry=pin->contentGeometry();
+    auto beforeZoom=text->previewRect();
+    wheel(text,text->imageViewport().center(),2);
+    QVERIFY(text->previewRect().width()>beforeZoom.width());
+    QCOMPARE(pin->contentGeometry(),pinGeometry);
     QCOMPARE(pin->displayedImage(),image);
     pin->hide();
     QVERIFY(!text->isVisible());
@@ -245,6 +261,98 @@ private slots:
     auto temporary=job->temporaryPath(); QVERIFY(QFileInfo::exists(temporary));
     delete pin;
     QVERIFY(!QFileInfo::exists(temporary));
+  }
+  void imageTextLayoutsPreserveCoordinates() {
+    const QRect screen(0,0,1400,900);
+    for (const auto &item:QList<QPair<QRect,ImageTextLayout::Placement>>{
+        {{100,100,360,250},ImageTextLayout::Right},
+        {{1000,200,360,300},ImageTextLayout::Left},
+        {screen,ImageTextLayout::Split},
+        {{0,0,700,1400},ImageTextLayout::Split}}) {
+      auto plan=ImageTextLayout::arrange(item.first,screen);
+      QCOMPARE(plan.placement,item.second);
+      QVERIFY(screen.contains(plan.window));
+      QVERIFY(QRect(QPoint(),plan.window.size()).contains(plan.panel));
+      QVERIFY(!plan.panel.intersects(plan.viewport));
+      if (item.second!=ImageTextLayout::Split)
+        QCOMPARE(plan.viewport.translated(plan.window.topLeft()),item.first);
+    }
+    const QRect secondary(-1920,-200,1920,1080), image(-500,120,450,300);
+    auto plan=ImageTextLayout::arrange(image,secondary);
+    QCOMPARE(plan.placement,ImageTextLayout::Left);
+    QCOMPARE(plan.viewport.translated(plan.window.topLeft()),image);
+    QVERIFY(secondary.contains(plan.window));
+    auto collapsed=ImageTextLayout::arrange(secondary,secondary,360,true);
+    QVERIFY(collapsed.panel.isEmpty());
+    QVERIFY(collapsed.viewport.width()>plan.viewport.width());
+  }
+  void imageTextFullscreenDividerPanCollapseAndReturn() {
+    QTemporaryDir dir; Store store(dir.path());
+    QWidget owner; owner.setGeometry(QGuiApplication::primaryScreen()->availableGeometry()); owner.show();
+    QImage image(1600,1000,QImage::Format_RGB32); image.fill(Qt::white);
+    ImageTextOverlay text(&owner,&store,[&] {return owner.rect();});
+    auto originalGeometry=owner.geometry(); text.begin(image,false); text.setResult(imageTextFixture());
+    QCOMPARE(text.placement(),ImageTextLayout::Split);
+    auto divider=text.findChild<QWidget *>("imageTextDivider");
+    auto width=text.controlBar()->width();
+    QTest::mousePress(divider,Qt::LeftButton,Qt::NoModifier,{2,100});
+    dragMove(divider,{-58,100});
+    QTest::mouseRelease(divider,Qt::LeftButton,Qt::NoModifier,{2,100});
+    QVERIFY(text.controlBar()->width()>width);
+    auto viewport=text.imageViewport();
+    wheel(&text,viewport.center(),6);
+    auto before=text.previewRect();
+    QTest::keyPress(&text,Qt::Key_Space);
+    QTest::mousePress(&text,Qt::LeftButton,Qt::NoModifier,viewport.center());
+    dragMove(&text,viewport.center()+QPoint(-30,-20));
+    QTest::mouseRelease(&text,Qt::LeftButton,Qt::NoModifier,viewport.center()+QPoint(-30,-20));
+    QTest::keyRelease(&text,Qt::Key_Space);
+    QVERIFY(text.previewRect().topLeft()!=before.topLeft());
+    auto cursor=text.resultEditor()->textCursor(); cursor.setPosition(3); cursor.setPosition(8,QTextCursor::KeepAnchor);
+    text.resultEditor()->setTextCursor(cursor);
+    auto target=text.imageToView({290,84});
+    QVERIFY(QRectF(text.imageViewport()).contains(target));
+    text.setPanelCollapsed(true); QVERIFY(!text.controlBar()->isVisible());
+    QVERIFY(text.imageViewport().width()>viewport.width());
+    QTest::mouseClick(text.findChild<QToolButton *>("imageTextExpand"),Qt::LeftButton);
+    QVERIFY(text.controlBar()->isVisible());
+    QCOMPARE(text.selectedText(),QString("10.49"));
+    QCOMPARE(text.sourceImage(),image); QCOMPARE(owner.geometry(),originalGeometry);
+    text.finish(); QCOMPARE(owner.geometry(),originalGeometry);
+    QVERIFY(!text.isVisible());
+  }
+  void imageTextLongSidebarScrollAndReverseSelection() {
+    QTemporaryDir dir; Store store(dir.path());
+    QWidget owner; owner.setGeometry(QGuiApplication::primaryScreen()->availableGeometry()); owner.show();
+    QImage image(800,5200,QImage::Format_RGB32); image.fill(Qt::white);
+    QJsonArray lines;
+    for (int row=0;row<100;++row) {
+      auto line=imageTextFixture()["lines"].toArray()[2].toObject();
+      auto shift=[&](QJsonValue value) {
+        QJsonArray result;
+        for (auto point:value.toArray()) { auto p=point.toArray(); p[1]=p[1].toDouble()+row*50; result.append(p); }
+        return result;
+      };
+      line["quad"]=shift(line["quad"]);
+      auto characters=line["characters"].toArray();
+      for (int n=0;n<characters.size();++n) {
+        auto character=characters[n].toObject(); character["quad"]=shift(character["quad"]); characters[n]=character;
+      }
+      line["characters"]=characters; lines.append(line);
+    }
+    ImageTextOverlay text(&owner,&store,[&]{return owner.rect();});
+    text.begin(image,false); text.setResult({{"lines",lines}});
+    text.selectAll(); QApplication::processEvents();
+    auto editor=text.resultEditor(); QVERIFY(editor->verticalScrollBar()->maximum()>0);
+    QVERIFY(editor->verticalScrollBar()->value()>0);
+    auto cursor=editor->textCursor(); cursor.setPosition(5); cursor.setPosition(0,QTextCursor::KeepAnchor);
+    editor->setTextCursor(cursor);
+    QCOMPARE(text.selectedText(),QString("金额\n金额"));
+    QCOMPARE(text.page().highlights(0,5).size(),4);
+    editor->setFocus(); text.setFocus();
+    QVERIFY(!editor->extraSelections().isEmpty());
+    QVERIFY(editor->isReadOnly());
+    text.finish();
   }
   void selectionToolbarTracksDragFrames_data() {
     QTest::addColumn<bool>("recording");

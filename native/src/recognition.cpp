@@ -1,4 +1,5 @@
 #include "recognition.h"
+#include "image_text.h"
 #include "store.h"
 #include <BarcodeFormat.h>
 #include <ImageView.h>
@@ -158,121 +159,37 @@ QString recognizeCodes(const QImage &source) {
   return text.join("\n\n");
 }
 void showRecognition(const QImage &image, bool codes, QWidget *parent, Store *store) {
-  QDialog dialog(parent);
-  dialog.setWindowTitle(codes ? "浮光 · 扫码" : "浮光 · 文字识别");
-  dialog.resize(640, 430);
-  auto root = new QVBoxLayout(&dialog);
-  auto text = new QPlainTextEdit;
-  text->setObjectName("recognitionText");
-  auto engines = new QComboBox;
-  engines->setObjectName("ocrEngine");
-  engines->addItem("PaddleOCR · 离线识别", "paddle");
-  engines->addItem("Windows OCR", "windows");
-  auto profiles = new QComboBox;
-  profiles->setObjectName("ocrProfile");
-  auto available = PaddleOcrJob::profiles();
-  for (auto it = available.begin(); it != available.end(); ++it)
-    profiles->addItem(it.value().toObject()["label"].toString(), it.key());
-  if (store) {
-    engines->setCurrentIndex(qMax(0, engines->findData(store->config["ocr_engine"].toString("paddle"))));
-    profiles->setCurrentIndex(qMax(0, profiles->findData(store->config["ocr_profile"].toString("common"))));
+  if (!codes) {
+    ImageTextOverlay workspace(parent,store,[] { return QRect(); });
+    QEventLoop loop;
+    QObject::connect(&workspace,&ImageTextOverlay::closed,&loop,&QEventLoop::quit);
+    workspace.begin(image);
+    if (!image.isNull()) loop.exec();
+    return;
   }
-  auto rotation = new QComboBox;
-  rotation->addItem("原始方向（自动校正倒置文字）", 0);
-  rotation->addItem("顺时针旋转 90°", 90);
-  rotation->addItem("旋转 180°", 180);
-  rotation->addItem("逆时针旋转 90°", 270);
-  auto recognize = new QPushButton("重新识别");
-  auto acceleration=new QComboBox;
-  acceleration->setObjectName("ocrAcceleration");
-  acceleration->addItem("自动 · 大图显卡加速","auto");
-  acceleration->addItem("CPU","cpu");
-  acceleration->addItem("显卡","gpu");
-  if(store) acceleration->setCurrentIndex(qMax(0,acceleration->findData(store->config["ocr_acceleration"].toString("auto"))));
-  acceleration->setToolTip("自动模式：大图优先显卡，小图使用 CPU；显卡不可用时自动回退 CPU。");
-  auto options = new QWidget;
-  auto row = new QHBoxLayout(options); row->setContentsMargins(0,0,0,0);
-  row->addWidget(engines); row->addWidget(profiles, 1); row->addWidget(recognize);
-  root->addWidget(options);
-  root->addWidget(rotation);
-  root->addWidget(acceleration);
-  options->setVisible(!codes); rotation->setVisible(!codes);
-  acceleration->setVisible(!codes);
-  auto status = new QLabel;
-  status->setWordWrap(true);
-  root->addWidget(status);
-  root->addWidget(text);
-  auto buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+  QDialog dialog(parent); dialog.setWindowTitle("浮光 · 扫码"); dialog.resize(640,430);
+  auto root=new QVBoxLayout(&dialog);
+  auto status=new QLabel("正在识别二维码 / 条形码…"); root->addWidget(status);
+  auto text=new QPlainTextEdit; text->setObjectName("recognitionText");
+  text->setReadOnly(true); root->addWidget(text);
+  auto buttons=new QDialogButtonBox(QDialogButtonBox::Close);
   buttons->button(QDialogButtonBox::Close)->setText("关闭");
-  auto copy = buttons->addButton("复制结果", QDialogButtonBox::ActionRole);
-  copy->setEnabled(false);
-  root->addWidget(buttons);
-  QObject::connect(copy, &QPushButton::clicked, text, [text] {
-    QApplication::clipboard()->setText(text->toPlainText());
-  });
-  QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
-                   &QDialog::reject);
-  PaddleOcrJob job;
-  QElapsedTimer elapsed;
-  QTimer timer;
-  QString progressText="正在本机识别…";
-  auto finished = [&](QJsonObject result) {
-    timer.stop(); engines->setEnabled(true); profiles->setEnabled(engines->currentData() == "paddle");
-    rotation->setEnabled(true); recognize->setEnabled(true);
-    acceleration->setEnabled(engines->currentData()=="paddle");
-    if (result.contains("error")) { text->clear(); status->setText(result["error"].toString()); return; }
-    auto value = result["text"].toString(); text->setPlainText(value);
-    copy->setEnabled(!value.trimmed().isEmpty());
-    status->setText(value.trimmed().isEmpty() ? (codes ? "没有识别到二维码或条形码。" : "没有识别到文字，可切换语言组或调整方向后重试。")
-                    : QString("识别完成%1 · %2 秒").arg(result.contains("gpu")?(result["gpu"].toBool()?" · 显卡":" · CPU"):"",QString::number(elapsed.elapsed()/1000.,'f',1)));
-  };
-  QObject::connect(&job, &PaddleOcrJob::finished, &dialog, finished);
-  QObject::connect(&job,&PaddleOcrJob::progress,&dialog,[&](const QString &phase,int done,int total) {
-    if(phase=="load") progressText="正在准备文字识别…";
-    else if(phase=="detect") progressText="正在查找文字…";
-    else if(phase=="recognize") progressText=QString("正在识别文字… %1/%2").arg(done).arg(total);
-    else if(phase=="fallback") progressText="显卡加速不可用，正在使用 CPU…";
-    status->setText(progressText+QString(" · %1 秒").arg(elapsed.elapsed()/1000.,0,'f',1));
-  });
-  QObject::connect(&timer, &QTimer::timeout, &dialog, [&] {
-    status->setText(progressText+QString(" · %1 秒").arg(elapsed.elapsed()/1000.,0,'f',1));
-  });
-  QObject::connect(engines, &QComboBox::currentIndexChanged, &dialog, [&] {
-    profiles->setEnabled(engines->currentData() == "paddle");
-    acceleration->setEnabled(engines->currentData()=="paddle");
-  });
-  auto start = [&] {
-    text->clear(); copy->setEnabled(false); recognize->setEnabled(false);
-    engines->setEnabled(false); profiles->setEnabled(false); rotation->setEnabled(false);
-    acceleration->setEnabled(false); progressText="正在本机识别…";
-    elapsed.start(); timer.start(250); status->setText(progressText);
-    if (!codes && store) {
-      store->config["ocr_engine"] = engines->currentData().toString();
-      store->config["ocr_profile"] = profiles->currentData().toString();
-      store->config["ocr_acceleration"]=acceleration->currentData().toString(); store->saveConfig();
-    }
-    if (!codes && engines->currentData() == "paddle") {
-      job.start(image, profiles->currentData().toString(), rotation->currentData().toInt(),acceleration->currentData().toString()); return;
-    }
-    // The thread owns its input. The context-bound finished connection is removed
-    // when the dialog closes, so no result can access deleted widgets.
-    auto result = std::make_shared<QJsonObject>();
-    auto input = image.transformed(QTransform().rotate(rotation->currentData().toInt()));
-    auto thread = QThread::create([input, codes, result] {
-      try {
-        winrt::init_apartment(winrt::apartment_type::multi_threaded);
-        try { (*result)["text"] = codes ? recognizeCodes(input) : recognizeWindowsText(input); }
-        catch (...) { winrt::uninit_apartment(); throw; }
-        winrt::uninit_apartment();
-      } catch (const winrt::hresult_error &error) { (*result)["error"] = QString::fromWCharArray(error.message().c_str()); }
-      catch (const std::exception &error) { (*result)["error"] = QString::fromUtf8(error.what()); }
+  auto copy=buttons->addButton("复制结果",QDialogButtonBox::ActionRole);
+  copy->setEnabled(false); root->addWidget(buttons);
+  QObject::connect(copy,&QPushButton::clicked,text,[text]{QApplication::clipboard()->setText(text->toPlainText());});
+  QObject::connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
+  QTimer::singleShot(0,&dialog,[&] {
+    auto result=std::make_shared<QString>();
+    auto thread=QThread::create([image,result] {
+      try { *result=recognizeCodes(image); }
+      catch (const std::exception &error) { *result=QString::fromUtf8(error.what()); }
     });
-    QObject::connect(thread, &QThread::finished, &dialog, [finished, result] { finished(*result); });
-    QObject::connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    QObject::connect(thread,&QThread::finished,&dialog,[=] {
+      text->setPlainText(*result); copy->setEnabled(!result->isEmpty());
+      status->setText(result->isEmpty()?"没有识别到二维码或条形码。":"识别完成");
+    });
+    QObject::connect(thread,&QThread::finished,thread,&QObject::deleteLater);
     thread->start();
-  };
-  QObject::connect(recognize, &QPushButton::clicked, &dialog, start);
-  QTimer::singleShot(0, &dialog, start);
+  });
   dialog.exec();
-  job.cancel();
 }
