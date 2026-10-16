@@ -1,5 +1,7 @@
 #include "application.h"
 #include "menu.h"
+#include "recording_settings.h"
+#include "compact_ui.h"
 #include <future>
 #include "native_windows.h"
 #include "recognition.h"
@@ -57,11 +59,8 @@ ApplicationController::ApplicationController(bool test)
   connect(&store, &Store::ioFailed, this, [this](const QString &message) {
     if (!testing && !quitting) QMessageBox::warning(home, "保存失败", message);
   });
-  tray.setIcon(
-      QIcon(QCoreApplication::applicationDirPath() + "/floatshot.ico"));
-  if (tray.icon().isNull())
-    tray.setIcon(toolIcon("pin", QColor("#48d6be")));
-  tray.setToolTip("浮光 · 原生版");
+  tray.setIcon(picutIcon()); QApplication::setWindowIcon(picutIcon());
+  tray.setToolTip("picut");
   trayMenu = new QMenu;
   trayMenu->setObjectName("trayMenu");
   auto add = [this](const QString &label, const QString &hotkey,
@@ -113,6 +112,7 @@ ApplicationController::ApplicationController(bool test)
 }
 ApplicationController::~ApplicationController() {
   quitting = true;
+  if (recordCountdown) delete recordCountdown;
   QObject::disconnect(&store, nullptr, this, nullptr);
   for (int id : hotkeyIds)
     UnregisterHotKey(nullptr, id);
@@ -221,13 +221,13 @@ void ApplicationController::notify(QString text) {
   if (home && home->isVisible())
     home->statusBar()->showMessage(text, 12000);
   else
-    tray.showMessage("浮光", text, QSystemTrayIcon::Information, 4000);
+    tray.showMessage("picut", text, QSystemTrayIcon::Information, 4000);
 }
 void ApplicationController::showHome() {
   if (!home) {
     home = new QMainWindow;
     home->setAttribute(Qt::WA_DeleteOnClose);
-    home->setWindowTitle("浮光 FloatShot · 0.5.12 图片选字试用版");
+    home->setWindowTitle("picut · 0.5.13");
     home->setStyleSheet(theme);
     home->resize(880, 630);
     auto content = new QWidget;
@@ -295,7 +295,7 @@ void ApplicationController::showHome() {
     layout->addLayout(actions);
     layout->addWidget(new QLabel("关闭工作台后常驻托盘 · 退出请使用托盘菜单"));
     home->setCentralWidget(content);
-    home->statusBar()->showMessage("F1 截图 · F3 贴图 · Ctrl+Alt+R 录屏");
+    home->statusBar()->showMessage("F1 截图 · F2 区域录屏 · F3 贴图");
     historyDirty = true;
   }
   home->show();
@@ -371,7 +371,7 @@ void ApplicationController::beginCapture(bool recordingMode) {
       connect(overlay, &CaptureOverlay::recordRegion, this,
               [this](QRect region) {
                 QTimer::singleShot(0, this,
-                                   [this, region] { prepareRecord(region); });
+                                   [this, region] { prepareRecord(region, false); });
               });
       overlay->show();
       overlay->activateWindow();
@@ -494,7 +494,7 @@ void ApplicationController::pinClipboard() {
 }
 void ApplicationController::openSettings() {
   QDialog dialog(home);
-  dialog.setWindowTitle("浮光 · 设置");
+  dialog.setWindowTitle("picut · 设置");
   dialog.setStyleSheet(theme);
   dialog.resize(640, 560);
   auto root = new QVBoxLayout(&dialog);
@@ -639,143 +639,57 @@ void ApplicationController::makeRecorder() {
     previewVideo(item["path"].toString());
   });
 }
-void ApplicationController::prepareRecord(QRect region) {
-  if (recording() || recordSetup || pending || overlay)
-    return;
-  QScreen *screen = QGuiApplication::screenAt(region.center());
+void ApplicationController::prepareRecord(QRect region, bool showSettings) {
+  if (recording() || recordSetup || pending || overlay) return;
+  auto screen=QGuiApplication::screenAt(region.center());
   if (!screen || !screen->geometry().contains(region)) {
-    QMessageBox::warning(home, "录制区域", "录屏区域需要位于一个显示器内。");
-    return;
+    QMessageBox::warning(home,"录制区域","录屏区域需要位于一个显示器内。"); return;
   }
-  QDialog dialog(home);
-  recordSetup = true;
-  dialog.setWindowTitle("浮光 · 准备录屏");
-  dialog.setStyleSheet(theme);
-  auto root = new QVBoxLayout(&dialog);
-  auto form = new QFormLayout;
-  root->addLayout(form);
-  form->addRow(new QLabel(
-      QString("已框选 %1 × %2").arg(region.width()).arg(region.height())));
-  auto system = new QCheckBox("录入系统声音");
-  system->setChecked(store.config["system_audio"].toBool());
-  auto mic = new QCheckBox("录入麦克风");
-  mic->setChecked(store.config["microphone"].toBool());
-  auto speakers = new QComboBox;
-  auto microphones = new QComboBox;
-  try {
-    for (auto device : audioDevices(false))
-      speakers->addItem(device.name, device.id);
-    for (auto device : audioDevices(true))
-      microphones->addItem(device.name, device.id);
-  } catch (const std::exception &e) {
-    root->addWidget(new QLabel(QString::fromUtf8(e.what())));
+  recordSetup=true;
+  if (showSettings) {
+    RecordingSettingsDialog dialog(&store,region,true,home); dialog.setStyleSheet(theme);
+    if (dialog.exec()!=QDialog::Accepted) { recordSetup=false; return; }
   }
-  for (auto pair : {qMakePair(speakers, QString("speaker_id")),
-                    qMakePair(microphones, QString("mic_id"))}) {
-    int index = pair.first->findData(store.config[pair.second].toString());
-    if (index >= 0)
-      pair.first->setCurrentIndex(index);
-  }
-  form->addRow(system);
-  form->addRow("声音输出设备", speakers);
-  form->addRow(mic);
-  form->addRow("麦克风设备", microphones);
-  auto cursor = new QCheckBox("显示鼠标指针");
-  cursor->setChecked(store.config["cursor"].toBool(true));
-  form->addRow(cursor);
-  auto fps = new QComboBox;
-  fps->addItem("30 fps", 30);
-  fps->addItem("15 fps", 15);
-  fps->setCurrentIndex(store.config["fps"].toInt(30) == 15 ? 1 : 0);
-  form->addRow("帧率", fps);
-  auto quality = new QComboBox;
-  quality->addItem("清晰 · 推荐", 22);
-  quality->addItem("更清晰", 18);
-  quality->addItem("更小文件", 28);
-  quality->setCurrentIndex(
-      qMax(0, quality->findData(store.config["quality"].toInt(22))));
-  form->addRow("画质", quality);
-  auto countdown = new QSpinBox;
-  countdown->setRange(0, 10);
-  countdown->setValue(store.config["countdown"].toInt(3));
-  form->addRow("倒计时", countdown);
-  auto buttons =
-      new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-  buttons->button(QDialogButtonBox::Ok)->setText("开始录制");
-  root->addWidget(buttons);
-  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-  if (dialog.exec() != QDialog::Accepted) {
-    recordSetup = false;
-    return;
-  }
-  RecordOptions options;
-  options.region = physicalRect(region);
-  options.output =
-      store.outputPath(store.config["video_dir"].toString(), "录屏", "mp4");
-  options.systemAudio = system->isChecked();
-  options.microphone = mic->isChecked();
-  options.speakerId = speakers->currentData().toString();
-  options.micId = microphones->currentData().toString();
-  options.cursor = cursor->isChecked();
-  options.fps = fps->currentData().toInt();
-  options.quality = quality->currentData().toInt();
-  store.config["system_audio"] = options.systemAudio;
-  store.config["microphone"] = options.microphone;
-  store.config["speaker_id"] = options.speakerId;
-  store.config["mic_id"] = options.micId;
-  store.config["cursor"] = options.cursor;
-  store.config["fps"] = options.fps;
-  store.config["quality"] = options.quality;
-  store.config["countdown"] = countdown->value();
-  store.saveConfig();
+  const auto options=savedRecordingOptions(store.config,physicalRect(region),
+      store.outputPath(store.config["video_dir"].toString(),"录屏","mp4"));
   makeRecorder();
-  int seconds = countdown->value();
-  auto counter = new QLabel(nullptr, Qt::FramelessWindowHint | Qt::Tool |
-                                         Qt::WindowStaysOnTopHint);
-  counter->setAttribute(Qt::WA_DeleteOnClose);
-  connect(counter, &QObject::destroyed, this, [this] { recordSetup = false; });
-  auto cancelCountdown = new QShortcut(QKeySequence(Qt::Key_Escape), counter);
-  connect(cancelCountdown, &QShortcut::activated, counter, &QWidget::close);
-  counter->setAlignment(Qt::AlignCenter);
-  counter->setStyleSheet(
-      "background:rgba(0,0,0,170);color:white;font-size:60px;");
-  counter->setGeometry(
-      QRect(region.center() - QPoint(60, 60), QSize(120, 120)));
-  auto timer = new QTimer(counter);
-  timer->setInterval(1000);
-  auto start = [this, counter, options, region] {
-    counter->close();
-    recordSetup = false;
-    try {
-      recordOverlay = std::make_unique<RecordingOverlay>(recorder.get(), region,
-                                                        options.systemAudio,
-                                                        options.microphone);
-      if (!recordOverlay->show())
-        throw std::runtime_error(
-            "无法从录制画面排除控制条。请在 Windows 10 2004 或更新版本的本地桌面会话中录制。");
-      recorder->start(options);
-    } catch (const std::exception &e) {
-      recordOverlay.reset();
-      QMessageBox::warning(home, "无法录屏", QString::fromUtf8(e.what()));
+  int seconds=qBound(0,store.config["countdown"].toInt(3),10);
+  auto counter=new QLabel(nullptr,Qt::FramelessWindowHint|Qt::Tool|Qt::WindowStaysOnTopHint);
+  recordCountdown=counter; counter->setObjectName("recordCountdownWindow");
+  counter->setAttribute(Qt::WA_DeleteOnClose); counter->setAlignment(Qt::AlignCenter);
+  counter->setStyleSheet("background:rgba(0,0,0,170);color:white;font-size:60px;");
+  counter->setGeometry(QRect(region.center()-QPoint(60,60),QSize(120,120)));
+  connect(counter,&QObject::destroyed,this,[this] {
+    if (recordSetup) { recordOverlay.reset(); recordSetup=false; }
+  });
+  auto escape=new QShortcut(QKeySequence(Qt::Key_Escape),counter);
+  escape->setContext(Qt::ApplicationShortcut);
+  connect(escape,&QShortcut::activated,counter,&QWidget::close);
+  try {
+    recordOverlay=std::make_unique<RecordingOverlay>(recorder.get(),region,options.systemAudio,options.microphone);
+    recordOverlay->setCountdown(seconds);
+    connect(recordOverlay.get(),&RecordingOverlay::countdownCanceled,counter,&QWidget::close);
+    if (!recordOverlay->show()) throw std::runtime_error("无法从录制画面排除控制条。请在 Windows 10 2004 或更新版本的本地桌面会话中录制。");
+  } catch (const std::exception &e) {
+    recordOverlay.reset(); recordSetup=false; counter->close();
+    QMessageBox::warning(home,"无法录屏",QString::fromUtf8(e.what())); return;
+  }
+  auto start=[this,counter,options] {
+    recordSetup=false; counter->close();
+    try { recordOverlay->setCountdown(-1); recorder->start(options); }
+    catch (const std::exception &e) {
+      recordOverlay.reset(); QMessageBox::warning(home,"无法录屏",QString::fromUtf8(e.what()));
     }
   };
-  if (seconds == 0) {
-    start();
-    return;
-  }
-  counter->setText(QString::number(seconds));
-  counter->show();
+  if (!seconds) { start(); return; }
+  counter->setText(QString::number(seconds)); counter->show(); counter->activateWindow();
   excludeCapture(counter);
-  connect(timer, &QTimer::timeout, this,
-          [counter, timer, start, seconds]() mutable {
-            --seconds;
-            if (seconds <= 0) {
-              timer->stop();
-              start();
-            } else
-              counter->setText(QString::number(seconds));
-          });
+  auto timer=new QTimer(counter); timer->setInterval(1000);
+  connect(timer,&QTimer::timeout,counter,[this,counter,timer,start,seconds]() mutable {
+    --seconds;
+    if (seconds<=0) { timer->stop(); start(); }
+    else { counter->setText(QString::number(seconds)); recordOverlay->setCountdown(seconds); }
+  });
   timer->start();
 }
 void ApplicationController::quit() {

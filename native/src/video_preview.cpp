@@ -25,7 +25,7 @@ extern "C" __declspec(dllexport) QWidget *
 createVideoPreview(const QString &path, QWidget *parent) {
   auto dialog = new QDialog(parent);
   dialog->setAttribute(Qt::WA_DeleteOnClose);
-  dialog->setWindowTitle("浮光 · 录屏预览");
+  dialog->setWindowTitle("picut · 录屏预览");
   dialog->resize(860, 590);
   dialog->setStyleSheet("QDialog{background:#101820;color:white;}QPushButton{"
                         "padding:8px 14px;}QLabel{color:white;}");

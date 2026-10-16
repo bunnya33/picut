@@ -27,7 +27,7 @@ public:
   void beginCapture(bool recording = false);
   void pinClipboard();
   void openSettings();
-  void prepareRecord(QRect region);
+  void prepareRecord(QRect region, bool showSettings = true);
   void refreshHistory();
   quint64 historyThumbnailReads = 0;
   void previewVideo(const QString &file);
@@ -42,6 +42,7 @@ private:
   QSystemTrayIcon tray;
   QMenu *trayMenu = nullptr;
   QPointer<QListWidget> historyList;
+  QPointer<QWidget> recordCountdown;
   bool testing = false, pending = false, recordSetup = false;
   bool historyDirty = true;
   QCache<QString, QPixmap> historyThumbnails{128};

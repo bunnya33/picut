@@ -147,7 +147,7 @@ class RecordingOverlayTests : public QObject {
     if (checkPause) {
       QTest::mouseClick(pause, Qt::LeftButton);
       QVERIFY(recorder.paused());
-      QCOMPARE(pause->text(), QString("继续"));
+      QCOMPARE(pause->toolTip(), QString("继续录屏 · Ctrl+Alt+P"));
       QCOMPARE(state->text(), QString("已暂停"));
       auto pausedTime = time->text();
       auto elapsed = recorder.elapsed();
@@ -157,12 +157,12 @@ class RecordingOverlayTests : public QObject {
       savePreview(overlay, name + "-paused");
       QTest::mouseClick(pause, Qt::LeftButton);
       QVERIFY(!recorder.paused());
-      QCOMPARE(pause->text(), QString("暂停"));
+      QCOMPARE(pause->toolTip(), QString("暂停录屏 · Ctrl+Alt+P"));
       // Hotkeys invoke Recorder directly. The controls must still synchronize.
       recorder.pause();
-      QTRY_COMPARE_WITH_TIMEOUT(pause->text(), QString("继续"), 500);
+      QTRY_COMPARE_WITH_TIMEOUT(pause->toolTip(), QString("继续录屏 · Ctrl+Alt+P"), 500);
       recorder.pause();
-      QTRY_COMPARE_WITH_TIMEOUT(pause->text(), QString("暂停"), 500);
+      QTRY_COMPARE_WITH_TIMEOUT(pause->toolTip(), QString("暂停录屏 · Ctrl+Alt+P"), 500);
     }
     QTest::qWait(180);
     QList<QPoint> samplePoints;
@@ -253,6 +253,21 @@ private slots:
   }
   void regionControlsTimePauseAndSave() {
     recordAndCheck(standardRegion(), "region", true, false);
+  }
+  void countdownShowsBoundaryAndSupportsCancel() {
+    QTemporaryDir dir; Recorder recorder(dir.path());
+    RecordingOverlay overlay(&recorder,standardRegion(),false,false);
+    overlay.setCountdown(3); QSignalSpy canceled(&overlay,&RecordingOverlay::countdownCanceled);
+    QVERIFY(overlay.show()); QVERIFY(overlay.boundary()->isVisible()); QVERIFY(overlay.captureExcluded());
+    QCOMPARE(overlay.boundary()->geometry(),standardRegion());
+    QCOMPARE(overlay.controls()->findChild<QLabel *>("recordingState")->text(),QString("倒计时"));
+    QCOMPARE(overlay.controls()->findChild<QLabel *>("recordingTime")->text(),QString("3 秒"));
+    auto stop=overlay.controls()->findChild<QPushButton *>("stopRecording");
+    QVERIFY(stop->isEnabled()); QVERIFY(!stop->icon().isNull());
+    QVERIFY(!overlay.controls()->findChild<QPushButton *>("pauseRecording")->isVisible());
+    savePreview(overlay,"countdown-controls");
+    QTest::mouseClick(stop,Qt::LeftButton); QCOMPARE(canceled.size(),1); QVERIFY(!recorder.active());
+    overlay.hide(); QVERIFY(!overlay.boundary()->isVisible());
   }
   void fullscreenControlsInsideScreen() {
     recordAndCheck(QGuiApplication::primaryScreen()->geometry(), "fullscreen",

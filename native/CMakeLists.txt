@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FloatShotNative VERSION 0.5.12 LANGUAGES CXX RC)
+project(FloatShotNative VERSION 0.5.13 LANGUAGES CXX RC)
 # CMake can misdecode the Chinese MSVC /showIncludes prefix on UTF-8 consoles.
 if(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX MATCHES "娉ㄦ剰")
     set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件: ")
@@ -61,11 +61,12 @@ else()
     FetchContent_MakeAvailable(zxing)
 endif()
 qt_add_executable(FloatShotNative WIN32
-    src/main.cpp src/store.cpp src/annotation.cpp src/toolbar.cpp src/text_editor.cpp src/text_editor.h src/image_text.cpp src/image_text.h
+    src/main.cpp src/store.cpp src/annotation.cpp src/toolbar.cpp src/text_editor.cpp src/text_editor.h src/image_text.cpp src/image_text.h src/recording_settings.cpp src/recording_settings.h
     src/editing.cpp src/element_detector.cpp src/element_detector.h src/capture.cpp src/pin.cpp src/recorder.cpp src/recognition.cpp src/application.cpp src/recording_overlay.cpp src/recording_overlay.h
     src/store.h src/annotation.h src/toolbar.h src/capture.h src/pin.h
     src/editing.h src/recorder.h src/application.h src/native_windows.h app.rc)
 target_compile_definitions(FloatShotNative PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+set_target_properties(FloatShotNative PROPERTIES OUTPUT_NAME picut)
 target_compile_options(FloatShotNative PRIVATE /utf-8 /W4 /permissive-)
 target_link_libraries(FloatShotNative PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network
     user32 gdi32 ole32 uuid shell32 dwmapi psapi avrt windowsapp ZXing::ZXing)
@@ -101,7 +102,7 @@ if(BUILD_TESTING)
     set_tests_properties(recording-ui-windows PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 90)
     qt_add_executable(FloatShotNativeTests tests/tests.cpp src/store.cpp src/annotation.cpp src/editing.cpp
         src/toolbar.cpp src/text_editor.cpp src/text_editor.h src/image_text.cpp src/image_text.h src/element_detector.cpp src/element_detector.h src/capture.cpp src/pin.cpp src/recorder.cpp src/recognition.cpp
-        src/application.cpp src/application.h src/recording_overlay.cpp src/recording_overlay.h
+        src/application.cpp src/application.h src/recording_overlay.cpp src/recording_overlay.h src/recording_settings.cpp src/recording_settings.h
         src/store.h src/annotation.h src/editing.h src/toolbar.h src/capture.h src/pin.h src/recorder.h src/menu.h)
     target_compile_definitions(FloatShotNativeTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(FloatShotNativeTests PRIVATE /utf-8 /W4)

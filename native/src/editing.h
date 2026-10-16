@@ -35,6 +35,9 @@ public:
   QString editTarget(QPoint point) const;
 
 protected:
+  bool event(QEvent *event) override;
+  void ensureTextEditor();
+  int numberLabelIndex = -1;
   void positionBar(QWidget *bar);
   void updateDrawingCursor(QPoint point);
   QPoint pointer;

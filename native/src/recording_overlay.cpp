@@ -1,5 +1,6 @@
 #include "recording_overlay.h"
 #include "native_windows.h"
+#include "compact_ui.h"
 #include <QtGui/QCloseEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
@@ -62,24 +63,13 @@ public:
                 Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint) {
     setObjectName("recordingControls");
     setAttribute(Qt::WA_ShowWithoutActivating);
-    setStyleSheet(
-        "QWidget#recordingControls{background:#18232f;border:1px solid #3c4c60;"
-        "border-radius:7px;}QLabel{color:#e8eef7;border:0;background:"
-        "transparent;"
-        "font-family:'Microsoft YaHei UI';font-size:12px;}"
-        "QPushButton{color:#e8eef7;background:#2a3a4c;border:0;border-radius:"
-        "4px;"
-        "font-family:'Microsoft YaHei UI';font-size:12px;padding:6px 10px;}"
-        "QPushButton:hover{background:#354b61;}QPushButton:disabled{color:#"
-        "758394;}"
-        "QPushButton#stopRecording{background:#b63b4c;}"
-        "QPushButton#stopRecording:hover{background:#d5475b;}"
-        "QToolButton{background:transparent;border:0;color:#e8eef7;padding:4px;"
-        "}"
-        "QToolButton:hover{background:#354b61;border-radius:4px;}");
+    setStyleSheet(compactToolbarStyle()+
+        "QLabel{color:#333;border:0;background:transparent;font-family:'Microsoft YaHei UI';font-size:12px;}"
+        "QPushButton{background:transparent;border:0;padding:0;}"
+        "QPushButton:hover{background:#dedede;}");
     auto layout = new QHBoxLayout(this);
-    layout->setContentsMargins(10, 7, 10, 7);
-    layout->setSpacing(8);
+    layout->setContentsMargins(6, 0, 0, 0);
+    layout->setSpacing(4);
     auto grip = new QLabel("⋮⋮");
     grip->setObjectName("recordingGrip");
     grip->setCursor(Qt::SizeAllCursor);
@@ -91,15 +81,19 @@ public:
     layout->addWidget(state);
     time = new QLabel("00:00:00");
     time->setObjectName("recordingTime");
-    time->setStyleSheet("font-family:Consolas;font-size:16px;color:#f3f6fa;");
+    time->setStyleSheet("font-family:Consolas;font-size:14px;color:#333;");
     time->setMinimumWidth(77);
     layout->addWidget(time);
-    pause = new QPushButton("暂停");
+    pause = new QPushButton;
     pause->setObjectName("pauseRecording");
+    pause->setIcon(recordingIcon("pause")); pause->setIconSize({16,16}); pause->setFixedSize(32,32);
+    pause->setToolTip("暂停录屏 · Ctrl+Alt+P");
     pause->setEnabled(false);
     layout->addWidget(pause);
-    stop = new QPushButton("结束");
+    stop = new QPushButton;
     stop->setObjectName("stopRecording");
+    stop->setIcon(recordingIcon("stop")); stop->setIconSize({16,16}); stop->setFixedSize(32,32);
+    stop->setToolTip("结束录屏 · Ctrl+Alt+S");
     stop->setEnabled(false);
     layout->addWidget(stop);
     for (bool system : {true, false}) {
@@ -108,7 +102,8 @@ public:
       auto mute = new QToolButton;
       mute->setCheckable(true);
       mute->setObjectName(system ? "muteSystemAudio" : "muteMicrophone");
-      mute->setText(system ? "声" : "麦");
+      mute->setIcon(recordingIcon(system?"speaker":"microphone"));
+      mute->setIconSize({16,16}); mute->setFixedSize(32,32);
       mute->setToolTip(system ? "系统声音静音" : "麦克风静音");
       layout->addWidget(mute);
     }
@@ -197,6 +192,7 @@ RecordingOverlay::RecordingOverlay(Recorder *recorder, QRect region,
     }
   });
   connect(panel->stop, &QPushButton::clicked, this, [this] {
+    if (countdown>=0 && !begun) { emit countdownCanceled(); return; }
     if (this->recorder) {
       this->recorder->stop();
       refresh();
@@ -242,27 +238,35 @@ void RecordingOverlay::hide() {
   frame->hide();
   panel->hide();
 }
+void RecordingOverlay::setCountdown(int seconds) { countdown=seconds; refresh(); }
 void RecordingOverlay::refresh() {
   if (!recorder)
     return;
   const bool saving = recorder->finalizing();
   const bool paused = recorder->paused();
+  const bool counting=countdown>=0 && !begun;
   qint64 seconds = begun ? qint64(recorder->elapsed()) : 0;
   panel->time->setText(QString("%1:%2:%3")
                            .arg(seconds / 3600, 2, 10, QChar('0'))
                            .arg(seconds / 60 % 60, 2, 10, QChar('0'))
                            .arg(seconds % 60, 2, 10, QChar('0')));
-  panel->state->setText(saving   ? "正在保存"
+  if (counting) panel->time->setText(QString("%1 秒").arg(countdown));
+  panel->state->setText(counting ? "倒计时"
+                        : saving   ? "正在保存"
                         : !begun ? "准备录制"
                         : paused ? "已暂停"
                                  : "● 录制中");
   const auto stateStyle =
-      QString("color:%1;").arg(paused ? "#f5b84b" : "#ff7280");
+      QString("color:%1;").arg(paused ? "#a66b00" : "#d82b39");
   if (panel->state->styleSheet() != stateStyle)
     panel->state->setStyleSheet(stateStyle);
-  panel->pause->setText(paused ? "继续" : "暂停");
+  panel->pause->setVisible(!counting);
+  panel->pause->setIcon(recordingIcon(paused?"play":"pause"));
+  panel->pause->setToolTip(paused?"继续录屏 · Ctrl+Alt+P":"暂停录屏 · Ctrl+Alt+P");
   panel->pause->setEnabled(begun && recorder->active() && !saving);
-  panel->stop->setEnabled(begun && recorder->active() && !saving);
+  panel->stop->setEnabled(counting || (begun && recorder->active() && !saving));
+  panel->stop->setIcon(recordingIcon(counting?"cancel":"stop"));
+  panel->stop->setToolTip(counting?"取消录屏倒计时 · Esc":"结束录屏 · Ctrl+Alt+S");
   for (auto name : {"muteSystemAudio", "muteMicrophone"})
     if (auto mute = panel->findChild<QToolButton *>(name))
       mute->setEnabled(begun && recorder->active() && !saving);

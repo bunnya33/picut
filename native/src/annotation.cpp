@@ -99,6 +99,12 @@ QSizeF textSize(const Mark &mark) {
   auto size = document.size();
   return {qMax(24.0, size.width()), qMax(30.0, size.height())};
 }
+QRectF numberLabelRect(const Mark &mark) {
+  if (mark.points.isEmpty()) return {};
+  const auto size=textSize(mark);
+  const auto center=mark.points.first();
+  return {center+QPointF(mark.fontSize*.65+qMax(4.,mark.fontSize*.18),-size.height()/2),size};
+}
 bool isEndpointMark(const Mark &mark) {
   return mark.kind == "line" || mark.kind == "arrow" ||
          (mark.kind == "marker" && mark.areaShape == "stroke");
@@ -210,9 +216,11 @@ QPainterPath markPath(const Mark &mark) {
     path.addEllipse(r);
   else if (mark.kind == "text") {
     path.addRect(markBounds(mark));
-  } else if (mark.kind == "number")
+  } else if (mark.kind == "number") {
     path.addEllipse(mark.points.first(), mark.fontSize * .65,
                     mark.fontSize * .65);
+    if (!mark.text.trimmed().isEmpty()) path.addRect(numberLabelRect(mark));
+  }
   else if (mark.kind == "magnify")
     path.addEllipse(r);
   else if (mark.areaShape != "stroke" &&
@@ -238,7 +246,7 @@ QRectF markBounds(const Mark &mark) {
   return markPath(mark).boundingRect();
 }
 QMap<QString, QPointF> markControls(const Mark &mark) {
-  if (mark.points.isEmpty() || mark.kind == "pen")
+  if (mark.points.isEmpty() || mark.kind == "pen" || mark.kind == "number")
     return {};
   if (isEndpointMark(mark))
     return {{"start", mark.points.first()}, {"end", mark.points.last()}};
@@ -366,13 +374,23 @@ void paintMark(QImage &image, const Mark &mark) {
     document.adjustSize();
     document.drawContents(&painter);
   } else if (mark.kind == "number") {
+    const auto center=mark.points.first(); const double radius=mark.fontSize*.65;
+    const QRectF circle(center-QPointF(radius,radius),QSizeF(radius*2,radius*2));
     painter.setPen(Qt::NoPen);
     painter.setBrush(mark.color);
-    painter.drawPath(path);
+    painter.drawEllipse(circle);
     painter.setFont(annotationFont(mark));
     painter.setPen(Qt::white);
-    painter.drawText(path.boundingRect(), Qt::AlignCenter,
+    painter.drawText(circle, Qt::AlignCenter,
                      QString::number(mark.number));
+    if (!mark.text.trimmed().isEmpty()) {
+      auto label=numberLabelRect(mark);
+      painter.setPen(QPen(mark.color,qMax(1.,mark.width*.5),Qt::SolidLine,Qt::RoundCap));
+      painter.drawPolyline(QPolygonF{{center.x()+radius*.6,label.bottom()-1},
+                                     {label.left(),label.bottom()-1},{label.right()+2,label.bottom()-1}});
+      QTextDocument document; document.setPlainText(mark.text); styleTextDocument(&document,mark);
+      document.adjustSize(); painter.translate(label.topLeft()); document.drawContents(&painter);
+    }
   } else if (mark.kind == "mosaic" || mark.kind == "blur" ||
              mark.kind == "magnify") {
     QPainterPath mask = path;

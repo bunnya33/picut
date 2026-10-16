@@ -13,12 +13,21 @@
 
 class InlineTextItem : public QGraphicsTextItem {
 public:
+  bool numberLabel=false;
+  QColor lineColor;
+  double lineWidth=1, leader=4;
   QRectF boundingRect() const override {
     return QGraphicsTextItem::boundingRect().united({0, 0, 24, 30});
   }
   void paint(QPainter *painter, const QStyleOptionGraphicsItem *option,
              QWidget *widget) override {
     QGraphicsTextItem::paint(painter, option, widget);
+    if (numberLabel) {
+      painter->setPen(QPen(lineColor,lineWidth,Qt::SolidLine,Qt::RoundCap));
+      const auto bounds=boundingRect();
+      painter->drawLine(QPointF(-leader,bounds.bottom()-1),QPointF(bounds.right()+2,bounds.bottom()-1));
+      return;
+    }
     QPen border(QColor("#c0c0c0"), 1);
     border.setCosmetic(true);
     painter->setPen(border);
@@ -106,10 +115,12 @@ Mark InlineTextEditor::value() const {
 void InlineTextEditor::setPreferences(const Mark &preferences) {
   auto text = item->toPlainText();
   auto points = model.points;
+  const int number=model.number;
   model = preferences;
-  model.kind = "text";
+  model.kind = static_cast<InlineTextItem *>(item)->numberLabel ? "number" : "text";
   model.text = text;
   model.points = points;
+  model.number=number;
   applyModel();
 }
 void InlineTextEditor::applyModel() {
@@ -121,12 +132,20 @@ void InlineTextEditor::applyModel() {
   updatedCursor.setCharFormat(annotationTextFormat(model));
   item->setDefaultTextColor(model.color);
   item->setTextCursor(updatedCursor);
-  item->setPos(model.points.first());
-  item->setRotation(model.rotation);
+  auto label=static_cast<InlineTextItem *>(item); label->numberLabel=model.kind=="number";
+  label->lineColor=model.color; label->lineWidth=qMax(1.,model.width*.5);
+  label->leader=qMax(4.,model.fontSize*.18)+model.fontSize*.65*.4;
+  item->setPos(label->numberLabel?numberLabelRect(model).topLeft():model.points.first());
+  item->setRotation(label->numberLabel?0:model.rotation);
   styling = false;
   positionHandles();
 }
 void InlineTextEditor::positionHandles() {
+  if (model.kind=="number") {
+    for (auto handle:handles) handle->hide();
+    viewport()->update(); return;
+  }
+  for (auto handle:handles) handle->show();
   const auto r = item->boundingRect();
   QMap<QString, QPointF> points{{"nw", r.topLeft()}, {"delete", r.topRight()},
                                 {"sw", r.bottomLeft()}, {"se", r.bottomRight()}};
@@ -200,13 +219,15 @@ void InlineTextEditor::mousePressEvent(QMouseEvent *event) {
   const auto local = item->mapFromScene(point);
   if (!item->boundingRect().adjusted(-3, -3, 3, 3).contains(local)) {
     auto parentPoint = mapToParent(event->position().toPoint());
+    const bool numbered=model.kind=="number";
     emit commitRequested();
+    if (numbered) return;
     QMouseEvent forwarded(event->type(), QPointF(parentPoint), event->globalPosition(),
                            event->button(), event->buttons(), event->modifiers());
     QApplication::sendEvent(parentWidget(), &forwarded);
     return;
   }
-  if (event->button() == Qt::LeftButton &&
+  if (model.kind!="number" && event->button() == Qt::LeftButton &&
       !item->boundingRect().adjusted(3, 3, -3, -3).contains(local)) {
     activeHandle = "move";
     dragModel = value();
@@ -225,7 +246,7 @@ void InlineTextEditor::mouseMoveEvent(QMouseEvent *event) {
   }
   auto local = item->mapFromScene(mapToScene(event->position().toPoint()));
   bool inside = item->boundingRect().contains(local);
-  viewport()->setCursor(inside && !item->boundingRect().adjusted(3, 3, -3, -3).contains(local)
+  viewport()->setCursor(model.kind!="number" && inside && !item->boundingRect().adjusted(3, 3, -3, -3).contains(local)
                             ? Qt::SizeAllCursor : inside ? Qt::IBeamCursor
                                                         : Qt::CrossCursor);
   QGraphicsView::mouseMoveEvent(event);
@@ -239,6 +260,10 @@ void InlineTextEditor::mouseReleaseEvent(QMouseEvent *event) {
   QGraphicsView::mouseReleaseEvent(event);
 }
 void InlineTextEditor::keyPressEvent(QKeyEvent *event) {
+  if (model.kind=="number") {
+    if (event->key()==Qt::Key_Tab) { event->accept(); return; }
+    if (event->key()==Qt::Key_Return || event->key()==Qt::Key_Enter) { emit commitRequested(); return; }
+  }
   auto ctrl = event->modifiers() & Qt::ControlModifier;
   if (event->key() == Qt::Key_Escape) {
     emit cancelRequested();
@@ -254,6 +279,9 @@ void InlineTextEditor::keyPressEvent(QKeyEvent *event) {
     return;
   }
   QGraphicsView::keyPressEvent(event);
+}
+bool InlineTextEditor::focusNextPrevChild(bool next) {
+  return model.kind=="number" ? false : QGraphicsView::focusNextPrevChild(next);
 }
 void InlineTextEditor::wheelEvent(QWheelEvent *event) {
   if (event->angleDelta().y())

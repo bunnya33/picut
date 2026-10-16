@@ -1,4 +1,5 @@
 #include "toolbar.h"
+#include "compact_ui.h"
 #include <QtCore/QSignalBlocker>
 #include <QtGui/QDoubleValidator>
 #include <QtWidgets/QLineEdit>
@@ -182,12 +183,8 @@ static QIcon swatchIcon(QColor color, int size, bool custom = false) {
 Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
   setCursor(Qt::ArrowCursor);
   setAttribute(Qt::WA_TranslucentBackground);
-  setStyleSheet(
-      "QFrame#annotationToolbar,QFrame#annotationOptions{"
-      "background:#f2f2f2;border:1px solid #2080f0;border-radius:0;}"
-      "QToolButton{background:transparent;border:0;padding:0;}"
-      "QToolButton:hover{background:#dedede;}QToolButton:checked{background:#"
-      "2080f0;}QComboBox,QSpinBox{color:#333;background:#fff;border:1px solid "
+  setStyleSheet(compactToolbarStyle()+
+      "QComboBox,QSpinBox{color:#333;background:#fff;border:1px solid "
       "#c5c5c5;padding:2px;}QFontComboBox{color:#333;}QSlider::groove:"
       "horizontal{height:3px;background:#aaa;}QSlider::handle:horizontal{width:"
       "8px;height:8px;margin:-4px 0;background:white;border:2px solid #2080f0;"

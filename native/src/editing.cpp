@@ -241,6 +241,7 @@ bool EditingSurface::annotationPress(QMouseEvent *e) {
   auto point = e->position().toPoint();
   pointer = point;
   if (!contentRect().contains(point)) {
+    commitText();
     annotation->confirm();
     update();
     return false;
@@ -263,33 +264,7 @@ bool EditingSurface::annotationPress(QMouseEvent *e) {
   annotation->confirm();
   if (annotation->tool == "text") {
     commitText();
-    if (!textEntry) {
-      textEntry = new InlineTextEditor(this);
-      connect(textEntry, &InlineTextEditor::commitRequested,
-              this, &EditingSurface::commitText);
-      connect(textEntry, &InlineTextEditor::cancelRequested, this, [this] {
-        textEntry->hide();
-        setFocus();
-        update();
-      });
-      connect(textEntry, &InlineTextEditor::sizeStepRequested, this, [this](int steps) {
-        setPreference("font_size", annotation->preferences.fontSize + steps * 4.0 / 3);
-      });
-      connect(textEntry, &InlineTextEditor::commandRequested, this,
-              [this](int key, Qt::KeyboardModifiers modifiers) {
-                commitText();
-                QKeyEvent event(QEvent::KeyPress, key, modifiers);
-                QApplication::sendEvent(this, &event);
-              });
-      connect(textEntry, &InlineTextEditor::geometryEdited, this,
-              [this](double size, int rotation) {
-                annotation->preferences.fontSize = size;
-                annotation->preferences.rotation = rotation;
-                annotation->savePreferences(store);
-                toolbar->sync(*annotation);
-                positionToolbar();
-              });
-    }
+    ensureTextEditor();
     auto mark = annotation->preferences;
     mark.kind = "text";
     mark.text.clear();
@@ -467,6 +442,13 @@ bool EditingSurface::annotationKey(QKeyEvent *e) {
     return true;
   }
   auto ctrl = e->modifiers() & Qt::ControlModifier;
+  if (!ctrl && e->key()==Qt::Key_Tab && annotation->selected>=0 &&
+      annotation->marks[annotation->selected].kind=="number") {
+    ensureTextEditor(); numberLabelIndex=annotation->selected;
+    auto mark=annotation->marks[numberLabelIndex];
+    annotation->marks[numberLabelIndex].text.clear(); annotation->refresh();
+    textEntry->begin(mark,contentRect(),annotation->original.size()); update(); return true;
+  }
   if (ctrl && e->key() >= Qt::Key_1 && e->key() <= Qt::Key_8) {
     chooseTool(QStringList{"rect", "arrow", "pen", "marker", "mosaic", "text",
                            "eraser", "number"}[e->key() - Qt::Key_1]);
@@ -527,12 +509,53 @@ bool EditingSurface::annotationKey(QKeyEvent *e) {
   }
   return false;
 }
+bool EditingSurface::event(QEvent *event) {
+  if (event->type()==QEvent::KeyPress) {
+    auto key=static_cast<QKeyEvent *>(event);
+    if (key->key()==Qt::Key_Tab && annotation && annotationKey(key)) return true;
+  }
+  return QWidget::event(event);
+}
+void EditingSurface::ensureTextEditor() {
+    if (!textEntry) {
+      textEntry = new InlineTextEditor(this);
+      connect(textEntry, &InlineTextEditor::commitRequested,
+              this, &EditingSurface::commitText);
+      connect(textEntry, &InlineTextEditor::cancelRequested, this, [this] {
+        textEntry->hide();
+        if (numberLabelIndex>=0) { numberLabelIndex=-1; annotation->confirm(); annotation->refresh(); }
+        setFocus();
+        update();
+      });
+      connect(textEntry, &InlineTextEditor::sizeStepRequested, this, [this](int steps) {
+        setPreference("font_size", annotation->preferences.fontSize + steps * 4.0 / 3);
+      });
+      connect(textEntry, &InlineTextEditor::commandRequested, this,
+              [this](int key, Qt::KeyboardModifiers modifiers) {
+                commitText();
+                QKeyEvent event(QEvent::KeyPress, key, modifiers);
+                QApplication::sendEvent(this, &event);
+              });
+      connect(textEntry, &InlineTextEditor::geometryEdited, this,
+              [this](double size, int rotation) {
+                annotation->preferences.fontSize = size;
+                annotation->preferences.rotation = rotation;
+                annotation->savePreferences(store);
+                toolbar->sync(*annotation);
+                positionToolbar();
+              });
+    }
+}
 void EditingSurface::commitText() {
   if (!textEntry || !textEntry->isVisible() || !annotation)
     return;
   auto mark = textEntry->value();
   textEntry->hide();
-  if (!mark.text.trimmed().isEmpty()) {
+  if (mark.kind=="number" && numberLabelIndex>=0 && numberLabelIndex<annotation->marks.size()) {
+    if (mark.text.trimmed().isEmpty()) mark.text.clear();
+    annotation->marks[numberLabelIndex]=mark; numberLabelIndex=-1;
+    annotation->confirm(); annotation->refresh();
+  } else if (!mark.text.trimmed().isEmpty()) {
     annotation->add(mark);
     annotation->confirm();
     if (toolbar)

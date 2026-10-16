@@ -1,6 +1,8 @@
 #include "capture.h"
 #include "element_detector.h"
 #include "native_windows.h"
+#include "compact_ui.h"
+#include "recording_settings.h"
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QJsonArray>
 #include <QtCore/QTimer>
@@ -242,19 +244,29 @@ CaptureOverlay::CaptureOverlay(Store *s, bool record,
   includeCursor = store && store->config["capture_cursor"].toBool();
   if (recording) {
     auto bar = new QFrame(this);
-    bar->setStyleSheet("QFrame#recordToolbar{background:#f2f2f2;"
-                      "border:1px solid #2080f0;}");
+    bar->setStyleSheet(compactToolbarStyle());
     auto row = new QHBoxLayout(bar);
-    row->setContentsMargins(4, 4, 4, 4);
-    auto start = new QPushButton("开始录制");
-    auto cancel = new QPushButton("取消");
-    row->addWidget(start);
-    row->addWidget(cancel);
-    connect(start, &QPushButton::clicked, this, [this] { complete("record"); });
-    connect(cancel, &QPushButton::clicked, this,
-            [this] { complete("cancel"); });
+    row->setContentsMargins(0,0,0,0); row->setSpacing(0);
+    for (auto name:{QString("settings"),QString("record"),QString("cancel")}) {
+      auto button=new QToolButton; button->setObjectName("record_"+name);
+      button->setFixedSize(32,32); button->setIconSize({16,16}); button->setFocusPolicy(Qt::NoFocus);
+      button->setIcon(recordingIcon(name));
+      button->setToolTip(name=="settings"?"录屏设置":name=="record"?"开始录制 · Enter":"取消 · Esc");
+      row->addWidget(button);
+      connect(button,&QToolButton::clicked,this,[this,name] {
+        if (name=="settings") {
+          RecordingSettingsDialog dialog(store,globalSelection(),false,this);
+          dialog.exec(); updateSelectionToolbar(); activateWindow(); setFocus(); update();
+        } else complete(name=="record"?"record":"cancel");
+      });
+    }
     bar->setObjectName("recordToolbar");
     bar->hide();
+    auto summary=new QLabel(this); summary->setObjectName("recordSummary");
+    summary->setAttribute(Qt::WA_TransparentForMouseEvents);
+    summary->setStyleSheet("background:rgba(0,0,0,175);color:white;padding:5px 8px;"
+                          "font-family:'Microsoft YaHei UI';font-size:12px;border:0;");
+    summary->setWordWrap(true); summary->hide();
   }
 }
 void CaptureOverlay::selectRegion(QRect region) {
@@ -273,7 +285,26 @@ void CaptureOverlay::updateSelectionToolbar(bool show) {
     positionBar(bar);
     if (show)
       bar->show();
+    updateRecordingSummary();
   }
+}
+void CaptureOverlay::updateRecordingSummary() {
+  auto summary=findChild<QLabel *>("recordSummary");
+  if (!summary) return;
+  if (selection.isEmpty()) { summary->hide(); return; }
+  auto screen=QGuiApplication::screenAt(globalSelection().center());
+  if (!screen) screen=QGuiApplication::primaryScreen();
+  auto available=QRect(mapFromGlobal(screen->availableGeometry().topLeft()),screen->availableGeometry().size()).intersected(rect()).adjusted(4,4,-4,-4);
+  summary->setText(recordingSummary(store->config));
+  summary->setFixedWidth(qMin(available.width(),summary->fontMetrics().horizontalAdvance(summary->text())+20));
+  summary->adjustSize();
+  int x=qBound(available.left(),selection.left(),qMax(available.left(),available.right()-summary->width()+1));
+  int y=selection.bottom()+7;
+  if (auto bar=findChild<QFrame *>("recordToolbar");bar && bar->isVisible() &&
+      QRect(x,y,summary->width(),summary->height()).intersects(bar->geometry())) y=bar->geometry().bottom()+5;
+  if (y+summary->height()-1>available.bottom()) y=selection.bottom()-summary->height()-6;
+  y=qBound(available.top(),y,qMax(available.top(),available.bottom()-summary->height()+1));
+  summary->move(x,y); summary->show(); summary->raise();
 }
 void CaptureOverlay::rebuildAnnotation() {
   if (selection.width() < 2 || selection.height() < 2 || recording)
@@ -379,10 +410,10 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
                QStringList{"pen", "line", "arrow", "marker", "eraser"}.contains(
                    annotation->tool) &&
                selection.contains(pointer);
-  if (!selectingText && (alt || (!brush && (!annotation || (!annotation->draft && !dragOriginal)))))
+  if (!recording && !selectingText && (alt || (!brush && (!annotation || (!annotation->draft && !dragOriginal)))))
     paintMagnifier(p, preview);
   p.setPen(Qt::white);
-  p.drawText(
+  if (!recording || selection.isEmpty()) p.drawText(
       QRect(15, height() - 46, 560, 36), Qt::AlignLeft | Qt::AlignVCenter,
       recording ? "拖动框选录屏区域 · Esc 取消"
                 : "Ctrl+1～8 标注工具 · Enter 复制 · F3 原位置贴图 · Esc 退出");
@@ -518,6 +549,7 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *e) {
     toolbar->hide();
   if (auto bar = findChild<QFrame *>("recordToolbar"))
     bar->hide();
+  if (auto summary=findChild<QLabel *>("recordSummary")) summary->hide();
   update();
 }
 void CaptureOverlay::mouseMoveEvent(QMouseEvent *e) {
@@ -639,7 +671,7 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
     complete(e->modifiers() & Qt::ShiftModifier ? "quick_save" : "save");
     return;
   }
-  if (e->key() == Qt::Key_C && !(e->modifiers() & Qt::ControlModifier)) {
+  if (!recording && e->key() == Qt::Key_C && !(e->modifiers() & Qt::ControlModifier)) {
     auto color = desktop.color(pointer + pos());
     if (annotation && selection.contains(pointer)) {
       auto point = imagePoint(pointer).toPoint();
@@ -720,7 +752,7 @@ bool CaptureOverlay::confirmExit() {
   if (!annotation || annotation->marks.isEmpty() ||
       !store->config["confirm_capture_exit"].toBool(true))
     return true;
-  QMessageBox prompt(QMessageBox::Question, "浮光 · 退出截图",
+  QMessageBox prompt(QMessageBox::Question, "picut · 退出截图",
                      "确定要退出截图吗？当前标注将不会保存。",
                      QMessageBox::Yes | QMessageBox::Cancel, this);
   prompt.button(QMessageBox::Yes)->setText("确定");

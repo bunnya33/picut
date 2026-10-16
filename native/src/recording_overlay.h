@@ -17,10 +17,13 @@ public:
   bool show();
   void hide();
   void refresh();
+  void setCountdown(int seconds);
   QWidget *boundary() const;
   QWidget *controls() const;
   QRect region() const { return logicalRegion; }
   bool captureExcluded() const { return excluded; }
+signals:
+  void countdownCanceled();
 
 private:
   QPointer<Recorder> recorder;
@@ -29,4 +32,5 @@ private:
   std::unique_ptr<RecordingControls> panel;
   QTimer timer;
   bool begun = false, excluded = false;
+  int countdown = -1;
 };

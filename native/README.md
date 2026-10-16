@@ -1,10 +1,14 @@
-# FloatShot Native v0.5.12 synchronized OCR sidebar
+# picut v0.5.13
+
+F2 selects a recording region. Settings are optional for region capture, persisted locally, and summarized beside the selection. Fullscreen recording still opens settings. Countdown and recording share an excluded boundary and compact controls. Numbered circles have no adjustment handles; Tab adds an inline underlined label, committed as part of the same mark. See docs/更新记录-v0.5.13-picut录屏与序号.md.
+
+## Synchronized OCR sidebar
 
 F4, the toolbar and text recognition menus open one frameless workspace with the original image and a read-only text sidebar. Image and text share UTF-16 selection offsets; both retain highlights across focus changes. Selecting in the image scrolls the text to the caret; selecting in the sidebar pans an enlarged image to the corresponding glyph. Partial and multiline selection, Ctrl+C, Ctrl+A and Esc/F4 work from both sides. The old OCR text dialog has been replaced; QR/barcode results keep their separate dialog.
 
 Adjacent layouts preserve the image's global rectangle and put the panel on a fitting side. Full-screen, tall and overflowing regions use a split workspace within one screen's available geometry, with a draggable divider, wheel zoom, space/middle-button pan, fit/100% controls and a collapsible panel. A view transform maps all interaction back into the immutable original image; parent capture/pin geometry and pixels stay intact. Completed OCR results are cached per surface until pixels/profile/acceleration change. Recognition always receives the full-resolution original and uses PaddleOCR Small. Windows OCR remains in benchmark/helper code rather than a selectable sidebar backend.
 
-The trial defaults to `%LOCALAPPDATA%/FloatShot/FloatShotNative-ImageTextTrial`, skips legacy migration and packages to `dist/FloatShot-Native-0.5.12*`. `run-image-text-trial.ps1` starts it; `run.ps1` continues to start the preserved v0.5.10 release. Git `main` and tag `v0.5.10` retain the stable source baseline; tag `v0.5.11-image-text-trial` and its package preserve the first image selection implementation. See `docs/版本回滚.md` and `docs/更新记录-v0.5.12-同步文字侧栏.md`.
+The data directory remains `%LOCALAPPDATA%/FloatShot/FloatShotNative-ImageTextTrial`, preserving trial settings and history without migrating stable data. Packages are in `dist/picut-0.5.13*`; both `run.ps1` and `run-image-text-trial.ps1` start this version. Earlier packages remain available for rollback. Git `main` and tag `v0.5.10` retain the stable source baseline, and tags `v0.5.11-image-text-trial` and `v0.5.12-ocr-sidebar` preserve the prior OCR interfaces. See `docs/版本回滚.md`.
 
 Windows C++20 / Qt 6.8.3 Widgets application. No Python interpreter, bindings, build scripts, or runtime are required. Qt Multimedia is an optional DLL loaded on first video preview. Recording uses a separately deployed FFmpeg executable; audio capture uses Windows WASAPI.
 
@@ -20,7 +24,7 @@ Install Visual Studio 2022 or newer with C++ desktop tools and a Windows 10/11 S
 
 `setup-sdk.ps1` fetches the official Qt MSVC x64 SDK, pinned ZXing-C++ source, and standalone FFmpeg, verifies SHA-256 hashes, and uses Windows tar / Expand-Archive. It does not install anything globally. An existing Qt installation can be used with `build.ps1 -QtDir C:/Qt/6.8.3/msvc2022_64`. `build-native.cmd` is a convenience wrapper. Packaging supports `-QtDir`, `-Ffmpeg`, and `-NoZip`.
 
-Executables are built in `build/native/`. The complete runtime folder and ZIP are in `dist/FloatShot-Native-0.5.12*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
+Executables are built in `build/native/`. The complete runtime folder and ZIP are in `dist/picut-0.5.13*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
 
 v0.5.10 makes the width/dot button a direct stroke/outline selector for tools that have fill/area modes. Left-click switches back without a popup; repeated selection is a no-op. Right-click opens the size slider while preserving the current mode. Screenshot and pin editing share this behavior. Pen, arrow and number tools keep their size-button behavior.
 
@@ -32,7 +36,7 @@ v0.5.9 replaces nontext option ComboBoxes with compact icon buttons (arrow style
 
 The GUI starts the worker with a temporary PNG and receives newline JSON progress on stdout and the result through an output file; completion, cancellation and timeout remove the temporary directory and terminate model residency. The main EXE does not link OpenCV, ONNX Runtime or DirectML. GPU DLLs stay separate from CPU DLLs; the child working directory is the package root to locate Qt without SDK PATH entries. Windows OCR is retained for benchmark comparison. The Small main model supports the official 50-language range: Chinese simplified/traditional, English, Japanese and Latin-script languages. Korean, Arabic, Cyrillic, Thai and Indic-script recognizers are not included. See `docs/更新记录-v0.5.4.md` for current benchmarks, language limitations and comparison with v0.5.3 medium.
 
-`FloatShotOcrTests.exe` uses identical synthetic images for Windows/Paddle comparison and verifies cancellation, cleanup, Unicode paths, transparency, orientation, large-image tile boundaries and the result dialog. It also compares CPU/GPU output on 120 text lines, tests GPU accuracy/cancellation, and independently tests actual backend failure and automatic CPU fallback. Only explicitly unsupported GPU hardware causes GPU cases to skip; deployment errors fail. Set `FLOATSHOT_OCR_TEST_DIR` to save images/reports. The root build runs these tests. `FloatShotNative.exe --verify-ocr-memory` measures three isolated OCR runs using synthetic text; set `FLOATSHOT_DATA_DIR` to a test folder first.
+`FloatShotOcrTests.exe` uses identical synthetic images for Windows/Paddle comparison and verifies cancellation, cleanup, Unicode paths, transparency, orientation, large-image tile boundaries and the result dialog. It also compares CPU/GPU output on 120 text lines, tests GPU accuracy/cancellation, and independently tests actual backend failure and automatic CPU fallback. Only explicitly unsupported GPU hardware causes GPU cases to skip; deployment errors fail. Set `FLOATSHOT_OCR_TEST_DIR` to save images/reports. The root build runs these tests. `picut.exe --verify-ocr-memory` measures three isolated OCR runs using synthetic text; set `FLOATSHOT_DATA_DIR` to a test folder first.
 
 ## Checks
 

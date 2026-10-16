@@ -167,7 +167,7 @@ void showRecognition(const QImage &image, bool codes, QWidget *parent, Store *st
     if (!image.isNull()) loop.exec();
     return;
   }
-  QDialog dialog(parent); dialog.setWindowTitle("浮光 · 扫码"); dialog.resize(640,430);
+  QDialog dialog(parent); dialog.setWindowTitle("picut · 扫码"); dialog.resize(640,430);
   auto root=new QVBoxLayout(&dialog);
   auto status=new QLabel("正在识别二维码 / 条形码…"); root->addWidget(status);
   auto text=new QPlainTextEdit; text->setObjectName("recognitionText");

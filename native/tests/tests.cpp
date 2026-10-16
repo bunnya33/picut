@@ -5,6 +5,7 @@
 #include "pin.h"
 #include "recognition.h"
 #include "recorder.h"
+#include "recording_settings.h"
 #include <BitMatrix.h>
 #include <MultiFormatWriter.h>
 #include <QtCore/QDir>
@@ -33,6 +34,9 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QPlainTextEdit>
+#include <QtWidgets/QDialogButtonBox>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QPushButton>
 #include <winrt/base.h>
 
 class NativeTests : public QObject {
@@ -104,6 +108,141 @@ class NativeTests : public QObject {
         line("10.49",220,70,{14,18,8,18,18})}}};
   }
 private slots:
+  void recordingSettingsPersistenceAndCancel() {
+    QTemporaryDir dir; Store store(dir.path());
+    RecordingSettingsDialog dialog(&store,{30,40,500,300},false);
+    dialog.findChild<QCheckBox *>("recordSystemAudio")->setChecked(true);
+    dialog.findChild<QCheckBox *>("recordMicrophone")->setChecked(true);
+    dialog.findChild<QCheckBox *>("recordCursor")->setChecked(false);
+    dialog.findChild<QComboBox *>("recordFps")->setCurrentIndex(1);
+    dialog.findChild<QComboBox *>("recordQuality")->setCurrentIndex(1);
+    dialog.findChild<QSpinBox *>("recordCountdown")->setValue(5);
+    dialog.findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+    QCOMPARE(dialog.result(),int(QDialog::Accepted));
+    Store reopened(dir.path());
+    auto options=savedRecordingOptions(reopened.config,{60,80,1000,600},"movie.mp4");
+    QVERIFY(options.systemAudio && options.microphone && !options.cursor);
+    QCOMPARE(options.fps,15); QCOMPARE(options.quality,18);
+    QCOMPARE(options.region,QRect(60,80,1000,600));
+    QCOMPARE(reopened.config["countdown"].toInt(),5);
+    QVERIFY(recordingSummary(reopened.config).contains("15 fps"));
+    auto saved=reopened.config;
+    RecordingSettingsDialog canceled(&reopened,{30,40,500,300},false);
+    canceled.findChild<QSpinBox *>("recordCountdown")->setValue(1);
+    canceled.reject(); QCOMPARE(reopened.config,saved);
+  }
+  void recordingShortcutMigrationPreservesCustomBindings() {
+    QTemporaryDir dir;
+    Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"hotkeys",QJsonObject{{"record","Ctrl+Alt+R"}}}});
+    Store upgraded(dir.path()); QCOMPARE(upgraded.config["hotkeys"].toObject()["record"].toString(),QString("F2"));
+    upgraded.saveConfig(); Store reopened(dir.path());
+    QCOMPARE(reopened.config["hotkeys"].toObject()["record"].toString(),QString("F2"));
+    Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"hotkeys",QJsonObject{{"record","Alt+F8"}}}});
+    Store custom(dir.path()); QCOMPARE(custom.config["hotkeys"].toObject()["record"].toString(),QString("Alt+F8"));
+    Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"hotkeys",QJsonObject{{"capture","F2"}}}});
+    Store conflict(dir.path()); QCOMPARE(conflict.config["hotkeys"].toObject()["capture"].toString(),QString("F2"));
+    QVERIFY(conflict.config["hotkeys"].toObject()["record"].toString()!="F2");
+  }
+  void recordingSelectionSummaryToolbarAndNoMagnifier() {
+    QTemporaryDir dir; Store store(dir.path()); DesktopSnapshot desktop;
+    desktop.bounds=QGuiApplication::primaryScreen()->availableGeometry();
+    QImage image(desktop.bounds.size(),QImage::Format_RGB32); image.fill(Qt::white);
+    desktop.frames={{desktop.bounds,image}};
+    auto overlay=new CaptureOverlay(&store,true,desktop);
+    auto cleanup=qScopeGuard([&]{delete overlay;}); overlay->setAttribute(Qt::WA_DeleteOnClose,false);
+    overlay->show(); overlay->selectRegion({30,40,420,220});
+    auto bar=overlay->findChild<QFrame *>("recordToolbar");
+    auto summary=overlay->findChild<QLabel *>("recordSummary");
+    QVERIFY(bar->isVisible()); QVERIFY(summary->isVisible());
+    QVERIFY(summary->y()>overlay->selection.bottom());
+    for (auto name:{"record_settings","record_record","record_cancel"}) {
+      auto button=bar->findChild<QToolButton *>(name); QVERIFY(button); QVERIFY(!button->icon().isNull());
+      QCOMPARE(button->size(),QSize(32,32));
+    }
+    auto bottom=overlay->rect().bottom();
+    overlay->selectRegion({30,bottom-220,420,220});
+    QVERIFY(summary->y()<overlay->selection.bottom());
+    QVERIFY(overlay->rect().contains(summary->geometry()));
+    QTest::mouseMove(overlay,{10,10}); auto before=overlay->grab().toImage();
+    QTest::keyPress(overlay,Qt::Key_Alt); QCOMPARE(overlay->grab().toImage(),before);
+    QTest::keyRelease(overlay,Qt::Key_Alt);
+    QVERIFY(savePreview(overlay,"recording-selection.png"));
+    QSignalSpy selected(overlay,&CaptureOverlay::recordRegion);
+    QTest::mouseClick(bar->findChild<QToolButton *>("record_record"),Qt::LeftButton);
+    QCOMPARE(selected.size(),1); QVERIFY(!overlay->isVisible());
+  }
+  void regionStartsCountdownWithoutSettingsAndFullscreenPrompts() {
+    QTemporaryDir dir; auto previous=qgetenv("FLOATSHOT_DATA_DIR");
+    auto restore=qScopeGuard([&]{if(previous.isNull())qunsetenv("FLOATSHOT_DATA_DIR");else qputenv("FLOATSHOT_DATA_DIR",previous);});
+    qputenv("FLOATSHOT_DATA_DIR",dir.path().toUtf8()); ApplicationController controller(true);
+    const auto screen=QGuiApplication::primaryScreen()->geometry();
+    controller.store.config["countdown"]=3;
+    controller.prepareRecord(QRect(screen.topLeft()+QPoint(20,20),QSize(400,250)),false);
+    QVERIFY(!QApplication::activeModalWidget()); QVERIFY(controller.recordOverlay);
+    QVERIFY(controller.recordOverlay->boundary()->isVisible());
+    QCOMPARE(controller.recordOverlay->region(),QRect(screen.topLeft()+QPoint(20,20),QSize(400,250)));
+    QVERIFY(controller.recordOverlay->controls()->findChild<QLabel *>("recordingState")->text().contains("倒计时"));
+    QTest::mouseClick(controller.recordOverlay->controls()->findChild<QPushButton *>("stopRecording"),Qt::LeftButton);
+    QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+    QVERIFY(!controller.recordOverlay); QVERIFY(!controller.recording());
+    bool prompted=false;
+    QTimer::singleShot(0,[&]{
+      auto dialog=qobject_cast<QDialog *>(QApplication::activeModalWidget());
+      if (dialog) { prompted=dialog->objectName()=="recordingSettings"; dialog->reject(); }
+    });
+    controller.prepareRecord(screen,true); QVERIFY(prompted); QVERIFY(!controller.recordOverlay);
+  }
+  void numberedCalloutTabTextEmptyCommitAndExport() {
+    QTemporaryDir dir; Store store(dir.path()); auto overlay=editingFixture(store,"number");
+    auto cleanup=qScopeGuard([&]{delete overlay;}); overlay->setAttribute(Qt::WA_DeleteOnClose,false);
+    auto &a=*overlay->annotation;
+    QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,{180,160});
+    QVERIFY(markControls(a.marks.last()).isEmpty());
+    QTest::keyClick(overlay,Qt::Key_Tab);
+    auto editor=overlay->findChild<InlineTextEditor *>(); QVERIFY(editor && editor->isVisible());
+    for (auto button:editor->findChildren<QToolButton *>()) QVERIFY(!button->isVisible());
+    auto width=editor->textItem()->boundingRect().width();
+    QInputMethodEvent input; input.setCommitString("这是文字说明 ABC123"); QApplication::sendEvent(editor,&input);
+    QVERIFY(editor->textItem()->boundingRect().width()>width);
+    overlay->setPreference("color",QColor("#ff0004"));
+    QTest::mouseClick(editor->viewport(),Qt::LeftButton,Qt::NoModifier,{10,220});
+    QCOMPARE(a.marks.size(),1); QCOMPARE(a.marks.first().number,1);
+    QCOMPARE(a.marks.first().text,QString("这是文字说明 ABC123")); QCOMPARE(a.selected,-1);
+    auto label=numberLabelRect(a.marks.first()); auto rendered=a.render();
+    auto line=rendered.pixelColor(qRound(label.center().x()),qRound(label.bottom()-1));
+    QVERIFY(line.red()>200 && line.green()<80);
+    store.config["magnifier_enabled"]=false;
+    QTest::mouseMove(overlay,overlay->toolbar->geometry().center());
+    QVERIFY(savePreview(overlay,"number-callout-text.png"));
+    QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,{180,260});
+    QTest::keyClick(overlay,Qt::Key_Tab); QVERIFY(editor->isVisible());
+    QTest::mouseClick(editor->viewport(),Qt::LeftButton,Qt::NoModifier,{10,220});
+    QCOMPARE(a.marks.size(),2); QVERIFY(a.marks.last().text.isEmpty());
+    QCOMPARE(markBounds(a.marks.last()).width(),a.marks.last().fontSize*1.3);
+    auto value=Mark::fromJson(a.marks.first().json()); QCOMPARE(value.text,a.marks.first().text);
+    a.undo(); QCOMPARE(a.marks.size(),1); a.redo(); QCOMPARE(a.marks.size(),2);
+    QTest::mouseClick(overlay,Qt::LeftButton,Qt::NoModifier,{330,270}); QTest::keyClick(overlay,Qt::Key_Tab);
+    QInputMethodEvent extra; extra.setCommitString("导出说明"); QApplication::sendEvent(editor,&extra);
+    bool exported=false;
+    overlay->output=[&](const QImage &image,const QRect &,const QString &action) {
+      exported=action=="pin" && image==a.render() && a.marks.last().text=="导出说明"; return true;
+    };
+    QTest::keyClick(editor,Qt::Key_F3); QVERIFY(exported);
+  }
+  void numberedCalloutOnScaledPin() {
+    QTemporaryDir dir; Store store(dir.path()); QImage image(900,600,QImage::Format_RGB32); image.fill(Qt::white);
+    PinWindow pin(image,&store,{80,90,900,600},"callout"); pin.setScale(.5); pin.show(); pin.startEditing(); pin.chooseTool("number");
+    auto point=pin.contentRect().topLeft()+QPoint(100,80);
+    QTest::mouseClick(&pin,Qt::LeftButton,Qt::NoModifier,point); auto center=pin.annotation->marks.last().points.first();
+    QTest::keyClick(&pin,Qt::Key_Tab); auto editor=pin.findChild<InlineTextEditor *>(); QVERIFY(editor && editor->isVisible());
+    QInputMethodEvent input; input.setCommitString("贴图说明"); QApplication::sendEvent(editor,&input);
+    QTest::mouseClick(&pin,Qt::LeftButton,Qt::NoModifier,{2,2});
+    QVERIFY(!editor->isVisible()); QCOMPARE(pin.annotation->marks.size(),1);
+    QCOMPARE(pin.annotation->marks.last().points.first(),center);
+    QCOMPARE(pin.annotation->marks.last().text,QString("贴图说明")); QCOMPARE(pin.annotation->render().size(),image.size());
+    QVERIFY(markControls(pin.annotation->marks.last()).isEmpty());
+    QVERIFY(savePreview(&pin,"number-callout-pin.png"));
+  }
   void imageTextModelReadingOrderAndMixedWidths() {
     ImageTextPage page;
     page.load(imageTextFixture());
@@ -1419,7 +1558,7 @@ private slots:
     QCOMPARE(actions["capture"]->text(), QString("截图\tF1"));
     QCOMPARE(actions["pin"]->text(), QString("贴图\tF3"));
     QCOMPARE(actions["toggle_pins"]->text(), QString("显示 / 隐藏贴图\tShift+F3"));
-    QCOMPARE(actions["record"]->text(), QString("区域录屏\tCtrl+Alt+R"));
+    QCOMPARE(actions["record"]->text(), QString("区域录屏\tF2"));
     QVERIFY(!actions["pause"]->isEnabled());
     auto keys = controller.store.config["hotkeys"].toObject();
     keys["capture"] = "Ctrl+Shift+C";

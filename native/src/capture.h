@@ -60,5 +60,6 @@ private:
   void updateSelectionToolbar(bool show = false);
   QString selectionHandle(QPoint point) const;
   void paintMagnifier(QPainter &painter, const QImage &preview);
+  void updateRecordingSummary();
   bool confirmExit();
 };

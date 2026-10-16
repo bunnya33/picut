@@ -29,6 +29,7 @@ QFont annotationFont(const Mark &mark);
 QTextCharFormat annotationTextFormat(const Mark &mark);
 void styleTextDocument(QTextDocument *document, const Mark &mark);
 QSizeF textSize(const Mark &mark);
+QRectF numberLabelRect(const Mark &mark);
 QPainterPath arrowPath(const Mark &mark);
 QPainterPath markPath(const Mark &mark);
 QRectF markBounds(const Mark &mark);

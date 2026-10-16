@@ -66,7 +66,7 @@ Store::Store(QString directory) {
                                     {"pin", "F3"},
                                     {"toggle_pins", "Shift+F3"},
                                     {"through", "Ctrl+Alt+T"},
-                                    {"record", "Ctrl+Alt+R"},
+                                    {"record", "F2"},
                                     {"pause", "Ctrl+Alt+P"},
                                     {"stop", "Ctrl+Alt+S"}}}};
   auto loaded = readJson(path("settings.json"), QJsonObject()).toObject();
@@ -79,6 +79,17 @@ Store::Store(QString directory) {
       config["hotkeys"] = keys;
     } else
       config[i.key()] = i.value();
+  if (!loaded["record_shortcut_v2"].toBool()) {
+    auto keys=config["hotkeys"].toObject();
+    if (keys["record"].toString()=="Ctrl+Alt+R") keys["record"]="F2";
+    // A previously customized F2 binding keeps priority over a new default.
+    if (keys["record"].toString()=="F2")
+      for (auto key=keys.begin();key!=keys.end();++key)
+        if (key.key()!="record" && key.value().toString().compare("F2",Qt::CaseInsensitive)==0) {
+          keys["record"]="Ctrl+Alt+R"; break;
+        }
+    config["hotkeys"]=keys; config["record_shortcut_v2"]=true;
+  }
   history = readJson(path("history.json"), QJsonArray()).toArray();
 }
 bool Store::importLegacy(const QString &destination, const QString &source) {
@@ -121,7 +132,7 @@ bool Store::importLegacy(const QString &destination, const QString &source) {
          writeJson(target + "/migration.json",
                    QJsonObject{{"source", legacy},
                                {"old_data_preserved", true},
-                               {"version", "0.5.12"}}) &&
+                               {"version", "0.5.13"}}) &&
          writeJson(target + "/settings.json", settings);
 }
 QString Store::path(const QString &name) const {

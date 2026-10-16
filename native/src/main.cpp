@@ -13,9 +13,10 @@
 int main(int argc, char **argv) {
   enableDpi();
   QApplication app(argc, argv);
-  app.setApplicationName("FloatShotNative");
-  app.setOrganizationName("FloatShot");
-  app.setApplicationVersion("0.5.12");
+  app.setApplicationName("picut");
+  app.setApplicationDisplayName("picut");
+  app.setOrganizationName("picut");
+  app.setApplicationVersion("0.5.13");
   // This trial has its own configuration/history. Stable v0.5.10 remains usable.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(
