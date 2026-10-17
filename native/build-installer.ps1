@@ -2,7 +2,7 @@
 param([string]$PackageDir, [string]$Iscc)
 $ErrorActionPreference = 'Stop'
 $picutRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.15' }
+if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.16' }
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $picutMain = Join-Path $PackageDir 'picut.exe'
 $picutVersion = (Get-Item -LiteralPath $picutMain).VersionInfo.ProductVersion
@@ -20,7 +20,7 @@ foreach ($picutRelative in $picutRequired) {
         throw "Runtime incomplete: $picutRelative. Run native/package.ps1 first."
     }
 }
-$picutModelManifest = Get-Content -LiteralPath (Join-Path $PackageDir 'ocr/models.json') -Raw | ConvertFrom-Json
+$picutModelManifest = Get-Content -LiteralPath (Join-Path $PackageDir 'ocr/models.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 foreach ($picutChecksum in $picutModelManifest.checksums.PSObject.Properties) {
     $picutModel = Join-Path $PackageDir ('ocr/' + $picutChecksum.Name)
     if ((Get-FileHash -LiteralPath $picutModel -Algorithm SHA256).Hash -ne $picutChecksum.Value) {

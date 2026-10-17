@@ -5,9 +5,11 @@
 #include "hotkey.h"
 #include "panel_theme.h"
 #include <future>
+#include <iterator>
 #include "native_windows.h"
 #include "recognition.h"
 #include <QtCore/QDateTime>
+#include <QtCore/QDebug>
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QEvent>
@@ -47,6 +49,8 @@
 
 ApplicationController::ApplicationController(bool test)
     : QObject(), store(), pins(&store, this), testing(test) {
+  connect(QApplication::clipboard(), &QClipboard::dataChanged, this,
+          [this] { ++clipboardPinRequest; });
   connect(&store, &Store::historyChanged, this, &ApplicationController::refreshHistory);
   connect(&store, &Store::ioFailed, this, [this](const QString &message) {
     if (!testing && !quitting) QMessageBox::warning(home, "保存失败", message);
@@ -154,10 +158,15 @@ void ApplicationController::registerHotkeys() {
     const auto value = bindings[actions[n]].toString();
     if (value.isEmpty()) continue;
     UINT modifiers = 0, vk = 0;
-    if (nativeHotkey(hotkeySequence(value), modifiers, vk) && RegisterHotKey(nullptr, n + 1, modifiers, vk))
+    const bool supported = nativeHotkey(hotkeySequence(value), modifiers, vk);
+    if (supported && RegisterHotKey(nullptr, n + 1, modifiers, vk))
       hotkeyIds.append(n + 1);
-    else
+    else {
+      const auto error = supported ? GetLastError() : ERROR_INVALID_PARAMETER;
       failures.append(value);
+      qWarning().noquote() << "Hotkey registration failed:" << actions[n]
+                           << value << "Windows error:" << error;
+    }
   }
   if (!failures.isEmpty())
     notify("快捷键冲突：" + failures.join("、"));
@@ -173,6 +182,7 @@ bool ApplicationController::nativeEventFilter(const QByteArray &, void *raw,
       beginCapture();
       break;
     case 2:
+      qInfo() << "Global pin hotkey received";
       pinClipboard();
       break;
     case 3:
@@ -335,6 +345,7 @@ void ApplicationController::beginCapture(bool recordingMode) {
   }
   if (pending)
     return;
+  ++clipboardPinRequest;
   pending = true;
   bool visible = home && home->isVisible();
   if (home)
@@ -429,26 +440,81 @@ bool ApplicationController::imageOutput(const QImage &image, QRect region,
   return true;
 }
 void ApplicationController::pinClipboard() {
+  const auto request = ++clipboardPinRequest;
   if (overlay) {
     overlay->complete("pin");
     return;
   }
+  qInfo() << "Clipboard pin requested";
+  tryPinClipboard(request, QGuiApplication::platformName() == "windows"
+                               ? GetClipboardSequenceNumber() : 0, 0);
+}
+void ApplicationController::tryPinClipboard(quint64 request, quint32 sequence,
+                                           int attempt) {
+  // Never complete an old request after a new copy, a second F3 or a capture.
+  const bool nativeClipboard = QGuiApplication::platformName() == "windows";
+  if (quitting || request != clipboardPinRequest || overlay || pending ||
+      hotkeysSuspended || (nativeClipboard && sequence != GetClipboardSequenceNumber()))
+    return;
+  auto retry = [this, request, sequence, attempt] {
+    static constexpr int delays[] = {40, 100, 200, 400};
+    if (attempt >= int(std::size(delays))) {
+      qWarning() << "Clipboard image unavailable; pin retry limit reached";
+      notify("暂时无法读取剪贴板图片，请重新复制后再贴图。");
+      return;
+    }
+    QTimer::singleShot(delays[attempt], this, [this, request, sequence, attempt] {
+      tryPinClipboard(request, sequence, attempt + 1);
+    });
+  };
+  // An OpenClipboard(nullptr) lock has no HWND, so GetOpenClipboardWindow alone
+  // cannot distinguish it from an unlocked clipboard. Probe without reading or
+  // changing any content, then release immediately before Qt/OLE reads it.
+  if (nativeClipboard) {
+    if (!OpenClipboard(nullptr)) { retry(); return; }
+    SetLastError(ERROR_SUCCESS);
+    const int formats = CountClipboardFormats();
+    const auto error = GetLastError();
+    CloseClipboard();
+    if (!formats && error != ERROR_SUCCESS) { retry(); return; }
+    if (!formats) { pins.restoreClosed(); return; }
+  }
   auto clipboard = QApplication::clipboard();
   auto mime = clipboard->mimeData();
-  if (mime->hasImage()) {
-    pins.create(clipboard->image());
-    notify("已贴到桌面");
+  if (!mime || mime->formats().isEmpty()) {
+    if (nativeClipboard) retry();
+    else pins.restoreClosed();
     return;
   }
-  if (mime->hasUrls()) {
-    for (auto url : mime->urls())
+  const bool hasImage = mime->hasImage();
+  // Read the file list before image conversion; an empty image must not prevent
+  // the local-file fallback (including picut's own "copy as file" format).
+  const auto urls = mime->urls();
+  QImage image = hasImage ? clipboard->image() : QImage();
+  if (image.isNull()) {
+    for (auto url : urls)
       if (url.isLocalFile()) {
-        QImage image(url.toLocalFile());
-        if (!image.isNull()) {
-          pins.create(image);
-          return;
-        }
+        image.load(url.toLocalFile());
+        if (!image.isNull()) break;
       }
+  }
+  // A successful delayed render can advance the native sequence during image().
+  // The sequence guard belongs before a retry; accept the image we just read.
+  if (request != clipboardPinRequest)
+    return;
+  if (!image.isNull()) {
+    if (pins.create(image)) {
+      qInfo() << "Clipboard image pin created; read attempts:" << attempt + 1;
+      notify("已贴到桌面");
+    }
+    return;
+  }
+  if (hasImage ||
+      (nativeClipboard &&
+       (GetOpenClipboardWindow() || IsClipboardFormatAvailable(CF_DIB) ||
+        IsClipboardFormatAvailable(CF_DIBV5) || IsClipboardFormatAvailable(CF_BITMAP)))) {
+    retry();
+    return;
   }
   auto text = mime->hasText() ? mime->text() : QString();
   if (text.isEmpty()) {
@@ -456,7 +522,6 @@ void ApplicationController::pinClipboard() {
     return;
   }
   QColor color(text.trimmed());
-  QImage image;
   if (color.isValid()) {
     image = QImage(300, 180, QImage::Format_ARGB32);
     image.fill(color);
@@ -484,6 +549,7 @@ void ApplicationController::pinClipboard() {
 }
 void ApplicationController::openSettings() {
   if (hotkeysSuspended) return;
+  ++clipboardPinRequest;
   hotkeysSuspended = true;
   for (int id : hotkeyIds) UnregisterHotKey(nullptr, id);
   hotkeyIds.clear();

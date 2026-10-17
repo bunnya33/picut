@@ -376,8 +376,12 @@ PinWindow *PinManager::create(const QImage &image, QRect source,
     if (r.size() == 4)
       pin->thumbnail = {r[0].toInt(), r[1].toInt(), r[2].toInt(), r[3].toInt()};
   }
-  if (pin->state == "visible" && !hidden)
+  // Hiding existing pins must not hide a new pin explicitly requested by F3.
+  // Keep the old pins hidden until the next toggle; restored layouts still obey it.
+  if (pin->state == "visible" && (!hidden || data.isEmpty())) {
     pin->show();
+    pin->raise();
+  }
   timer.start();
   return pin;
 }

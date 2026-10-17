@@ -1,4 +1,6 @@
-# picut v0.5.15
+# picut v0.5.16
+
+New F3 pins remain visible after Hide All without revealing existing pins. Clipboard image reads retry briefly on contention or delayed availability, fall back to local image URLs, and cancel pending requests when clipboard content changes. Diagnostics record hotkey registration failures and image pin outcomes without image/text content. See docs/更新记录-v0.5.16-F3贴图修复.md.
 
 Select a screenshot region with F1, then click Scroll Capture next to OCR. The capture hole passes mouse input to the original application. Manual scrolling and optional automatic downward wheel input append verified overlapping pixels; boundary checks reject interior scrolling surrounded by static content. A fixed sidebar is allowed when scrolling columns reach both vertical edges; full-width strips preserve the sidebar, including its repetitions. A complete side preview scales both dimensions to fit the screen as the image grows. Original strips are stored in a temporary directory, with small thumbnails in memory; final output preserves captured pixels. See docs/更新记录-v0.5.15-滚动截屏.md.
 
@@ -14,7 +16,7 @@ F4, the toolbar and text recognition menus open one frameless workspace with the
 
 Adjacent layouts preserve the image's global rectangle and put the panel on a fitting side. Full-screen, tall and overflowing regions use a split workspace within one screen's available geometry, with a draggable divider, wheel zoom, space/middle-button pan, fit/100% and collapse actions in the image context menu. A view transform maps all interaction back into the immutable original image; parent capture/pin geometry and pixels stay intact. Completed OCR results are cached per surface until pixels/profile/acceleration change. Recognition always receives the full-resolution original and uses PaddleOCR Small. Windows OCR remains in benchmark/helper code rather than a selectable sidebar backend.
 
-The data directory remains `%LOCALAPPDATA%/FloatShot/FloatShotNative-ImageTextTrial`, preserving trial settings and history without migrating stable data. Packages are in `dist/picut-0.5.15*`; both `run.ps1` and `run-image-text-trial.ps1` start this version. Earlier packages remain available for rollback. Git `main` and tag `v0.5.10` retain the stable source baseline, and tags `v0.5.11-image-text-trial` and `v0.5.12-ocr-sidebar` preserve the prior OCR interfaces. See `docs/版本回滚.md`.
+The data directory remains `%LOCALAPPDATA%/FloatShot/FloatShotNative-ImageTextTrial`, preserving trial settings and history without migrating stable data. Packages are in `dist/picut-0.5.16*`; both `run.ps1` and `run-image-text-trial.ps1` start this version. Earlier packages remain available for rollback. Git `main` and tag `v0.5.10` retain the stable source baseline, and tags `v0.5.11-image-text-trial` and `v0.5.12-ocr-sidebar` preserve the prior OCR interfaces. See `docs/版本回滚.md`.
 
 Windows C++20 / Qt 6.8.3 Widgets application. No Python interpreter, bindings, build scripts, or runtime are required. Qt Multimedia is an optional DLL loaded on first video preview. Recording uses a separately deployed FFmpeg executable; audio capture uses Windows WASAPI.
 
@@ -30,7 +32,7 @@ Install Visual Studio 2022 or newer with C++ desktop tools and a Windows 10/11 S
 
 `setup-sdk.ps1` fetches the official Qt MSVC x64 SDK, pinned ZXing-C++ source, and standalone FFmpeg, verifies SHA-256 hashes, and uses Windows tar / Expand-Archive. It does not install anything globally. An existing Qt installation can be used with `build.ps1 -QtDir C:/Qt/6.8.3/msvc2022_64`. `build-native.cmd` is a convenience wrapper. Packaging supports `-QtDir`, `-Ffmpeg`, and `-NoZip`.
 
-Executables are built in `build/native/`. The complete runtime folder and ZIP are in `dist/picut-0.5.15*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
+Executables are built in `build/native/`. The complete runtime folder and ZIP are in `dist/picut-0.5.16*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
 
 To build the Windows installer from this deployed runtime, run `./native/build-installer.ps1`. It prepares a local portable Inno Setup 6.7.3 compiler on first use, verifying the official bootstrap's SHA-256 and Authenticode signature and pinning the Chinese translation to the same source tag. No global compiler installation is required. Options `-PackageDir` and `-Iscc` accept an existing runtime/compiler. The app version comes from `picut.exe` metadata. The output is `dist/picut-<version>-setup-x64.exe` plus its SHA-256 file; payload hashes are saved under `build/installer/` for verification.
 

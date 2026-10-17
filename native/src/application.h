@@ -47,6 +47,8 @@ private:
   bool historyDirty = true;
   QCache<QString, QPixmap> historyThumbnails{128};
   QList<int> hotkeyIds;
+  quint64 clipboardPinRequest = 0;
+  void tryPinClipboard(quint64 request, quint32 sequence, int attempt);
   void registerHotkeys();
   void updateTrayMenu();
   void makeRecorder();

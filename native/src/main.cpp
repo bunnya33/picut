@@ -17,7 +17,7 @@ static int runApplication(int argc, char **argv) {
   app.setApplicationName("picut");
   app.setApplicationDisplayName("picut");
   app.setOrganizationName("picut");
-  app.setApplicationVersion("0.5.15");
+  app.setApplicationVersion("0.5.16");
   // This trial has its own configuration/history. Stable v0.5.10 remains usable.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(

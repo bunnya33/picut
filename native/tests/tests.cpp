@@ -44,6 +44,23 @@
 #include <QtWidgets/QTabWidget>
 #include <winrt/base.h>
 
+// An advertised image can be temporarily unavailable (e.g. delayed rendering).
+// Used only with Qt's private offscreen clipboard, never the user's clipboard.
+class DelayedClipboardImage : public QMimeData {
+public:
+  explicit DelayedClipboardImage(const QImage &image, int failures)
+      : failures(failures) { setImageData(image); }
+  mutable int failures, reads = 0;
+protected:
+  QVariant retrieveData(const QString &mimeType, QMetaType type) const override {
+    if (mimeType == "application/x-qt-image") {
+      ++reads;
+      if (failures > 0) { --failures; return {}; }
+    }
+    return QMimeData::retrieveData(mimeType, type);
+  }
+};
+
 class NativeTests : public QObject {
   Q_OBJECT
   static CaptureOverlay *editingFixture(Store &store, const QString &tool) {
@@ -2143,6 +2160,113 @@ private slots:
     QVERIFY(store.workspace().isEmpty());
     pins.handle(pin,"destroy"); pins.persist(); store.flushIo();
     QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+  }
+  void clipboardPinVisibleAfterHideAll_data() {
+    QTest::addColumn<bool>("copyAsFile");
+    QTest::newRow("image") << false;
+    QTest::newRow("image-and-file") << true;
+  }
+  void clipboardPinVisibleAfterHideAll() {
+    if (QGuiApplication::platformName() != "offscreen")
+      QSKIP("Uses the private offscreen clipboard to preserve the system clipboard");
+    QTemporaryDir dir; auto previous = qgetenv("FLOATSHOT_DATA_DIR");
+    auto restore = qScopeGuard([previous] {
+      QApplication::clipboard()->clear();
+      if (previous.isNull()) qunsetenv("FLOATSHOT_DATA_DIR");
+      else qputenv("FLOATSHOT_DATA_DIR", previous);
+    });
+    qputenv("FLOATSHOT_DATA_DIR", dir.path().toUtf8());
+    QFETCH(bool, copyAsFile);
+    ApplicationController controller(true);
+    controller.store.config["copy_image_as_file"] = copyAsFile;
+    QImage image(240, 180, QImage::Format_ARGB32); image.fill(Qt::red);
+    auto old = controller.pins.create(image);
+    controller.pins.toggleAll(); QVERIFY(!old->isVisible());
+    image.fill(Qt::green);
+    QVERIFY(controller.imageOutput(image, {100, 100, 240, 180}, "copy"));
+    MSG message{}; message.message = WM_HOTKEY; message.wParam = 2;
+    QVERIFY(controller.nativeEventFilter({}, &message, nullptr));
+    QCOMPARE(controller.pins.windows.size(), 2);
+    auto added = controller.pins.windows.last();
+    QCOMPARE(added->image, image); QVERIFY(added->isVisible());
+    QVERIFY(!old->isVisible());
+    controller.pins.toggleAll();
+    QVERIFY(old->isVisible()); QVERIFY(added->isVisible());
+  }
+  void clipboardImageReadRecovery_data() {
+    QTest::addColumn<int>("failures");
+    QTest::addColumn<bool>("fileFallback");
+    QTest::addColumn<bool>("success");
+    QTest::newRow("delayed-image") << 1 << false << true;
+    QTest::newRow("image-unavailable-valid-file") << 100 << true << true;
+    QTest::newRow("image-stays-unavailable") << 100 << false << false;
+  }
+  void clipboardImageReadRecovery() {
+    if (QGuiApplication::platformName() != "offscreen")
+      QSKIP("Uses the private offscreen clipboard to preserve the system clipboard");
+    QFETCH(int, failures); QFETCH(bool, fileFallback); QFETCH(bool, success);
+    QTemporaryDir dir; auto previous = qgetenv("FLOATSHOT_DATA_DIR");
+    auto restore = qScopeGuard([previous] {
+      QApplication::clipboard()->clear();
+      if (previous.isNull()) qunsetenv("FLOATSHOT_DATA_DIR");
+      else qputenv("FLOATSHOT_DATA_DIR", previous);
+    });
+    qputenv("FLOATSHOT_DATA_DIR", dir.path().toUtf8());
+    ApplicationController controller(true);
+    QImage image(240, 180, QImage::Format_ARGB32); image.fill(Qt::cyan);
+    auto closed = controller.pins.create(image);
+    controller.pins.handle(closed, "close");
+    auto mime = new DelayedClipboardImage(image, failures);
+    if (fileFallback) {
+      const auto file = dir.path() + "/clipboard.png";
+      QVERIFY(image.save(file));
+      mime->setUrls({QUrl::fromLocalFile(file)});
+    }
+    QApplication::clipboard()->setMimeData(mime);
+    controller.pinClipboard();
+    if (success) {
+      QTRY_COMPARE_WITH_TIMEOUT(controller.pins.windows.size(), 2, 1500);
+      QCOMPARE(controller.pins.windows.last()->image, image);
+      QVERIFY(controller.pins.windows.last()->isVisible());
+      const int reads = mime->reads;
+      QTest::qWait(900);
+      QCOMPARE(mime->reads, reads); // No polling once a pin was created.
+    } else {
+      QTest::qWait(1000);
+      QCOMPARE(controller.pins.windows.size(), 1);
+      QVERIFY(mime->reads > 1 && mime->reads <= 5);
+    }
+    QVERIFY(!closed->isVisible()); // A read failure must not restore an old pin.
+    QCOMPARE(closed->state, QString("closed"));
+  }
+  void clipboardPinRetryTracksLatestRequest() {
+    if (QGuiApplication::platformName() != "offscreen")
+      QSKIP("Uses the private offscreen clipboard to preserve the system clipboard");
+    QTemporaryDir dir; auto previous = qgetenv("FLOATSHOT_DATA_DIR");
+    auto restore = qScopeGuard([previous] {
+      QApplication::clipboard()->clear();
+      if (previous.isNull()) qunsetenv("FLOATSHOT_DATA_DIR");
+      else qputenv("FLOATSHOT_DATA_DIR", previous);
+    });
+    qputenv("FLOATSHOT_DATA_DIR", dir.path().toUtf8());
+    ApplicationController controller(true);
+    QImage image(240, 180, QImage::Format_ARGB32); image.fill(Qt::yellow);
+    auto mime = new DelayedClipboardImage(image, 100);
+    QApplication::clipboard()->setMimeData(mime);
+    controller.pinClipboard(); controller.pinClipboard();
+    mime->failures = 0;
+    QTRY_COMPARE_WITH_TIMEOUT(controller.pins.windows.size(), 1, 1500);
+    QTest::qWait(900); QCOMPARE(controller.pins.windows.size(), 1);
+    QCOMPARE(controller.pins.windows.first()->image, image);
+    QApplication::clipboard()->setMimeData(new DelayedClipboardImage(image, 100));
+    controller.pinClipboard();
+    QApplication::clipboard()->setText("New clipboard content");
+    QTest::qWait(1000); QCOMPARE(controller.pins.windows.size(), 1);
+    controller.pinClipboard(); QCOMPARE(controller.pins.windows.size(), 2);
+    QApplication::clipboard()->clear();
+    controller.pins.handle(controller.pins.windows.last(), "close");
+    controller.pinClipboard(); // An actually empty clipboard still restores closed pins.
+    QVERIFY(controller.pins.windows.last()->isVisible());
   }
   void pinPersistence() {
     QTemporaryDir dir;
