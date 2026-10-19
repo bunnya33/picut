@@ -2,6 +2,7 @@
 #include <QtCore/QPointer>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QTimer>
+#include <QtCore/QElapsedTimer>
 #include <QtGui/QImage>
 #include <QtWidgets/QWidget>
 #include <functional>
@@ -18,7 +19,7 @@ class ScrollStitcher {
 public:
   enum Result { Started, Appended, Unchanged, Revisited, BoundaryMismatch,
                 NoOverlap, LimitReached, CacheError };
-  Result accept(const QImage &image);
+  Result accept(const QImage &image, int direction = 0);
   QImage image() const;
   QSize size() const { return {width, height}; }
   int stripCount() const { return int(strips.size()); }
@@ -28,7 +29,7 @@ private:
   struct Strip { QString path; QImage thumbnail; int y, height; };
   QTemporaryDir cache;
   QList<Strip> strips;
-  QImage previous;
+  QImage previous, previousGray;
   int width = 0, height = 0, position = 0;
   bool append(const QImage &image);
 };
@@ -40,7 +41,13 @@ public:
                 QWidget *parent = nullptr);
   ~ScrollCapture() override;
   void begin(bool live = true);
-  ScrollStitcher::Result acceptFrame(const QImage &image);
+  ScrollStitcher::Result acceptFrame(const QImage &image, int direction = 0);
+  void sample();
+  void noteScrollInput(int direction, bool manual = true);
+  int scrollDirection() const {
+    return inputTime.isValid() && inputTime.elapsed()<600 ? inputDirection : 0;
+  }
+  bool acceptsScrollInput(QPoint physicalPoint, bool keyboard = false) const;
   void finish(const QString &action);
   QRect previewGeometry() const;
   QSize imageSize() const { return stitcher.size(); }
@@ -63,11 +70,18 @@ private:
   QToolButton *automatic;
   QTimer timer;
   QImage candidate;
-  int stableFrames = 0, idleTicks = 0, stalledScrolls = 0;
+  int stalledScrolls = 0, inputDirection = 0;
+  quintptr mouseHook = 0, keyboardHook = 0;
+  QElapsedTimer inputTime, idleTime, failureTime;
+  ScrollStitcher::Result pendingFailure = ScrollStitcher::Unchanged;
+  bool inputTickQueued = false;
+  bool failureReported = false;
   bool live = false, autoScrolling = false, closing = false, finishing = false;
   bool excluded = false, capturing = false;
   QList<int> hotkeys;
-  void tick();
+  void installInputHooks();
+  void releaseInputHooks();
+  void reportAlignmentFailure(ScrollStitcher::Result result);
   QImage takeFrame();
   void place();
   void updateMask();

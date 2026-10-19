@@ -63,6 +63,16 @@ protected:
 
 class NativeTests : public QObject {
   Q_OBJECT
+  static QImage scrollDocument(int width=460,int height=3600) {
+    QImage image(width,height,QImage::Format_RGB32); image.fill(QColor("#f6f6f6"));
+    QPainter p(&image); p.setFont(QFont("Consolas",11));
+    for (int y=0;y<height;y+=19) {
+      p.setPen(QColor::fromHsv((y*17)%360,190,170));
+      p.drawText(7,y+14,QString("%1 : item_%2 = function(%3);").arg(y).arg(y*53).arg(y*97));
+      p.fillRect(width-27,y,25,17,QColor::fromHsv((y*31)%360,120+(y%120),120+(y%130)));
+    }
+    return image;
+  }
   static CaptureOverlay *editingFixture(Store &store, const QString &tool) {
     DesktopSnapshot desktop;
     desktop.bounds = {0, 0, 800, 600};
@@ -154,10 +164,20 @@ private slots:
           p.drawText(7,y+16,QString("Row_%1 : value_%2 = %3;").arg(y).arg(y*53).arg(y*97));
         }
         setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+        setFocusPolicy(Qt::StrongFocus);
       }
       void paintEvent(QPaintEvent *) override { QPainter p(this); p.drawImage(0,-offset,document); }
       void wheelEvent(QWheelEvent *event) override {
         ++wheelCount; offset=qBound(0,offset-event->angleDelta().y()/120*80,document.height()-height());
+        update(); event->accept();
+      }
+      void keyPressEvent(QKeyEvent *event) override {
+        int delta=0;
+        if (event->key()==Qt::Key_Down) delta=40;
+        if (event->key()==Qt::Key_Up) delta=-40;
+        if (event->key()==Qt::Key_PageDown) delta=height()-50;
+        if (event->key()==Qt::Key_PageUp) delta=50-height();
+        offset=qBound(0,offset+delta,document.height()-height());
         update(); event->accept();
       }
     } page;
@@ -186,9 +206,42 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(session->imageSize().height()>initialHeight,3000);
     const auto physical=physicalRect(page.geometry());
     QCOMPARE(session->imageSize().height(),qRound(483.*physical.height()/page.height()));
+    auto cursorTarget=physicalRect(page.geometry()).center();
+    SetCursorPos(cursorTarget.x(),cursorTarget.y());
+    for (int n=0;n<4;++n) {
+      INPUT input{}; input.type=INPUT_MOUSE; input.mi.dwFlags=MOUSEEVENTF_WHEEL;
+      input.mi.mouseData=DWORD(-WHEEL_DELTA);
+      QCOMPARE(SendInput(1,&input,sizeof(INPUT)),UINT(1));
+      QTest::qWait(30);
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(page.offset,443,2000);
+    QTRY_COMPARE_WITH_TIMEOUT(session->imageSize().height(),qRound(803.*physical.height()/page.height()),2000);
+    QCOMPARE(session->scrollDirection(),1);
+    page.activateWindow(); page.setFocus();
+    SetForegroundWindow(hwnd); SetFocus(hwnd);
+    QTest::qWait(80);
+    QCOMPARE(GetForegroundWindow(),hwnd);
+    QCOMPARE(QApplication::focusWidget(),static_cast<QWidget *>(&page));
+    auto key=[&](WORD code) {
+      INPUT inputs[2]{};
+      inputs[0].type=inputs[1].type=INPUT_KEYBOARD;
+      inputs[0].ki.wVk=inputs[1].ki.wVk=code;
+      inputs[0].ki.dwFlags=KEYEVENTF_EXTENDEDKEY;
+      inputs[1].ki.dwFlags=KEYEVENTF_EXTENDEDKEY|KEYEVENTF_KEYUP;
+      return SendInput(2,inputs,sizeof(INPUT));
+    };
+    QCOMPARE(key(VK_UP),UINT(2));
+    QTRY_COMPARE_WITH_TIMEOUT(page.offset,403,2000);
+    QCOMPARE(session->scrollDirection(),-1);
+    QTest::qWait(60);
+    QCOMPARE(key(VK_NEXT),UINT(2));
+    QTRY_COMPARE_WITH_TIMEOUT(page.offset,640,2000);
+    QTRY_COMPARE_WITH_TIMEOUT(session->imageSize().height(),qRound(1000.*physical.height()/page.height()),2000);
+    QCOMPARE(session->scrollDirection(),1);
+    const int manualWheelCount=page.wheelCount;
     auto automatic=session->findChild<QToolButton *>("scroll_automatic");
     automatic->click();
-    QTRY_VERIFY_WITH_TIMEOUT(page.wheelCount>=3,6000);
+    QTRY_VERIFY_WITH_TIMEOUT(page.wheelCount>=manualWheelCount+3,6000);
     QTRY_VERIFY_WITH_TIMEOUT(session->imageSize().height()>initialHeight+200,3000);
     automatic->click();
     QVERIFY(!automatic->isChecked());
@@ -209,6 +262,64 @@ private slots:
     QVERIFY(completed);
     if (physical.width()==460)
       QCOMPARE(captured,page.document.copy(0,0,460,captured.height()));
+  }
+  void scrollContinuousFramesWithoutSettling() {
+    QTemporaryDir dir; Store store(dir.path());
+    auto session=std::make_unique<ScrollCapture>(&store,QRect(40,60,460,400),0);
+    session->setAttribute(Qt::WA_DeleteOnClose,false); session->begin(false);
+    const auto document=scrollDocument();
+    int offset=0;
+    session->frameProvider=[&] { return document.copy(0,offset,460,400); };
+    for (;offset<=1800;offset+=90) {
+      session->noteScrollInput(1); session->sample();
+      QCOMPARE(session->imageSize(),QSize(460,offset+400));
+    }
+    offset=1720; session->noteScrollInput(-1); session->sample();
+    QCOMPARE(session->imageSize(),QSize(460,2200));
+    offset=1920; session->noteScrollInput(1); session->sample();
+    QCOMPARE(session->imageSize(),QSize(460,2320));
+    bool correct=false;
+    session->output=[&](const QImage &image,const QString &action) {
+      correct=action=="copy" && image==document.copy(0,0,460,2320); return true;
+    };
+    session->finish("copy"); QVERIFY(correct);
+  }
+  void scrollFastJumpsDirectionAndMissingOverlap() {
+    const auto document=scrollDocument();
+    ScrollStitcher stitcher;
+    QCOMPARE(stitcher.accept(document.copy(0,0,460,400)),ScrollStitcher::Started);
+    for (int y : {350,700,340,675,1025}) {
+      const int hint=y==340 ? -1 : 1;
+      const auto result=stitcher.accept(document.copy(0,y,460,400),hint);
+      QVERIFY(result==ScrollStitcher::Appended || result==ScrollStitcher::Revisited);
+    }
+    QCOMPARE(stitcher.image(),document.copy(0,0,460,1425));
+    // A direction is not a distance: a gap must never be invented from input.
+    const auto result=stitcher.accept(document.copy(0,2400,460,400),1);
+    QVERIFY(result==ScrollStitcher::NoOverlap || result==ScrollStitcher::BoundaryMismatch);
+    QCOMPARE(stitcher.image(),document.copy(0,0,460,1425));
+    QCOMPARE(stitcher.accept(document.copy(0,1180,460,400),-1),ScrollStitcher::Appended);
+    QCOMPARE(stitcher.image(),document.copy(0,0,460,1580)); // Pixels beat a stale direction hint.
+    ScrollStitcher shortOverlap;
+    QCOMPARE(shortOverlap.accept(document.copy(0,0,460,400)),ScrollStitcher::Started);
+    QCOMPARE(shortOverlap.accept(document.copy(0,378,460,400),1),ScrollStitcher::Appended);
+    QCOMPARE(shortOverlap.image(),document.copy(0,0,460,778));
+  }
+  void scrollFastMatcherTiming() {
+    const auto document=scrollDocument(1280,7000);
+    ScrollStitcher stitcher;
+    QCOMPARE(stitcher.accept(document.copy(0,0,1280,900)),ScrollStitcher::Started);
+    QList<double> times;
+    for (int offset=127;offset<=5080;offset+=127) {
+      const auto frame=document.copy(0,offset,1280,900);
+      QElapsedTimer clock; clock.start();
+      QCOMPARE(stitcher.accept(frame,1),ScrollStitcher::Appended);
+      times.append(clock.nsecsElapsed()/1000000.);
+    }
+    QCOMPARE(stitcher.image(),document.copy(0,0,1280,5980));
+    std::sort(times.begin(),times.end());
+    qInfo() << "Continuous scroll match+cache ms, median:" << times[times.size()/2]
+            << "p95:" << times[qMin(times.size()-1,qsizetype(times.size()*.95))];
   }
   void scrollStitchingAndBacktracking() {
     QImage document(420,3600,QImage::Format_RGB32);

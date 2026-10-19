@@ -14,6 +14,30 @@
 #include <dwmapi.h>
 
 namespace {
+ScrollCapture *inputSession = nullptr;
+LRESULT CALLBACK scrollMouseHook(int code, WPARAM kind, LPARAM raw) {
+  if (code == HC_ACTION && kind == WM_MOUSEWHEEL && inputSession) {
+    const auto event = reinterpret_cast<MSLLHOOKSTRUCT *>(raw);
+    if (inputSession->acceptsScrollInput({event->pt.x,event->pt.y}) &&
+        !(GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+      const int delta = short(HIWORD(event->mouseData));
+      if (delta) inputSession->noteScrollInput(delta < 0 ? 1 : -1,
+                                              !(event->flags & LLMHF_INJECTED));
+    }
+  }
+  return CallNextHookEx(nullptr,code,kind,raw);
+}
+LRESULT CALLBACK scrollKeyboardHook(int code, WPARAM kind, LPARAM raw) {
+  if (code == HC_ACTION && (kind == WM_KEYDOWN || kind == WM_SYSKEYDOWN) && inputSession &&
+      inputSession->acceptsScrollInput({},true)) {
+    const auto event = reinterpret_cast<KBDLLHOOKSTRUCT *>(raw);
+    int direction = 0;
+    if (event->vkCode == VK_DOWN || event->vkCode == VK_NEXT || event->vkCode == VK_END) direction=1;
+    if (event->vkCode == VK_UP || event->vkCode == VK_PRIOR || event->vkCode == VK_HOME) direction=-1;
+    if (direction) inputSession->noteScrollInput(direction,!(event->flags & LLKHF_INJECTED));
+  }
+  return CallNextHookEx(nullptr,code,kind,raw);
+}
 class LongPreview : public QWidget {
 public:
   explicit LongPreview(ScrollStitcher *value, QWidget *parent)
@@ -74,10 +98,11 @@ ScrollCapture::ScrollCapture(Store *value, QRect source, quintptr window, QWidge
   status->setWordWrap(true);
   status->setStyleSheet("background:rgba(28,28,28,210);color:white;padding:5px 8px;border-radius:3px;");
   frameProvider = [this] { return captureDesktopRegion(region.translated(pos())); };
-  connect(&timer, &QTimer::timeout, this, &ScrollCapture::tick);
+  timer.setTimerType(Qt::PreciseTimer);
+  connect(&timer, &QTimer::timeout, this, &ScrollCapture::sample);
   place();
 }
-ScrollCapture::~ScrollCapture() { releaseHotkeys(); }
+ScrollCapture::~ScrollCapture() { releaseHotkeys(); releaseInputHooks(); }
 void ScrollCapture::begin(bool enableLive) {
   live = enableLive && QGuiApplication::platformName() == "windows";
   show();
@@ -87,12 +112,43 @@ void ScrollCapture::begin(bool enableLive) {
     for (const auto binding : {QPair<int,UINT>{2201,VK_ESCAPE}, {2202,VK_RETURN}})
       if (RegisterHotKey(reinterpret_cast<HWND>(winId()), binding.first, MOD_NOREPEAT, binding.second))
         hotkeys.append(binding.first);
-    QTimer::singleShot(180,this,[this] {
+    installInputHooks();
+    QTimer::singleShot(0,this,[this] {
       if (closing) return;
       if (sourceWindow && IsWindow(reinterpret_cast<HWND>(sourceWindow)))
         SetForegroundWindow(reinterpret_cast<HWND>(sourceWindow));
-      DwmFlush(); tick(); timer.start(80);
+      DwmFlush(); sample(); timer.start(16);
     });
+  }
+}
+void ScrollCapture::installInputHooks() {
+  releaseInputHooks(); inputSession=this;
+  mouseHook=reinterpret_cast<quintptr>(SetWindowsHookExW(WH_MOUSE_LL,scrollMouseHook,GetModuleHandleW(nullptr),0));
+  keyboardHook=reinterpret_cast<quintptr>(SetWindowsHookExW(WH_KEYBOARD_LL,scrollKeyboardHook,GetModuleHandleW(nullptr),0));
+  if (!mouseHook || !keyboardHook)
+    qWarning("Scroll input hook unavailable; continuous image sampling remains active");
+}
+void ScrollCapture::releaseInputHooks() {
+  if (mouseHook) UnhookWindowsHookEx(reinterpret_cast<HHOOK>(mouseHook));
+  if (keyboardHook) UnhookWindowsHookEx(reinterpret_cast<HHOOK>(keyboardHook));
+  mouseHook=keyboardHook=0;
+  if (inputSession==this) inputSession=nullptr;
+}
+bool ScrollCapture::acceptsScrollInput(QPoint point, bool keyboard) const {
+  if (!live || closing || finishing) return false;
+  if (keyboard) return sourceWindow && GetForegroundWindow()==reinterpret_cast<HWND>(sourceWindow);
+  if (!physicalRect(region.translated(pos())).contains(point)) return false;
+  POINT native{point.x(),point.y()};
+  return !sourceWindow || GetAncestor(WindowFromPoint(native),GA_ROOT)==reinterpret_cast<HWND>(sourceWindow);
+}
+void ScrollCapture::noteScrollInput(int direction, bool manual) {
+  if (!direction || closing || finishing) return;
+  inputDirection=direction > 0 ? 1 : -1; inputTime.restart();
+  if (manual && autoScrolling)
+    QTimer::singleShot(0,this,[this] { if (!closing && !finishing) setAutomatic(false); });
+  if (live && !inputTickQueued) {
+    inputTickQueued=true;
+    QTimer::singleShot(8,this,[this] { inputTickQueued=false; sample(); });
   }
 }
 void ScrollCapture::releaseHotkeys() {
@@ -103,7 +159,7 @@ void ScrollCapture::setAutomatic(bool enabled) {
   autoScrolling = enabled;
   automatic->setChecked(enabled);
   automatic->setIcon(recordingIcon(enabled ? "pause" : "play"));
-  idleTicks = 0;
+  idleTime.restart();
   stalledScrolls = 0;
   if (enabled) {
     status->setText("自动滚动中 · 再次点击暂停，可随时完成");
@@ -134,7 +190,7 @@ QImage ScrollCapture::takeFrame() {
   });
   return frameProvider ? frameProvider() : QImage();
 }
-void ScrollCapture::tick() {
+void ScrollCapture::sample() {
   if (capturing || closing || finishing) return;
   capturing = true;
   auto guard = qScopeGuard([this] { capturing = false; });
@@ -143,17 +199,17 @@ void ScrollCapture::tick() {
     setAutomatic(false); status->setText("未能读取画面，请完成或重新框选区域"); place(); return;
   }
   if (candidate.isNull()) {
-    candidate = frame; stableFrames = 0;
+    candidate = frame; idleTime.restart();
     acceptFrame(frame); return;
   }
-  if (frame != candidate) { candidate = frame; stableFrames = 0; return; }
-  ++stableFrames; ++idleTicks;
-  if (stableFrames == 2) {
-    auto result = acceptFrame(frame);
-    if (result == ScrollStitcher::NoOverlap || result == ScrollStitcher::BoundaryMismatch ||
-        result == ScrollStitcher::CacheError || result == ScrollStitcher::LimitReached) return;
+  if (frame != candidate) {
+    candidate=frame; idleTime.restart();
+    const auto result=acceptFrame(frame,scrollDirection());
+    if (result==ScrollStitcher::CacheError || result==ScrollStitcher::LimitReached) return;
+  } else if (pendingFailure != ScrollStitcher::Unchanged) {
+    reportAlignmentFailure(pendingFailure);
   }
-  if (autoScrolling && idleTicks >= 8) {
+  if (autoScrolling && pendingFailure==ScrollStitcher::Unchanged && idleTime.elapsed()>=120) {
     if (stalledScrolls >= 3) {
       setAutomatic(false);
       status->setText("页面未继续滚动，自动滚动已停止 · 可完成或继续手动滚动");
@@ -174,18 +230,40 @@ void ScrollCapture::tick() {
       setAutomatic(false); status->setText("此窗口无法自动滚动，请手动滚动内容"); place();
     }
     ++stalledScrolls;
-    idleTicks = 0;
+    idleTime.restart();
   }
 }
-ScrollStitcher::Result ScrollCapture::acceptFrame(const QImage &image) {
-  const auto result = stitcher.accept(image);
+void ScrollCapture::reportAlignmentFailure(ScrollStitcher::Result result) {
+  if (pendingFailure!=result) failureReported=false;
+  pendingFailure=result;
+  if (!failureTime.isValid()) failureTime.start();
+  if (failureTime.elapsed()<180) {
+    status->setText("正在对齐滚动画面…"); return;
+  }
+  if (failureReported) return;
+  failureReported=true;
+  setAutomatic(false);
+  status->setText(result==ScrollStitcher::BoundaryMismatch
+      ? "滚动内容未到达框选的上下边缘，请重新框选实际滚动内容"
+      : "滚动跨度过大或画面无法对齐，请向上返回已截位置后继续；已截内容保留");
+  place();
+}
+ScrollStitcher::Result ScrollCapture::acceptFrame(const QImage &image, int direction) {
+  const auto result = stitcher.accept(image,direction);
+  if (result==ScrollStitcher::Started || result==ScrollStitcher::Appended ||
+      result==ScrollStitcher::Revisited || result==ScrollStitcher::Unchanged) {
+    pendingFailure=ScrollStitcher::Unchanged; failureTime.invalidate(); failureReported=false;
+  }
   if (result == ScrollStitcher::Started || result == ScrollStitcher::Appended ||
       result == ScrollStitcher::Revisited) {
     stalledScrolls = 0;
     status->setText(QString("%1 × %2 · %3").arg(stitcher.size().width()).arg(stitcher.size().height())
                        .arg(autoScrolling ? "自动滚动中" : "滚动页面截取更多内容"));
   }
-  else if (result != ScrollStitcher::Unchanged) {
+  else if (result==ScrollStitcher::NoOverlap || result==ScrollStitcher::BoundaryMismatch) {
+    reportAlignmentFailure(result);
+  } else if (result != ScrollStitcher::Unchanged) {
+    pendingFailure=ScrollStitcher::Unchanged; failureTime.invalidate(); failureReported=false;
     setAutomatic(false);
     status->setText(result == ScrollStitcher::BoundaryMismatch
         ? "滚动内容未到达框选的上下边缘，请重新框选实际滚动内容"
@@ -246,21 +324,22 @@ void ScrollCapture::finish(const QString &action) {
   // after a manual scroll; a bad alignment never replaces captured strips.
   if (live) {
     QImage first = takeFrame(); DwmFlush();
-    if (!first.isNull() && first == takeFrame()) acceptFrame(first);
+    if (!first.isNull() && first == takeFrame())
+      acceptFrame(first,scrollDirection());
   }
   const QImage image = stitcher.image();
   if (image.isNull()) {
     finishing = false; status->setText("没有可用的截图，请重新框选区域"); place();
-    if (live) timer.start(80); return;
+    if (live) timer.start(16); return;
   }
-  hide(); releaseHotkeys();
+  hide(); releaseHotkeys(); releaseInputHooks();
   if (output && !output(image,action)) {
     finishing = false; begin(live); return;
   }
   closing = true; close(); emit finished(true);
 }
 void ScrollCapture::closeEvent(QCloseEvent *event) {
-  timer.stop(); releaseHotkeys();
+  timer.stop(); releaseHotkeys(); releaseInputHooks();
   if (!closing) { closing = true; emit finished(false); }
   event->accept();
 }
