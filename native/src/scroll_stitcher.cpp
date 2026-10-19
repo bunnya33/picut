@@ -1,161 +1,165 @@
 #include "scroll_capture.h"
-#include <QtCore/QFileInfo>
 #include <QtCore/QFile>
 #include <QtCore/QHash>
 #include <QtGui/QPainter>
 #include <algorithm>
+#include <array>
 #include <cmath>
-#include <limits>
 
 namespace {
-bool caretOnlyChange(const QImage &a, const QImage &b) {
+// Keep every vertical row. Only the horizontal axis is reduced, so the
+// displacement is still measured in original pixels, including short overlaps.
+QImage matchingImage(const QImage &image) {
+  return image.convertToFormat(QImage::Format_Grayscale8)
+      .scaled(qMin(480,image.width()),image.height(),Qt::IgnoreAspectRatio,Qt::SmoothTransformation);
+}
+bool isolatedChange(const QImage &a,const QImage &b) {
   int left=a.width(),right=-1,top=a.height(),bottom=-1;
-  for (int y=0;y<a.height();++y) {
-    auto p=reinterpret_cast<const QRgb *>(a.constScanLine(y));
-    auto q=reinterpret_cast<const QRgb *>(b.constScanLine(y));
-    for (int x=0;x<a.width();++x) if (p[x]!=q[x]) {
+  const int maximumWidth=qMax(4,a.width()/3),maximumHeight=qMax(8,qMin(96,a.height()/4));
+  for(int y=0;y<a.height();++y) {
+    auto p=a.constScanLine(y),q=b.constScanLine(y);
+    for(int x=0;x<a.width();++x) if(std::abs(int(p[x])-int(q[x]))>6) {
       left=qMin(left,x); right=qMax(right,x); top=qMin(top,y); bottom=y;
-      if (right-left>3 || bottom-top>96) return false;
+      if(right-left>maximumWidth || bottom-top>maximumHeight) return false;
     }
   }
-  return right>=left;
+  // A small isolated animation/caret inside a stationary viewport supplies no
+  // evidence that the viewport itself scrolled. In particular it must not
+  // stop automatic scrolling or invent a new strip.
+  return right<left || (top>3 && bottom<a.height()-4);
 }
-// Sample actual pixels rather than row averages: syntax-highlighted code and
-// repeated lines otherwise produce deceptively similar row signatures.
-QList<int> changedColumns(const QImage &a,const QImage &b) {
-  QList<int> columns;
-  const int step=qMax(1,a.height()/160);
-  for (int x=2;x<a.width()-2;++x) {
-    int sum=0,count=0;
-    for (int y=0;y<a.height();y+=step) {
-      sum+=qMin(90,std::abs(int(a.constScanLine(y)[x])-int(b.constScanLine(y)[x])));
-      ++count;
+struct Tile { int left,right; };
+QList<Tile> movingTiles(const QImage &a,const QImage &b) {
+  QList<Tile> result;
+  const int size=qMax(12,a.width()/12);
+  for(int x=0;x<a.width();x+=size) {
+    Tile tile{x,qMin(a.width(),x+size)};
+    double difference=0; int count=0;
+    for(int y=0;y<a.height();y+=3) for(int xx=tile.left;xx<tile.right;xx+=2) {
+      difference+=std::abs(int(a.constScanLine(y)[xx])-int(b.constScanLine(y)[xx])); ++count;
     }
-    if (sum>count*.4) columns.append(x);
+    if(count && difference/count>.35) result.append(tile);
   }
-  return columns;
+  return result;
 }
-double error(const QImage &a, const QImage &b, int shift, int first, int last,
-             const QList<int> &active, int rows = 70, int columns = 40) {
-  const int begin = qMax(first, qMax(0, -shift));
-  const int end = qMin(last, qMin(b.height(), a.height() - shift));
-  if (end <= begin || active.isEmpty()) return 1e9;
-  columns=qMin(columns,int(active.size()));
-  const int step = qMax(1, (end - begin) / rows);
-  double sum = 0; int count = 0;
-  for (int y = begin; y < end; y += step) {
-    auto p = a.constScanLine(y + shift), q = b.constScanLine(y);
-    for (int n = 0; n < columns; ++n) {
-      const int x = active[n*active.size()/columns];
-      const int d = std::abs(int(p[x]) - int(q[x]));
-      sum += qMin(d, 90); ++count;
-    }
+// A local binary descriptor survives small repaint/antialias changes. Local
+// tiles prevent a blinking caret, animation or fixed sidebar from invalidating
+// the entire row, as happened with the old full-row RGB hashes.
+quint32 descriptor(const QImage &image,int y,Tile tile) {
+  std::array<int,16> values{}; int sum=0;
+  auto row=image.constScanLine(y);
+  for(int n=0;n<16;++n) { values[n]=row[tile.left+n*(tile.right-tile.left)/16]; sum+=values[n]; }
+  const int mean=sum/16;
+  quint32 key=0;
+  for(int n=0;n<16;++n) {
+    if(values[n]<mean-12) key|=1u<<n;
+    if(values[n]>mean+12) key|=1u<<(n+16);
   }
-  return count ? sum / count : 1e9;
+  return key;
 }
-struct Motion { int shift = 0; double score = 1e9; bool ambiguous = false; };
-Motion motion(const QImage &before, const QImage &after, int direction) {
-  // Keep every row: resizing vertically loses exact offsets and is especially
-  // unreliable when only a small overlap survives a fast wheel/PageDown jump.
-  const int h = before.height();
-  const QSize small(qMin(180, before.width()), h);
-  auto a = before.scaled(small, Qt::IgnoreAspectRatio, Qt::FastTransformation)
-               .convertToFormat(QImage::Format_Grayscale8);
-  auto b = after.scaled(small, Qt::IgnoreAspectRatio, Qt::FastTransformation)
-               .convertToFormat(QImage::Format_Grayscale8);
-  const auto smallColumns=changedColumns(a,b);
-  const int overlap = qMax(20, qMin(48, h / 20));
-  auto allowed = [&](int shift) { return shift && std::abs(shift) <= h - overlap; };
-  // Content rows vote for offsets. Common blank/repeated rows are excluded,
-  // rather than letting them overwhelm real text features with false matches.
-  auto rowKey = [&](const QImage &image, int y) {
-    quint64 key = 1469598103934665603ULL;
-    const auto row = image.constScanLine(y);
-    const int count = qMin(32, int(smallColumns.size()));
-    for (int n = 0; n < count; ++n) {
-      key ^= row[smallColumns[n * smallColumns.size() / count]] >> 2;
-      key *= 1099511628211ULL;
-    }
-    return key;
-  };
-  QHash<quint64, QList<int>> rows;
-  for (int y = 0; y < h; ++y) rows[rowKey(a,y)].append(y);
-  QHash<int,int> votes;
-  for (int y = 0; y < h; ++y) {
-    const auto found = rows.constFind(rowKey(b,y));
-    if (found == rows.cend() || found->size() > 32) continue;
-    for (int old : *found) if (allowed(old-y)) ++votes[old-y];
-  }
-  QList<int> offsets = votes.keys();
-  std::sort(offsets.begin(), offsets.end(), [&](int x, int y) {
-    return votes.value(x) > votes.value(y);
-  });
-  Motion best;
-  auto fullA = before.convertToFormat(QImage::Format_Grayscale8);
-  auto fullB = after.convertToFormat(QImage::Format_Grayscale8);
-  const auto fullColumns=changedColumns(fullA,fullB);
-  QList<Motion> refined;
-  auto evaluate = [&](int shift) {
-    const double score = error(fullA, fullB, shift, 0, h, fullColumns, 130, 64);
-    refined.append({shift,score,false});
-    if (score < best.score) best = {shift,score,false};
-  };
-  int positive = 0, negative = 0;
-  const int support = offsets.isEmpty() ? 0 : qMax(3,votes.value(offsets.first()) / 5);
-  for (int shift : offsets) {
-    if (votes.value(shift)<support) break;
-    auto &count = shift > 0 ? positive : negative;
-    if (count++ < 16) evaluate(shift);
-  }
-  if (best.score > 4.5) {
-    // Pixel-error fallback for repainting/antialiasing changes. A direction
-    // never substitutes an assumed wheel distance.
-    QList<Motion> matches;
-    for (int shift = -h + overlap; shift <= h - overlap; ++shift)
-      if (shift) matches.append({shift,error(a,b,shift,0,h,smallColumns,32,24),false});
-    std::sort(matches.begin(),matches.end(),[](const Motion &x,const Motion &y) { return x.score < y.score; });
-    for (int n=0;n<qMin(8,int(matches.size()));++n) evaluate(matches[n].shift);
-  }
-  // A direction hint can distinguish opposite-direction repeated patterns;
-  // conflicting strong image evidence still wins (e.g. inertial reversal).
-  if (direction) {
-    for (auto value : refined)
-      if (value.shift * direction > 0 && value.score <= best.score + .15) {
-        if (best.shift * direction <= 0 || value.score < best.score) best=value;
+struct Motion { int shift=0; double score=1e9; int blocks=0; bool ambiguous=false, boundary=false; };
+Motion evaluate(const QImage &a,const QImage &b,int shift,const QList<Tile> &tiles) {
+  const int begin=qMax(0,-shift),end=qMin(b.height(),a.height()-shift);
+  QList<double> errors;
+  int points=0;
+  const int block=qMin(28,qMax(8,(end-begin)/4));
+  for(auto tile:tiles) for(int top=begin;top<end;top+=block) {
+    double sum=0; int count=0;
+    for(int y=top;y<qMin(end,top+block);y+=2) {
+      auto p=a.constScanLine(y+shift),q=b.constScanLine(y);
+      const auto pn=a.constScanLine(qMin(a.height()-1,y+shift+1));
+      const auto qn=b.constScanLine(qMin(b.height()-1,y+1));
+      for(int x=tile.left;x<tile.right-1;x+=2) {
+        // White space contributes no false evidence of a match. Evaluate the
+        // actual character/image edges in either image, not a diluted mean.
+        int texture=std::max({std::abs(int(p[x])-int(p[x+1])),std::abs(int(q[x])-int(q[x+1])),
+                          std::abs(int(p[x])-int(pn[x])),std::abs(int(q[x])-int(qn[x]))});
+        if(texture<8) continue;
+        sum+=qMin(90,qMax(0,std::abs(int(p[x])-int(q[x]))-6)); ++count;
       }
+    }
+    if(count>=4) { errors.append(sum/count); points+=count; }
   }
-  for (auto other : refined) {
-    if (direction && best.shift * direction > 0 && other.shift * direction < 0) continue;
-    if (std::abs(other.shift - best.shift) > 3 && other.score <= best.score + .4)
-      best.ambiguous = true;
-  }
-  return best;
+  if(points<16 || errors.size()<2) return {};
+  // Bound the influence of local animation; keep every informative block in
+  // the score so a unique number can disambiguate otherwise repeated rows.
+  double sum=0; int bad=0;
+  for(double value:errors) { sum+=qMin(12.,value); if(value>6) ++bad; }
+  return {shift,sum/errors.size()+2.*bad/errors.size(),int(errors.size()),false,false};
 }
-bool reachesEdges(const QImage &previous, const QImage &current, int shift) {
-  // A downward scroll maps current[y] to previous[y + shift]. Test both edges,
-  // shrinking the validation bands when PageDown leaves only a short overlap.
-  const auto &top = shift > 0 ? current : previous;
-  const auto &bottom = shift > 0 ? previous : current;
-  const int d = std::abs(shift), h = top.height();
-  const int band = qMax(4,std::min({qMax(10,h/20),40,(h-d-4)/2}));
-  auto a = bottom.convertToFormat(QImage::Format_Grayscale8);
-  auto b = top.convertToFormat(QImage::Format_Grayscale8);
-  const auto columns=changedColumns(a,b);
-  const int bottomBegin = h - d - band - 2;
-  for (auto range : {QPair<int,int>{2, 2 + band},
-                      QPair<int,int>{bottomBegin, h - d - 2}}) {
-    const double moved = error(a, b, d, range.first, range.second, columns, band, 80);
-    const double stationary = range.first == 2
-        ? error(a, b, 0, range.first, range.second, columns, band, 80)
-        : error(a, b, 0, h - band - 2, h - 2, columns, band, 80);
-    if (moved > 5.0 || stationary < 1.0 || stationary < moved * 1.6)
-      return false;
+bool reachesEdges(const QImage &a,const QImage &b,int shift,const QList<Tile> &tiles) {
+  const auto &old=shift>0?a:b;
+  const auto &now=shift>0?b:a;
+  const int d=std::abs(shift),h=a.height(),overlap=h-d;
+  const int band=qMin(qMax(24,h/10),qMin(72,overlap));
+  for(bool bottom:{false,true}) {
+    int good=0,bad=0;
+    for(auto tile:tiles) {
+      double moved=0,still=0; int count=0;
+      for(int n=0;n<band;++n) {
+        int y=bottom?overlap-band+n:n;
+        auto p=old.constScanLine(y+d),q=now.constScanLine(y);
+        const int physical=bottom?h-band+n:n;
+        auto s=old.constScanLine(physical),t=now.constScanLine(physical);
+        for(int x=tile.left;x<tile.right;x+=2) {
+          moved+=qMin(90,std::abs(int(p[x])-int(q[x])));
+          still+=qMin(90,std::abs(int(s[x])-int(t[x]))); ++count;
+        }
+      }
+      moved/=qMax(1,count); still/=qMax(1,count);
+      if(moved<4 && still>qMax(.45,moved*1.8)) ++good;
+      else if(moved>2 && still<qMax(.8,moved*.45)) ++bad;
+    }
+    // Blank margins are neutral, not a reason to reject a valid match. Actual
+    // stationary headers/footers within moving columns contradict the match.
+    if(bad>good) return false;
   }
   return true;
 }
+Motion motion(const QImage &a,const QImage &b,int direction) {
+  const int h=a.height(),overlap=qMax(20,qMin(48,h/20));
+  const auto tiles=movingTiles(a,b);
+  if(tiles.isEmpty()) return {0,0};
+  QHash<int,int> votes;
+  for(auto tile:tiles) {
+    QHash<quint64,QList<int>> rows;
+    auto key=[&](const QImage &image,int y) {
+      return quint64(descriptor(image,y,tile)) | quint64(descriptor(image,y+2,tile))<<32;
+    };
+    for(int y=0;y<h-2;++y) { const auto value=key(a,y); if(value) rows[value].append(y); }
+    for(int y=0;y<h-2;++y) {
+      const auto value=key(b,y); if(!value) continue;
+      auto found=rows.constFind(value);
+      if(found==rows.cend() || found->size()>40) continue;
+      for(int old:*found) if(std::abs(old-y)<=h-overlap) ++votes[old-y];
+    }
+  }
+  QList<int> offsets=votes.keys();
+  std::sort(offsets.begin(),offsets.end(),[&](int x,int y){ return votes.value(x)>votes.value(y); });
+  QList<Motion> refined;
+  refined.append(evaluate(a,b,0,tiles));
+  int positive=0,negative=0;
+  const int support=offsets.isEmpty()?0:qMax(3,votes.value(offsets.first())/8);
+  for(int shift:offsets) {
+    if(votes.value(shift)<support) break;
+    if(!shift) continue;
+    auto &count=shift>0?positive:negative;
+    if(count++<24) refined.append(evaluate(a,b,shift,tiles));
+  }
+  Motion best;
+  for(auto value:refined) if(value.score<best.score) best=value;
+  if(direction) for(auto value:refined)
+    if(value.shift*direction>0 && value.score<=best.score+.015 && best.shift*direction<0) best=value;
+  for(auto other:refined) {
+    if(direction && best.shift*direction>0 && other.shift*direction<0) continue;
+    if(std::abs(other.shift-best.shift)>2 && other.score<=best.score+qMax(.025,best.score*.08))
+      best.ambiguous=true;
+  }
+  if(best.shift) best.boundary=reachesEdges(a,b,best.shift,tiles);
+  return best;
 }
-
-bool ScrollStitcher::append(const QImage &part) {
+}
+bool ScrollStitcher::append(const QImage &part, bool prepend) {
   if (!cache.isValid() || part.isNull()) return false;
   const QString path = cache.filePath(QString::number(strips.size()) + ".rgb");
   QFile file(path);
@@ -163,8 +167,12 @@ bool ScrollStitcher::append(const QImage &part) {
       file.write(reinterpret_cast<const char *>(part.constBits()),part.sizeInBytes()) != part.sizeInBytes() ||
       !file.flush())
     return false;
-  strips.append({path, part.scaledToWidth(qMin(280, part.width()), Qt::SmoothTransformation),
-                 height, part.height()});
+  Strip strip{path, part.scaledToWidth(qMin(280, part.width()), Qt::SmoothTransformation),
+              prepend ? 0 : height, part.height()};
+  if (prepend) {
+    for(auto &existing:strips) existing.y+=part.height();
+    strips.prepend(std::move(strip));
+  } else strips.append(std::move(strip));
   height += part.height();
   return true;
 }
@@ -175,24 +183,30 @@ ScrollStitcher::Result ScrollStitcher::accept(const QImage &frame, int direction
     if (qint64(value.width()) * value.height() > 64000000) return LimitReached;
     if (!append(value)) return CacheError;
     width = value.width(); previous = value;
-    previousGray=value.convertToFormat(QImage::Format_Grayscale8); return Started;
+    previousGray=matchingImage(value); return Started;
   }
   if (value.size() != previous.size()) return NoOverlap;
-  if (value == previous || caretOnlyChange(previous,value)) return Unchanged;
-  auto gray=value.convertToFormat(QImage::Format_Grayscale8);
+  if (value == previous) return Unchanged;
+  auto gray=matchingImage(value);
+  if(isolatedChange(previousGray,gray)) return Unchanged;
   auto movement = motion(previousGray, gray, direction);
-  if (movement.score > 4.5 || movement.ambiguous) return NoOverlap;
-  if (!reachesEdges(previousGray, gray, movement.shift)) return BoundaryMismatch;
-  const int nextPosition = position + movement.shift;
-  if (nextPosition < 0) return NoOverlap;
-  const int extra = nextPosition + value.height() - height;
+  if (movement.score > 3.2 || movement.ambiguous) return NoOverlap;
+  if (!movement.shift) return Unchanged;
+  if (!movement.boundary) return BoundaryMismatch;
+  int nextPosition = position + movement.shift;
+  const int leading = qMax(0,-nextPosition);
+  const int extra = qMax(0,nextPosition + value.height() - height);
+  if (extra || leading) {
+    if (qint64(width) * (qint64(height) + extra + leading) > 64000000 ||
+        height + extra + leading > 100000 || strips.size() >= 8192) return LimitReached;
+    if (leading && !append(value.copy(0,0,width,leading),true)) return CacheError;
+    nextPosition+=leading;
+  }
   if (extra > 0) {
-    if (qint64(width) * (qint64(height) + extra) > 64000000 ||
-        height + extra > 100000 || strips.size() >= 8192) return LimitReached;
     if (!append(value.copy(0, value.height() - extra, width, extra))) return CacheError;
   }
   previous = value; previousGray=std::move(gray); position = nextPosition;
-  return extra > 0 ? Appended : Revisited;
+  return extra > 0 || leading > 0 ? Appended : Revisited;
 }
 QImage ScrollStitcher::image() const {
   if (!width || !height) return {};

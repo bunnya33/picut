@@ -6,15 +6,17 @@
 #include <QtGui/QImage>
 #include <QtWidgets/QWidget>
 #include <functional>
+#include <memory>
 
 class Store;
 class QLabel;
 class QFrame;
 class QToolButton;
 class QPainter;
+class ScrollFramePump;
 
-// Original pixels live in temporary strips; only two frames and small preview
-// strips stay resident while capturing. No full-height image is rebuilt on scroll.
+// Original pixels live in temporary strips; matching references and small
+// previews stay resident. No full-height image is rebuilt on scroll.
 class ScrollStitcher {
 public:
   enum Result { Started, Appended, Unchanged, Revisited, BoundaryMismatch,
@@ -31,7 +33,7 @@ private:
   QList<Strip> strips;
   QImage previous, previousGray;
   int width = 0, height = 0, position = 0;
-  bool append(const QImage &image);
+  bool append(const QImage &image, bool prepend = false);
 };
 
 class ScrollCapture : public QWidget {
@@ -69,6 +71,7 @@ private:
   QLabel *status;
   QToolButton *automatic;
   QTimer timer;
+  std::unique_ptr<ScrollFramePump> framePump;
   QImage candidate;
   int stalledScrolls = 0, inputDirection = 0;
   quintptr mouseHook = 0, keyboardHook = 0;

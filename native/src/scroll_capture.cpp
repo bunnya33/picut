@@ -1,4 +1,5 @@
 #include "scroll_capture.h"
+#include "scroll_grabber.h"
 #include "capture.h"
 #include "toolbar.h"
 #include "compact_ui.h"
@@ -102,7 +103,7 @@ ScrollCapture::ScrollCapture(Store *value, QRect source, quintptr window, QWidge
   connect(&timer, &QTimer::timeout, this, &ScrollCapture::sample);
   place();
 }
-ScrollCapture::~ScrollCapture() { releaseHotkeys(); releaseInputHooks(); }
+ScrollCapture::~ScrollCapture() { framePump.reset(); releaseHotkeys(); releaseInputHooks(); }
 void ScrollCapture::begin(bool enableLive) {
   live = enableLive && QGuiApplication::platformName() == "windows";
   show();
@@ -117,7 +118,16 @@ void ScrollCapture::begin(bool enableLive) {
       if (closing) return;
       if (sourceWindow && IsWindow(reinterpret_cast<HWND>(sourceWindow)))
         SetForegroundWindow(reinterpret_cast<HWND>(sourceWindow));
-      DwmFlush(); sample(); timer.start(16);
+      DwmFlush(); sample();
+      // A single-monitor hole has a stable physical pixel mapping. Old Win10
+      // without capture exclusion and mixed-monitor selections use the existing
+      // hide/restore and per-screen capture path instead.
+      const QRect global=region.translated(pos());
+      const auto screen=QGuiApplication::screenAt(global.center());
+      if(screen && screen->geometry().contains(global) && excluded) {
+        framePump=std::make_unique<ScrollFramePump>(physicalRect(global)); framePump->start();
+      }
+      timer.start(framePump ? 8 : 16);
     });
   }
 }
@@ -194,8 +204,9 @@ void ScrollCapture::sample() {
   if (capturing || closing || finishing) return;
   capturing = true;
   auto guard = qScopeGuard([this] { capturing = false; });
-  const QImage frame = takeFrame();
+  const QImage frame = framePump ? framePump->take() : takeFrame();
   if (frame.isNull()) {
+    if(framePump) return;
     setAutomatic(false); status->setText("未能读取画面，请完成或重新框选区域"); place(); return;
   }
   if (candidate.isNull()) {
@@ -203,8 +214,9 @@ void ScrollCapture::sample() {
     acceptFrame(frame); return;
   }
   if (frame != candidate) {
-    candidate=frame; idleTime.restart();
+    candidate=frame;
     const auto result=acceptFrame(frame,scrollDirection());
+    if(result!=ScrollStitcher::Unchanged) idleTime.restart();
     if (result==ScrollStitcher::CacheError || result==ScrollStitcher::LimitReached) return;
   } else if (pendingFailure != ScrollStitcher::Unchanged) {
     reportAlignmentFailure(pendingFailure);
@@ -245,17 +257,18 @@ void ScrollCapture::reportAlignmentFailure(ScrollStitcher::Result result) {
   setAutomatic(false);
   status->setText(result==ScrollStitcher::BoundaryMismatch
       ? "滚动内容未到达框选的上下边缘，请重新框选实际滚动内容"
-      : "滚动跨度过大或画面无法对齐，请向上返回已截位置后继续；已截内容保留");
+      : "滚动跨度过大或画面无法对齐，请返回已截位置后继续；已截内容保留");
   place();
 }
 ScrollStitcher::Result ScrollCapture::acceptFrame(const QImage &image, int direction) {
+  const bool recovering=pendingFailure!=ScrollStitcher::Unchanged;
   const auto result = stitcher.accept(image,direction);
   if (result==ScrollStitcher::Started || result==ScrollStitcher::Appended ||
       result==ScrollStitcher::Revisited || result==ScrollStitcher::Unchanged) {
     pendingFailure=ScrollStitcher::Unchanged; failureTime.invalidate(); failureReported=false;
   }
   if (result == ScrollStitcher::Started || result == ScrollStitcher::Appended ||
-      result == ScrollStitcher::Revisited) {
+      result == ScrollStitcher::Revisited || (result==ScrollStitcher::Unchanged && recovering)) {
     stalledScrolls = 0;
     status->setText(QString("%1 × %2 · %3").arg(stitcher.size().width()).arg(stitcher.size().height())
                        .arg(autoScrolling ? "自动滚动中" : "滚动页面截取更多内容"));
@@ -271,7 +284,7 @@ ScrollStitcher::Result ScrollCapture::acceptFrame(const QImage &image, int direc
         : result == ScrollStitcher::CacheError ? "临时图片保存失败，请检查磁盘空间"
         : "画面无法可靠拼接，请缓慢滚动或返回上一处；已截内容保留");
   }
-  place(); preview->update();
+  if(result!=ScrollStitcher::Unchanged || recovering) { place(); preview->update(); }
   return result;
 }
 void ScrollCapture::place() {
@@ -320,6 +333,12 @@ void ScrollCapture::finish(const QString &action) {
   if (closing || finishing) return;
   if (action == "cancel") { close(); return; }
   finishing = true; timer.stop(); setAutomatic(false);
+  if(framePump) {
+    framePump->stop();
+    // Drain all saved intermediate frames before reading the final screen.
+    for(int n=0;n<9;++n) { const auto frame=framePump->take(); if(!frame.isNull()) acceptFrame(frame,scrollDirection()); }
+    framePump.reset();
+  }
   // Include the latest stable screen if completion was clicked immediately
   // after a manual scroll; a bad alignment never replaces captured strips.
   if (live) {
@@ -339,7 +358,7 @@ void ScrollCapture::finish(const QString &action) {
   closing = true; close(); emit finished(true);
 }
 void ScrollCapture::closeEvent(QCloseEvent *event) {
-  timer.stop(); releaseHotkeys(); releaseInputHooks();
+  timer.stop(); framePump.reset(); releaseHotkeys(); releaseInputHooks();
   if (!closing) { closing = true; emit finished(false); }
   event->accept();
 }

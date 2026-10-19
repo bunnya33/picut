@@ -1,4 +1,5 @@
 #include <future>
+#include <thread>
 #include "annotation.h"
 #include "application.h"
 #include "capture.h"
@@ -7,6 +8,7 @@
 #include "recorder.h"
 #include "recording_settings.h"
 #include "scroll_capture.h"
+#include "scroll_grabber.h"
 #include "native_windows.h"
 #include "hotkey.h"
 #include <BitMatrix.h>
@@ -140,6 +142,84 @@ class NativeTests : public QObject {
         line("10.49",220,70,{14,18,8,18,18})}}};
   }
 private slots:
+  void scrollDesktopIndependentProducer() {
+    if(QGuiApplication::platformName()!="windows") QSKIP("Requires the Windows desktop");
+    wchar_t desktopClass[256]{}; GetClassNameW(WindowFromPoint({300,270}),desktopClass,256);
+    if(QString::fromWCharArray(desktopClass).startsWith("LockScreen")) QSKIP("Windows desktop is locked");
+    const auto oldForeground=GetForegroundWindow();
+    const QRect logical(70,90,760,500),area=physicalRect(logical);
+    struct Context {
+      QImage document;
+      std::atomic<HWND> window{nullptr};
+      std::atomic<int> offset{0};
+      int height=0;
+    } context;
+    context.height=area.height();
+    context.document=QImage(area.width(),area.height()+3000,QImage::Format_RGB32);
+    context.document.fill(Qt::white);
+    QPainter painter(&context.document); painter.setFont(QFont("Microsoft YaHei UI",11));
+    painter.setPen(QColor(25,25,25));
+    for(int row=0,y=25;y<context.document.height();++row,y+=31) if(row%8!=6 && row%8!=7) {
+      painter.drawText(40,y,QString("%1. 实际屏幕像素 / Plain paragraph with white margins").arg(row*113+17));
+      painter.drawText(60,y+15,QString("Amount %1.%2; original content, independent render thread.").arg(row*31).arg(row%99));
+    }
+    painter.end();
+    std::thread producer([&] {
+      auto dpi=reinterpret_cast<DPI_AWARENESS_CONTEXT(WINAPI *)(DPI_AWARENESS_CONTEXT)>(
+          GetProcAddress(GetModuleHandleW(L"user32.dll"),"SetThreadDpiAwarenessContext"));
+      if(dpi) dpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+      WNDCLASSW cls{}; cls.hInstance=GetModuleHandleW(nullptr); cls.lpszClassName=L"PicutScrollIndependentFixture";
+      cls.lpfnWndProc=[](HWND hwnd,UINT message,WPARAM w,LPARAM l)->LRESULT {
+        if(message==WM_NCCREATE) SetWindowLongPtrW(hwnd,GWLP_USERDATA,LONG_PTR(reinterpret_cast<CREATESTRUCTW *>(l)->lpCreateParams));
+        auto c=reinterpret_cast<Context *>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
+        if(message==WM_APP+1) { SetTimer(hwnd,1,20,nullptr); return 0; }
+        if(message==WM_TIMER && c) {
+          c->offset=qMin(1880,c->offset.load()+47);
+          InvalidateRect(hwnd,nullptr,FALSE); UpdateWindow(hwnd);
+          if(c->offset>=1880) KillTimer(hwnd,1);
+          return 0;
+        }
+        if(message==WM_PAINT && c) {
+          PAINTSTRUCT paint{}; auto dc=BeginPaint(hwnd,&paint);
+          BITMAPINFO info{}; info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+          info.bmiHeader.biWidth=c->document.width(); info.bmiHeader.biHeight=-c->height;
+          info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=32;
+          SetDIBitsToDevice(dc,0,0,DWORD(c->document.width()),DWORD(c->height),0,0,0,UINT(c->height),
+                           c->document.constScanLine(c->offset.load()),&info,DIB_RGB_COLORS);
+          EndPaint(hwnd,&paint); return 0;
+        }
+        if(message==WM_DESTROY) { PostQuitMessage(0); return 0; }
+        return DefWindowProcW(hwnd,message,w,l);
+      };
+      RegisterClassW(&cls);
+      auto hwnd=CreateWindowExW(WS_EX_TOPMOST,cls.lpszClassName,L"picut scrolling fixture",WS_POPUP|WS_VISIBLE,
+          area.x(),area.y(),area.width(),area.height(),nullptr,nullptr,cls.hInstance,&context);
+      if(!hwnd) return;
+      UpdateWindow(hwnd); context.window=hwnd;
+      MSG message{}; while(GetMessageW(&message,nullptr,0,0)>0) { TranslateMessage(&message); DispatchMessageW(&message); }
+      UnregisterClassW(cls.lpszClassName,cls.hInstance);
+    });
+    auto cleanup=qScopeGuard([&] {
+      if(auto hwnd=context.window.load()) PostMessageW(hwnd,WM_CLOSE,0,0);
+      producer.join(); if(IsWindow(oldForeground)) SetForegroundWindow(oldForeground);
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(context.window.load()!=nullptr,2000);
+    SetForegroundWindow(context.window.load()); QTest::qWait(150);
+    QTemporaryDir dir; Store store(dir.path());
+    auto session=std::make_unique<ScrollCapture>(&store,logical,reinterpret_cast<quintptr>(context.window.load()));
+    session->setAttribute(Qt::WA_DeleteOnClose,false); session->begin();
+    QTRY_COMPARE_WITH_TIMEOUT(session->imageSize(),area.size(),3000);
+    PostMessageW(context.window.load(),WM_APP+1,0,0);
+    // The source continues rendering on its own thread during GUI stalls.
+    for(int n=0;n<9;++n) { QThread::msleep(90); QTest::qWait(45); }
+    QTRY_COMPARE_WITH_TIMEOUT(context.offset.load(),1880,3000);
+    QTRY_COMPARE_WITH_TIMEOUT(session->imageSize().height(),area.height()+1880,4000);
+    QImage captured;
+    session->output=[&](const QImage &image,const QString &) { captured=image; return true; };
+    session->finish("copy");
+    QCOMPARE(captured,context.document.copy(0,0,area.width(),area.height()+1880));
+    qInfo()<<"Independent black/white page: 40 scroll steps, GUI blocked 90ms at a time, exact original pixels";
+  }
   void scrollDesktopManualAndAutomatic() {
     if (QGuiApplication::platformName() != "windows") QSKIP("Requires the Windows desktop");
     wchar_t desktopClass[256]{};
@@ -320,6 +400,129 @@ private slots:
     std::sort(times.begin(),times.end());
     qInfo() << "Continuous scroll match+cache ms, median:" << times[times.size()/2]
             << "p95:" << times[qMin(times.size()-1,qsizetype(times.size()*.95))];
+  }
+  void scrollRealisticPages_data() {
+    QTest::addColumn<int>("kind");
+    QTest::newRow("plain-paragraphs-blank-edges") << 0;
+    QTest::newRow("text-with-local-animation") << 1;
+    QTest::newRow("antialias-repaint") << 2;
+    QTest::newRow("repeated-table-unique-values") << 3;
+    QTest::newRow("smooth-scroll-fractional-repaint") << 4;
+  }
+  void scrollRealisticPages() {
+    QFETCH(int,kind);
+    constexpr int w=960,h=640;
+    QImage doc(w,7200,QImage::Format_RGB32); doc.fill(Qt::white);
+    QPainter p(&doc); p.setFont(QFont("Microsoft YaHei UI",11)); p.setPen(QColor(35,35,35));
+    const QStringList sentences{
+      "滚动截图需要根据实际画面中的共同内容确定接缝，保留原始像素。",
+      "A plain paragraph has white space, punctuation, and different line lengths.",
+      "这里是网页正文。图片旁边的动画和鼠标经过产生的变化不应该干扰拼接。",
+      "Keep the overlap while moving through a document with many paragraphs."};
+    for(int row=0,y=28;y<doc.height()-30;++row,y+=32) {
+      if(kind==3) {
+        p.setPen(QColor(218,218,218)); p.drawLine(30,y+7,900,y+7);
+        p.setPen(QColor(35,35,35));
+        p.drawText(40,y,"待处理项目 / Pending");
+        p.drawText(560,y,QString("%1.%2").arg(row*71+19).arg((row*13)%100,2,10,QChar('0')));
+      } else if(row%7!=5 && row%7!=6) {
+        p.drawText(74,y,sentences[row%sentences.size()]);
+        p.drawText(765,y,QString::number(row*173+31));
+      }
+    }
+    p.end();
+    auto frame=[&](int offset,int serial) {
+      auto image=doc.copy(0,offset,w,h);
+      if(kind==4) {
+        image.fill(Qt::white); QPainter smooth(&image);
+        smooth.setRenderHint(QPainter::SmoothPixmapTransform);
+        smooth.drawImage(QPointF(0,-offset+(serial%3)*.25),doc); smooth.end();
+      }
+      if(kind==1) { QPainter a(&image); a.fillRect(610,170,100,48,QColor::fromHsv(serial*43%360,180,210)); }
+      if(kind==2) for(int y=0;y<h;++y) {
+        auto line=reinterpret_cast<QRgb *>(image.scanLine(y));
+        for(int x=0;x<w;++x) if(qGray(line[x])<245) {
+          const int value=qBound(0,qGray(line[x])+(serial%3-1)*3,255); line[x]=qRgb(value,value,value);
+        }
+      }
+      return image;
+    };
+    ScrollStitcher stitcher; QCOMPARE(stitcher.accept(frame(0,0)),ScrollStitcher::Started);
+    int serial=0,maximum=0;
+    for(int offset : {37,138,269,508,593,901,1208,1507,1816,1743,1867,2221,2528}) {
+      const auto result=stitcher.accept(frame(offset,++serial),offset==1743?-1:1);
+      QVERIFY2(result==ScrollStitcher::Appended || result==ScrollStitcher::Revisited,
+               qPrintable(QString("offset %1, result %2, captured %3").arg(offset).arg(result).arg(stitcher.size().height())));
+      maximum=qMax(maximum,offset); QCOMPARE(stitcher.size(),QSize(w,maximum+h));
+    }
+    if(kind==0 || kind==3) QCOMPARE(stitcher.image(),doc.copy(0,0,w,maximum+h));
+  }
+  void scrollUpwardPrependAndBothDirections() {
+    const auto doc=scrollDocument(460,3000);
+    ScrollStitcher stitcher;
+    QCOMPARE(stitcher.accept(doc.copy(0,800,460,300)),ScrollStitcher::Started);
+    // 300px viewport, 100px overlap: the 200 new pixels belong above the image.
+    QCOMPARE(stitcher.accept(doc.copy(0,600,460,300),-1),ScrollStitcher::Appended);
+    QCOMPARE(stitcher.image(),doc.copy(0,600,460,500));
+    for(int offset:{430,230,470,690,860,1040,1200,980,730,490,250,50}) {
+      const auto result=stitcher.accept(doc.copy(0,offset,460,300));
+      QVERIFY(result==ScrollStitcher::Appended || result==ScrollStitcher::Revisited);
+    }
+    QCOMPARE(stitcher.image(),doc.copy(0,50,460,1450));
+  }
+  void scrollAcquisitionSurvivesBusyGui() {
+    const auto doc=scrollDocument(460,3000);
+    std::atomic<int> offset{0};
+    ScrollFramePump pump({},[&] { int y=qMin(1400,offset.fetch_add(70)); return doc.copy(0,y,460,400); });
+    pump.start();
+    // No event processing: the matcher/GUI is occupied, but capture must run.
+    QThread::msleep(230);
+    pump.stop();
+    QVERIFY(pump.frameCount()>=6);
+    ScrollStitcher stitcher;
+    for(int n=0;n<10;++n) {
+      const auto result=stitcher.accept(pump.take(),1);
+      QVERIFY(result==ScrollStitcher::Started || result==ScrollStitcher::Appended || result==ScrollStitcher::Unchanged);
+    }
+    const int lastOffset=qMin(1400,offset.load()-70);
+    QCOMPARE(stitcher.image(),doc.copy(0,0,460,lastOffset+400));
+    qInfo()<<"Frames captured while GUI blocked:"<<pump.frameCount()<<"coalesced:"<<pump.droppedCount();
+  }
+  void scrollRejectsUnrelatedAndAmbiguousImages() {
+    const auto doc=scrollDocument(460,5000);
+    ScrollStitcher stitcher;
+    auto first=doc.copy(0,0,460,400);
+    QCOMPARE(stitcher.accept(first),ScrollStitcher::Started);
+    for(int y:{1200,1777,2890,4013}) {
+      const auto result=stitcher.accept(doc.copy(0,y,460,400),1);
+      QVERIFY(result==ScrollStitcher::NoOverlap || result==ScrollStitcher::BoundaryMismatch);
+      QCOMPARE(stitcher.image(),first);
+    }
+    QImage repeated(460,1600,QImage::Format_RGB32); repeated.fill(Qt::white);
+    QPainter p(&repeated); p.setPen(Qt::black); p.setFont(QFont("Consolas",12));
+    for(int y=0;y<1600;y+=30) p.drawText(10,y+22,"The exact same repeated row / 0000000");
+    p.end();
+    ScrollStitcher ambiguous; first=repeated.copy(0,0,460,400);
+    QCOMPARE(ambiguous.accept(first),ScrollStitcher::Started);
+    auto result=ambiguous.accept(repeated.copy(0,97,460,400),1);
+    QVERIFY(result==ScrollStitcher::NoOverlap || result==ScrollStitcher::BoundaryMismatch);
+    QCOMPARE(ambiguous.image(),first);
+    auto animated=first; QPainter animation(&animated); animation.fillRect(240,140,45,35,Qt::red); animation.end();
+    // A local change by itself never creates a longer screenshot.
+    result=ambiguous.accept(animated,1);
+    QVERIFY(result!=ScrollStitcher::Appended);
+    QCOMPARE(ambiguous.size(),first.size());
+  }
+  void scrollIdlePageWithAnimationIsUnchanged() {
+    const auto doc=scrollDocument(760,900);
+    auto first=doc.copy(0,0,760,500);
+    ScrollStitcher stitcher; QCOMPARE(stitcher.accept(first),ScrollStitcher::Started);
+    for(int n=1;n<=12;++n) {
+      auto frame=first; QPainter p(&frame);
+      p.fillRect(510,120,60,32,QColor::fromHsv(n*27%360,180,220)); p.end();
+      QCOMPARE(stitcher.accept(frame,1),ScrollStitcher::Unchanged);
+    }
+    QCOMPARE(stitcher.image(),first);
   }
   void scrollStitchingAndBacktracking() {
     QImage document(420,3600,QImage::Format_RGB32);
