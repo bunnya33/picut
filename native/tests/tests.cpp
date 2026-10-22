@@ -111,6 +111,45 @@ class NativeTests : public QObject {
     }
     return image;
   }
+  static QList<QRect> repeatedStickers() {
+    return {{62,90,150,150},{458,420,150,150},{62,750,150,150},
+            {62,1080,150,150},{458,1410,150,150},{62,1740,150,150},
+            {458,2070,150,150},{62,2400,150,150},{62,2730,150,150}};
+  }
+  static QImage sparseChatDocument(bool unique=true) {
+    QImage image(680,3400,QImage::Format_RGB32); image.fill(QColor("#fafafa"));
+    QPainter p(&image); p.setFont(QFont("Microsoft YaHei UI",10));
+    for(int n=0;n<9;++n) {
+      const int y=90+n*330;
+      p.fillRect(18,y,32,32,QColor("#5c8fbc"));
+      p.setPen(Qt::white); p.drawText(QRect(18,y,32,32),Qt::AlignCenter,"A");
+      p.fillRect(434,y+215,178,30,QColor("#95ec69"));
+      p.setPen(QColor("#222222"));
+      p.drawText(440,y+236,unique?QString("消息 %1 / %2").arg(n).arg(7919*n+31):QString("相同的消息"));
+    }
+    return image;
+  }
+  static QImage sparseChatFrame(const QImage &doc,int offset,int phase) {
+    auto image=doc.copy(0,offset,680,640); QPainter p(&image);
+    p.setRenderHint(QPainter::Antialiasing);
+    for(auto r:repeatedStickers()) {
+      r.translate(0,-offset); if(!r.intersects(image.rect())) continue;
+      p.save(); p.setClipRect(r); p.translate(r.topLeft());
+      p.setPen(Qt::NoPen); p.setBrush(Qt::black);
+      p.drawEllipse(QPoint(33,25),21,21); p.drawEllipse(QPoint(115,25),21,21);
+      p.setBrush(Qt::white); p.setPen(QPen(Qt::black,3));
+      p.drawEllipse(QRect(22,12,106,96)); p.drawEllipse(QRect(39,97,73,75));
+      p.setBrush(Qt::black); p.drawEllipse(QRect(39,39,25,26)); p.drawEllipse(QRect(88,39,25,26));
+      p.setBrush(Qt::white); p.setPen(Qt::NoPen);
+      p.drawEllipse(QPoint(54+phase%3,50+phase%2),5,5); p.drawEllipse(QPoint(98+phase%3,50+phase%2),5,5);
+      p.setPen(QPen(Qt::black,3));
+      p.drawLine(65,78,88,78+phase%4*2);
+      // A moving hand repaints only a small part of an otherwise repeated panda.
+      p.setBrush(Qt::black); p.drawEllipse(QPoint(23+phase%4*4,103-phase%3*3),15,15);
+      p.restore();
+    }
+    return image;
+  }
   static CaptureOverlay *editingFixture(Store &store, const QString &tool) {
     DesktopSnapshot desktop;
     desktop.bounds = {0, 0, 800, 600};
@@ -773,6 +812,94 @@ private slots:
           qPrintable(QString("chat gap %1 result %2, height %3").arg(offset).arg(result).arg(stitcher.size().height())));
       QCOMPARE(stitcher.image(),before);
     }
+  }
+  void scrollSparseRepeatedStickerRegression() {
+    const auto doc=sparseChatDocument(); ScrollStitcher stitcher;
+    QCOMPARE(stitcher.accept(sparseChatFrame(doc,77,0)),ScrollStitcher::Started);
+    stitcher.accept(sparseChatFrame(doc,77,1));
+    QCOMPARE(stitcher.accept(sparseChatFrame(doc,150,2),1),ScrollStitcher::Appended);
+    QCOMPARE(stitcher.size(),QSize(680,713));
+  }
+  void scrollThinStripsPreviewHasNoBlankSeams() {
+    const auto doc=scrollDocument(680,1400); ScrollStitcher stitcher;
+    QCOMPARE(stitcher.accept(doc.copy(0,0,680,640)),ScrollStitcher::Started);
+    int offset=0;
+    for(int step=0;step<90;++step) {
+      offset+=step%3+1;
+      QCOMPARE(stitcher.accept(doc.copy(0,offset,680,640),1),ScrollStitcher::Appended);
+    }
+    QCOMPARE(stitcher.image(),doc.copy(0,0,680,640+offset));
+    for(int targetWidth:{123,280,680}) {
+      QImage preview(targetWidth,qRound((640+offset)*double(targetWidth)/680),QImage::Format_RGB32);
+      preview.fill(Qt::magenta); QPainter painter(&preview); stitcher.paint(painter,preview.rect()); painter.end();
+      // The left blank margin has a constant color. Fractional strip boundaries
+      // and one-pixel strips must cover every preview row without gaps.
+      for(int y=0;y<preview.height();++y) QCOMPARE(preview.pixel(0,y),doc.pixel(0,0));
+    }
+  }
+  void scrollSparseRepeatedStickersNeverLoseMessages() {
+    QStringList failures; int accepted=0;
+    for(bool unique:{false,true}) {
+      const auto doc=sparseChatDocument(unique);
+      for(int start:{0,77,185,330,467,660,851,1100}) for(int distance:{17,73,161,233,330,477,590,670,790}) {
+        // Fully periodic messages with tiny/no overlap can be pixel-identical
+        // to a different move. Those gap checks use distinguishable messages.
+        if(!unique && distance>=512) continue;
+        ScrollStitcher stitcher;
+        QCOMPARE(stitcher.accept(sparseChatFrame(doc,start,0)),ScrollStitcher::Started);
+        stitcher.accept(sparseChatFrame(doc,start,1));
+        const auto before=stitcher.image();
+        const auto result=stitcher.accept(sparseChatFrame(doc,start+distance,2),1);
+        const auto joined=stitcher.image();
+        const auto label=QString("unique %1 start %2 distance %3 result %4 height %5")
+            .arg(unique).arg(start).arg(distance).arg(result).arg(joined.height());
+        if(result==ScrollStitcher::NoOverlap || result==ScrollStitcher::BoundaryMismatch) {
+          if(joined!=before) failures.append(label+" rejected frame changed canvas");
+          continue;
+        }
+        ++accepted;
+        if(distance>=640 || result!=ScrollStitcher::Appended || joined.height()!=640+distance) {
+          failures.append(label+" incorrect displacement"); continue;
+        }
+        bool equal=true;
+        for(int y=0;y<joined.height() && equal;++y) for(int x=0;x<joined.width();++x) {
+          bool sticker=false; for(auto r:repeatedStickers()) if(r.contains(x,y+start)) sticker=true;
+          if(!sticker && joined.pixel(x,y)!=doc.pixel(x,y+start)) { equal=false; break; }
+        }
+        if(!equal) failures.append(label+" overwrote intervening messages");
+      }
+    }
+    QVERIFY2(failures.isEmpty(),qPrintable(failures.join('\n')));
+    QVERIFY(accepted>25);
+  }
+  void scrollSparseRepeatedStickersBacktracking() {
+    const auto doc=sparseChatDocument(); ScrollStitcher stitcher;
+    QCOMPARE(stitcher.accept(sparseChatFrame(doc,660,0)),ScrollStitcher::Started);
+    stitcher.accept(sparseChatFrame(doc,660,1));
+    int top=660,bottom=1300,previous=660,phase=1,accepted=0;
+    QList<int> offsets;
+    for(int offset=623;offset>0;offset-=37) offsets.append(offset);
+    offsets.append(0);
+    for(int offset=37;offset<1500;offset+=37) offsets.append(offset);
+    for(int offset:offsets) {
+      const auto before=stitcher.image();
+      const auto result=stitcher.accept(sparseChatFrame(doc,offset,++phase),offset>previous?1:-1);
+      previous=offset;
+      if(result==ScrollStitcher::NoOverlap || result==ScrollStitcher::BoundaryMismatch) {
+        QCOMPARE(stitcher.image(),before); continue;
+      }
+      QVERIFY2(result==ScrollStitcher::Appended || result==ScrollStitcher::Revisited,
+          qPrintable(QString("offset %1 result %2").arg(offset).arg(result)));
+      ++accepted; top=qMin(top,offset); bottom=qMax(bottom,offset+640);
+      QCOMPARE(stitcher.size(),QSize(680,bottom-top));
+      stitcher.accept(sparseChatFrame(doc,offset,++phase));
+      const auto joined=stitcher.image();
+      for(int y=0;y<joined.height();++y) for(int x=0;x<joined.width();++x) {
+        bool sticker=false; for(auto r:repeatedStickers()) if(r.contains(x,y+top)) sticker=true;
+        if(!sticker) QCOMPARE(joined.pixel(x,y),doc.pixel(x,y+top));
+      }
+    }
+    QVERIFY2(accepted>40,qPrintable(QString("Only %1 / %2 moving frames accepted").arg(accepted).arg(offsets.size())));
   }
   void scrollChatAnimatedStickersUpward() {
     const auto doc=chatDocument();

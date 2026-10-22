@@ -4,6 +4,7 @@
 #include <QtCore/QTimer>
 #include <QtCore/QElapsedTimer>
 #include <QtGui/QImage>
+#include <QtGui/QRegion>
 #include <QtWidgets/QWidget>
 #include <functional>
 #include <memory>
@@ -33,7 +34,7 @@ private:
   QTemporaryDir cache;
   QList<Strip> strips;
   QImage previous, previousGray;
-  QList<QRect> repaintAreas;
+  QList<QRegion> repaintAreas;
   int width = 0, height = 0, position = 0;
   quint64 nextStrip=0;
   quint64 revision=0;
