@@ -2,7 +2,7 @@
 param([string]$PackageDir, [string]$Iscc, [switch]$TranslationTrial)
 $ErrorActionPreference = 'Stop'
 $picutRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.24-translation-trial' }
+if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.25-translation-trial' }
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $picutMain = Join-Path $PackageDir 'picut.exe'
 $picutVersion = (Get-Item -LiteralPath $picutMain).VersionInfo.ProductVersion
@@ -57,7 +57,7 @@ $picutPayload = Join-Path $picutStage 'payload'
 New-Item -ItemType Directory -Path $picutPayload -Force | Out-Null
 Get-ChildItem -LiteralPath $PackageDir -File | Where-Object {
     $_.Extension -in @('.exe', '.dll', '.ico', '.conf') -or
-    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd', '试用版-v0.5.24-图片本地翻译.md')
+    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd', '试用版-v0.5.25-滚动截屏修复.md')
 } | Copy-Item -Destination $picutPayload
 Get-ChildItem -LiteralPath $PackageDir -Directory | Where-Object {
     $_.Name -notin @('annotation-previews', 'image-text-previews', 'translation-previews')

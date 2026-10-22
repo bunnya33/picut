@@ -41,7 +41,7 @@ LRESULT CALLBACK scrollKeyboardHook(int code, WPARAM kind, LPARAM raw) {
 }
 class LongPreview : public QWidget {
 public:
-  explicit LongPreview(ScrollStitcher *value, QWidget *parent)
+  explicit LongPreview(ScrollStitcher::Preview *value, QWidget *parent)
       : QWidget(parent), stitcher(value) { setObjectName("scrollPreview"); }
 protected:
   void paintEvent(QPaintEvent *) override {
@@ -51,7 +51,7 @@ protected:
     painter.setPen(QColor("#2080f0")); painter.drawRect(rect().adjusted(0,0,-1,-1));
   }
 private:
-  ScrollStitcher *stitcher;
+  ScrollStitcher::Preview *stitcher;
 };
 }
 
@@ -70,7 +70,7 @@ ScrollCapture::ScrollCapture(Store *value, QRect source, quintptr window, QWidge
   available = (screen ? screen : QGuiApplication::primaryScreen())->availableGeometry()
                   .translated(-pos()).adjusted(8,8,-8,-8);
   region.translate(-pos());
-  preview = new LongPreview(&stitcher, this);
+  preview = new LongPreview(&displayed, this);
   bar = new QFrame(this); bar->setObjectName("scrollToolbar");
   bar->setStyleSheet("QFrame#scrollToolbar{background:#f8f8f8;border:1px solid #d4d4d4;"
                     "border-radius:7px;}QToolButton{border:0;background:transparent;}"
@@ -103,7 +103,18 @@ ScrollCapture::ScrollCapture(Store *value, QRect source, quintptr window, QWidge
   connect(&timer, &QTimer::timeout, this, &ScrollCapture::sample);
   place();
 }
-ScrollCapture::~ScrollCapture() { framePump.reset(); releaseHotkeys(); releaseInputHooks(); }
+ScrollCapture::~ScrollCapture() { stopPumps(false); releaseHotkeys(); releaseInputHooks(); }
+void ScrollCapture::stopPumps(bool drain) {
+  if(framePump) framePump->stop();
+  if(matchPump) {
+    matchPump->stop(drain);
+    if(auto update=matchPump->takeUpdate(matchSerial)) {
+      matchSerial=update->serial; displayed=std::move(update->preview);
+    }
+    matchPump.reset();
+  }
+  framePump.reset();
+}
 void ScrollCapture::begin(bool enableLive) {
   live = enableLive && QGuiApplication::platformName() == "windows";
   show();
@@ -124,10 +135,13 @@ void ScrollCapture::begin(bool enableLive) {
       // hide/restore and per-screen capture path instead.
       const QRect global=region.translated(pos());
       const auto screen=QGuiApplication::screenAt(global.center());
-      if(screen && screen->geometry().contains(global) && excluded) {
-        framePump=std::make_unique<ScrollFramePump>(physicalRect(global)); framePump->start();
-      }
-      timer.start(framePump ? 8 : 16);
+      framePump=std::make_unique<ScrollFramePump>(physicalRect(global));
+      framePump->noteDirection(scrollDirection());
+      backgroundAcquisition=screen && screen->geometry().contains(global) && excluded;
+      if(backgroundAcquisition) framePump->start();
+      matchSerial=0;
+      matchPump=std::make_unique<ScrollMatchPump>(framePump.get(),&stitcher); matchPump->start();
+      timer.start(backgroundAcquisition ? 8 : 16);
     });
   }
 }
@@ -154,6 +168,7 @@ bool ScrollCapture::acceptsScrollInput(QPoint point, bool keyboard) const {
 void ScrollCapture::noteScrollInput(int direction, bool manual) {
   if (!direction || closing || finishing) return;
   inputDirection=direction > 0 ? 1 : -1; inputTime.restart();
+  if(framePump) framePump->noteDirection(inputDirection);
   if (manual && autoScrolling)
     QTimer::singleShot(0,this,[this] { if (!closing && !finishing) setAutomatic(false); });
   if (live && !inputTickQueued) {
@@ -178,8 +193,8 @@ void ScrollCapture::setAutomatic(bool enabled) {
       auto center = physicalRect(region.translated(pos())).center();
       SetCursorPos(center.x(),center.y());
     }
-  } else if (!stitcher.size().isEmpty())
-    status->setText(QString("%1 × %2 · 滚动页面继续截取").arg(stitcher.size().width()).arg(stitcher.size().height()));
+  } else if (!imageSize().isEmpty())
+    status->setText(QString("%1 × %2 · 滚动页面继续截取").arg(imageSize().width()).arg(imageSize().height()));
   place();
 }
 QImage ScrollCapture::takeFrame() {
@@ -204,22 +219,30 @@ void ScrollCapture::sample() {
   if (capturing || closing || finishing) return;
   capturing = true;
   auto guard = qScopeGuard([this] { capturing = false; });
-  const QImage frame = framePump ? framePump->take() : takeFrame();
-  if (frame.isNull()) {
-    if(framePump) return;
-    setAutomatic(false); status->setText("未能读取画面，请完成或重新框选区域"); place(); return;
-  }
-  if (candidate.isNull()) {
-    candidate = frame; idleTime.restart();
-    acceptFrame(frame); return;
-  }
-  if (frame != candidate) {
-    candidate=frame;
-    const auto result=acceptFrame(frame,scrollDirection());
-    if(result!=ScrollStitcher::Unchanged) idleTime.restart();
-    if (result==ScrollStitcher::CacheError || result==ScrollStitcher::LimitReached) return;
-  } else if (pendingFailure != ScrollStitcher::Unchanged) {
-    reportAlignmentFailure(pendingFailure);
+  if(matchPump) {
+    if(!backgroundAcquisition) framePump->enqueue(takeFrame());
+    if(auto update=matchPump->takeUpdate(matchSerial)) {
+      matchSerial=update->serial;
+      displayResult(update->result,std::move(update->preview));
+      if(update->result!=ScrollStitcher::Unchanged) idleTime.restart();
+    } else if(pendingFailure!=ScrollStitcher::Unchanged) reportAlignmentFailure(pendingFailure);
+  } else {
+    const QImage frame = takeFrame();
+    if (frame.isNull()) {
+      setAutomatic(false); status->setText("未能读取画面，请完成或重新框选区域"); place(); return;
+    }
+    if (candidate.isNull()) {
+      candidate = frame; idleTime.restart();
+      acceptFrame(frame); return;
+    }
+    if (frame != candidate) {
+      candidate=frame;
+      const auto result=acceptFrame(frame,scrollDirection());
+      if(result!=ScrollStitcher::Unchanged) idleTime.restart();
+      if (result==ScrollStitcher::CacheError || result==ScrollStitcher::LimitReached) return;
+    } else if (pendingFailure != ScrollStitcher::Unchanged) {
+      reportAlignmentFailure(pendingFailure);
+    }
   }
   if (autoScrolling && pendingFailure==ScrollStitcher::Unchanged && idleTime.elapsed()>=120) {
     if (stalledScrolls >= 3) {
@@ -257,13 +280,19 @@ void ScrollCapture::reportAlignmentFailure(ScrollStitcher::Result result) {
   setAutomatic(false);
   status->setText(result==ScrollStitcher::BoundaryMismatch
       ? "滚动内容未到达框选的上下边缘，请重新框选实际滚动内容"
-      : "滚动跨度过大或画面无法对齐，请返回已截位置后继续；已截内容保留");
+      : "暂未找到可靠重叠，请回滚少许后继续；已截内容保留");
   place();
 }
 ScrollStitcher::Result ScrollCapture::acceptFrame(const QImage &image, int direction) {
-  const bool recovering=pendingFailure!=ScrollStitcher::Unchanged;
-  const auto revision=stitcher.contentRevision();
+  Q_ASSERT(!matchPump);
   const auto result = stitcher.accept(image,direction);
+  displayResult(result,stitcher.preview());
+  return result;
+}
+void ScrollCapture::displayResult(ScrollStitcher::Result result,ScrollStitcher::Preview next) {
+  const bool recovering=pendingFailure!=ScrollStitcher::Unchanged;
+  const auto revision=displayed.revision;
+  displayed=std::move(next);
   if (result==ScrollStitcher::Started || result==ScrollStitcher::Appended ||
       result==ScrollStitcher::Revisited || result==ScrollStitcher::Unchanged) {
     pendingFailure=ScrollStitcher::Unchanged; failureTime.invalidate(); failureReported=false;
@@ -271,7 +300,7 @@ ScrollStitcher::Result ScrollCapture::acceptFrame(const QImage &image, int direc
   if (result == ScrollStitcher::Started || result == ScrollStitcher::Appended ||
       result == ScrollStitcher::Revisited || (result==ScrollStitcher::Unchanged && recovering)) {
     stalledScrolls = 0;
-    status->setText(QString("%1 × %2 · %3").arg(stitcher.size().width()).arg(stitcher.size().height())
+    status->setText(QString("%1 × %2 · %3").arg(imageSize().width()).arg(imageSize().height())
                        .arg(autoScrolling ? "自动滚动中" : "滚动页面截取更多内容"));
   }
   else if (result==ScrollStitcher::NoOverlap || result==ScrollStitcher::BoundaryMismatch) {
@@ -286,8 +315,7 @@ ScrollStitcher::Result ScrollCapture::acceptFrame(const QImage &image, int direc
         : "画面无法可靠拼接，请缓慢滚动或返回上一处；已截内容保留");
   }
   if(result!=ScrollStitcher::Unchanged || recovering) place();
-  if(stitcher.contentRevision()!=revision || result!=ScrollStitcher::Unchanged || recovering) preview->update();
-  return result;
+  if(displayed.revision!=revision || result!=ScrollStitcher::Unchanged || recovering) preview->update();
 }
 void ScrollCapture::place() {
   bar->adjustSize();
@@ -297,7 +325,7 @@ void ScrollCapture::place() {
   if (room < 96 && leftRoom > room) { room = leftRoom; x = available.left(); }
   const bool inside = room < 64;
   const int maximumWidth = inside ? qMin(240,available.width()/3) : qMin(280,room);
-  QSize image = stitcher.size().isEmpty() ? region.size() : stitcher.size();
+  QSize image = imageSize().isEmpty() ? region.size() : imageSize();
   const QSize size = ScrollStitcher::previewSize(image,{qMax(16,maximumWidth),available.height()-4});
   if (inside) x = available.right()-size.width()+1;
   else if (x == available.left()) x = region.left()-12-size.width();
@@ -335,12 +363,8 @@ void ScrollCapture::finish(const QString &action) {
   if (closing || finishing) return;
   if (action == "cancel") { close(); return; }
   finishing = true; timer.stop(); setAutomatic(false);
-  if(framePump) {
-    framePump->stop();
-    // Drain all saved intermediate frames before reading the final screen.
-    for(int n=0;n<9;++n) { const auto frame=framePump->take(); if(!frame.isNull()) acceptFrame(frame,scrollDirection()); }
-    framePump.reset();
-  }
+  // Complete queued matches on the worker before exporting the original pixels.
+  stopPumps(true);
   // Include the latest stable screen if completion was clicked immediately
   // after a manual scroll; a bad alignment never replaces captured strips.
   if (live) {
@@ -360,7 +384,7 @@ void ScrollCapture::finish(const QString &action) {
   closing = true; close(); emit finished(true);
 }
 void ScrollCapture::closeEvent(QCloseEvent *event) {
-  timer.stop(); framePump.reset(); releaseHotkeys(); releaseInputHooks();
+  timer.stop(); stopPumps(false); releaseHotkeys(); releaseInputHooks();
   if (!closing) { closing = true; emit finished(false); }
   event->accept();
 }

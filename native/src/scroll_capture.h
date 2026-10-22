@@ -15,6 +15,7 @@ class QFrame;
 class QToolButton;
 class QPainter;
 class ScrollFramePump;
+class ScrollMatchPump;
 
 // Original pixels live in temporary strips; matching references and small
 // previews stay resident. No full-height image is rebuilt on scroll.
@@ -22,12 +23,20 @@ class ScrollStitcher {
 public:
   enum Result { Started, Appended, Unchanged, Revisited, BoundaryMismatch,
                 NoOverlap, LimitReached, CacheError };
+  struct Preview {
+    struct Part { QImage thumbnail; int y,height,sourceY,sourceHeight; };
+    QSize size;
+    quint64 revision=0;
+    QList<Part> parts;
+    void paint(QPainter &painter,QRectF target) const;
+  };
   Result accept(const QImage &image, int direction = 0);
   QImage image() const;
   QSize size() const { return {width, height}; }
   int stripCount() const { return int(strips.size()); }
   quint64 contentRevision() const { return revision; }
   void paint(QPainter &painter, QRectF target) const;
+  Preview preview() const;
   static QSize previewSize(QSize original, QSize available);
 private:
   struct Strip { QString path; QImage thumbnail; int y, height, sourceY=0, sourceHeight=0; };
@@ -62,7 +71,7 @@ public:
   bool acceptsScrollInput(QPoint physicalPoint, bool keyboard = false) const;
   void finish(const QString &action);
   QRect previewGeometry() const;
-  QSize imageSize() const { return stitcher.size(); }
+  QSize imageSize() const { return displayed.size; }
   std::function<QImage()> frameProvider;
   std::function<bool(const QImage &, const QString &)> output;
 signals:
@@ -76,12 +85,15 @@ private:
   QRect region, available;
   quintptr sourceWindow;
   ScrollStitcher stitcher;
+  ScrollStitcher::Preview displayed;
   QWidget *preview;
   QFrame *bar;
   QLabel *status;
   QToolButton *automatic;
   QTimer timer;
   std::unique_ptr<ScrollFramePump> framePump;
+  std::unique_ptr<ScrollMatchPump> matchPump;
+  quint64 matchSerial=0;
   QImage candidate;
   int stalledScrolls = 0, inputDirection = 0;
   quintptr mouseHook = 0, keyboardHook = 0;
@@ -91,10 +103,13 @@ private:
   bool failureReported = false;
   bool live = false, autoScrolling = false, closing = false, finishing = false;
   bool excluded = false, capturing = false;
+  bool backgroundAcquisition=false;
   QList<int> hotkeys;
   void installInputHooks();
   void releaseInputHooks();
   void reportAlignmentFailure(ScrollStitcher::Result result);
+  void displayResult(ScrollStitcher::Result result,ScrollStitcher::Preview next);
+  void stopPumps(bool drain);
   QImage takeFrame();
   void place();
   void updateMask();

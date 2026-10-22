@@ -2,6 +2,7 @@
 #include <QtCore/QFile>
 #include <QtCore/QHash>
 #include <QtCore/QSaveFile>
+#include <QtCore/QDebug>
 #include <QtGui/QPainter>
 #include <QtGui/QRegion>
 #include <algorithm>
@@ -100,6 +101,10 @@ QImage repaintMask(const QImage &a,const QImage &b,int shift,const QList<uchar> 
     // During motion, keep single text-line differences in the score: masking
     // changing message numbers could otherwise join unrelated repeated bubbles.
     const bool shortEdge=shift && patch.height()<36 && (patch.top()==begin || patch.bottom()==end-1);
+    // Thin vertical runs of changing digits are often an editor's line-number
+    // gutter, not an animated object. Masking it makes repeated code blocks
+    // appear interchangeable and can remove whole sections of the document.
+    if(shift && patch.width()<24 && patch.height()>patch.width()*1.5) continue;
     if(patch.width()<(shift?16:1) || (patch.height()<(shift?36:1) && (!shortEdge || !needsStrong)) || patch.width()>a.width()*.65 ||
        patch.height()>(end-begin)*.7 || patch.width()*patch.height()>a.width()*(end-begin)*.25 ||
        (shift && total*4<patch.width()*patch.height()*.18)) continue;
@@ -168,9 +173,25 @@ QImage combinedMask(QImage mask,const QImage &known,int shift) {
 }
 QList<Tile> movingTiles(const QImage &a,const QImage &b) {
   QList<Tile> result;
+  // Scrollbar thumbs move at a different rate from the document. Their thin,
+  // flat rails at the viewport edges must not veto every otherwise exact text
+  // match. Only trim a narrow run of flat columns, never a whole edge tile (it
+  // can contain line numbers or the only distinguishing message text).
+  auto rail=[&](int x) {
+    for(const QImage *image:{&a,&b}) {
+      int transitions=0;
+      for(int y=1;y<image->height();++y)
+        if(std::abs(int(image->constScanLine(y)[x])-int(image->constScanLine(y-1)[x]))>4 && ++transitions>8) return false;
+    }
+    return true;
+  };
+  const int margin=qMin(16,a.width()/24);
+  int left=0,right=a.width();
+  while(left<margin && rail(left)) ++left;
+  while(right>a.width()-margin && rail(right-1)) --right;
   const int size=qMax(12,a.width()/12);
-  for(int x=0;x<a.width();x+=size) {
-    Tile tile{x,qMin(a.width(),x+size)};
+  for(int x=left;x<right;x+=size) {
+    Tile tile{x,qMin(right,x+size)};
     double difference=0; int count=0;
     for(int y=0;y<a.height();y+=3) for(int xx=tile.left;xx<tile.right;xx+=2) {
       difference+=std::abs(int(a.constScanLine(y)[xx])-int(b.constScanLine(y)[xx])); ++count;
@@ -194,8 +215,13 @@ quint32 descriptor(const QImage &image,int y,Tile tile) {
   }
   return key;
 }
-struct Motion { int shift=0; double score=1e9; int blocks=0; bool ambiguous=false, boundary=false, masked=false; };
-Motion evaluate(const QImage &a,const QImage &b,int shift,const QList<Tile> &tiles,const QImage &mask={},bool needsStrong=false) {
+struct Motion {
+  int shift=0; double score=1e9; int blocks=0;
+  bool ambiguous=false, boundary=false, masked=false;
+  QImage verificationMask;
+  bool needsStrong=false;
+};
+Motion evaluate(const QImage &a,const QImage &b,int shift,const QList<Tile> &tiles,const QImage &mask={},bool needsStrong=false,bool verifyOnly=false) {
   const int begin=qMax(0,-shift),end=qMin(b.height(),a.height()-shift);
   QList<double> errors;
   int points=0,first=end,last=begin,goodBlocks=0;
@@ -223,6 +249,10 @@ Motion evaluate(const QImage &a,const QImage &b,int shift,const QList<Tile> &til
       }
     }
     if(count>=4) {
+      // The score below uses the worst informative block. Once this block has
+      // already failed, further pixels cannot rescue this hypothesis. Masked
+      // candidates are still evaluated separately for local animations.
+      if(sum/count>maximumAlignmentError) return {};
       errors.append(sum/count); points+=count;
       if(sum/count<1) {
         ++goodBlocks;first=qMin(first,top);last=qMax(last,qMin(end,top+block));
@@ -231,6 +261,13 @@ Motion evaluate(const QImage &a,const QImage &b,int shift,const QList<Tile> &til
     }
   }
   if(points<16 || errors.size()<2) return {};
+  double sum=0,worst=0; int bad=0;
+  for(double value:errors) { sum+=qMin(12.,value); worst=qMax(worst,value); if(value>6) ++bad; }
+  Motion result{shift,qMax(worst,sum/errors.size()+2.*bad/errors.size()),int(errors.size()),false,false,!mask.isNull(),mask,needsStrong};
+  // Original-resolution verification checks contradictions. Anchor density was
+  // already checked at the common matching scale; counting raw glyph edges
+  // against a wider tile would penalize the same sparse code a second time.
+  if(verifyOnly) return result;
   // Repeated avatars/stickers are not independent anchors. Require support on
   // both sides of the image, or separate vertical groups (e.g. a message and a
   // sticker). A single repeated object in a short overlap cannot locate a chat.
@@ -242,19 +279,27 @@ Motion evaluate(const QImage &a,const QImage &b,int shift,const QList<Tile> &til
   if(run>=8) ++groups;
   const bool denseColumn=points>=qMax(200,int((end-begin)*qMax(1,right-left)*.025)) &&
       last-first>=qMin(96,(end-begin)*3/5);
-  if(right-left<a.width()/2 && groups<2 && !denseColumn) return {};
+  // Code can occupy one narrow column with large empty margins. Line numbers
+  // also bridge the blank gaps between paragraphs, making it look like a single
+  // vertical group. Independent evidence spanning most of a substantial
+  // overlap is sufficient without requiring dense ink across its bounding box.
+  const bool distributedColumn=mask.isNull() && end-begin>=192 && points>=160 && goodBlocks>=8 &&
+      std::popcount(bands)>=4 && last-first>=(end-begin)*2/3;
+  if(right-left<a.width()/2 && groups<2 && !denseColumn && !distributedColumn) {
+    if(qEnvironmentVariableIsSet("PICUT_SCROLL_DIAGNOSTICS") && result.score<=maximumAlignmentError)
+      qInfo()<<"scroll sparse anchors"<<shift<<"points"<<points<<"span"<<right-left<<last-first<<"groups"<<groups<<"overlap"<<end-begin;
+    return {};
+  }
   if(!mask.isNull() && (points<80 || goodBlocks<4 || last-first<qMin(96,(end-begin)/3))) return {};
   if(!mask.isNull() && shift && end-begin<64) return {};
   if(!mask.isNull() && !shift && std::popcount(bands)<3) return {};
   if(needsStrong && (points<400 || goodBlocks<12 || std::popcount(bands)<3 || right-left<a.width()/2)) return {};
   // Bound the influence of local animation; keep every informative block in
   // the score so a unique number can disambiguate otherwise repeated rows.
-  double sum=0,worst=0; int bad=0;
-  for(double value:errors) { sum+=qMin(12.,value); worst=qMax(worst,value); if(value>6) ++bad; }
   // One conflicting message must not disappear in an average of many identical
   // sticker/blank blocks. Every informative block outside dynamic objects must
   // support the same displacement.
-  return {shift,qMax(worst,sum/errors.size()+2.*bad/errors.size()),int(errors.size()),false,false,!mask.isNull()};
+  return result;
 }
 bool reachesEdges(const QImage &a,const QImage &b,int shift,const QList<Tile> &tiles) {
   const auto &old=shift>0?a:b;
@@ -285,7 +330,8 @@ bool reachesEdges(const QImage &a,const QImage &b,int shift,const QList<Tile> &t
   }
   return true;
 }
-Motion motion(const QImage &a,const QImage &b,int direction,const QImage &known={},const QImage &stationary={}) {
+Motion motion(const QImage &a,const QImage &b,int direction,const QImage &known,const QImage &stationary,
+              const QImage &originalA,const QImage &originalB) {
   const int h=a.height(),overlap=qMax(20,qMin(48,h/20));
   const auto tiles=movingTiles(a,b);
   if(tiles.isEmpty()) return {0,0};
@@ -333,6 +379,20 @@ Motion motion(const QImage &a,const QImage &b,int direction,const QImage &known=
     const auto value=evaluate(a,b,shift,tiles,mask,needsStrong);
     if(value.score<=maximumAlignmentError) refined.append(value);
   }
+  // Reduced images propose offsets quickly, but a few small digits can be the
+  // only distinction between repeated code/chat lines. Check viable offsets
+  // against original-resolution pixels before deciding that they are equal.
+  // This also prevents an apparently perfect reduced match from dropping text.
+  if(originalA.width()>a.width() && std::any_of(refined.cbegin(),refined.cend(),[](const Motion &value) { return value.score<=maximumAlignmentError; })) {
+    const auto fullA=originalA.convertToFormat(QImage::Format_Grayscale8);
+    const auto fullB=originalB.convertToFormat(QImage::Format_Grayscale8);
+    const auto fullTiles=movingTiles(fullA,fullB);
+    for(auto &value:refined) if(value.score<=maximumAlignmentError) {
+      const auto mask=value.verificationMask.isNull()?QImage():value.verificationMask.scaled(fullB.size(),Qt::IgnoreAspectRatio,Qt::FastTransformation);
+      const auto verified=evaluate(fullA,fullB,value.shift,value.shift?fullTiles:allTiles(fullA.width()),mask,value.needsStrong,true);
+      value.score=qMax(value.score,verified.score);
+    }
+  }
   Motion best;
   for(auto value:refined) if(value.score<best.score) best=value;
   if(direction) for(auto value:refined)
@@ -343,6 +403,17 @@ Motion motion(const QImage &a,const QImage &b,int direction,const QImage &known=
       best.ambiguous=true;
   }
   if(best.shift) best.boundary=reachesEdges(a,b,best.shift,tiles);
+  if(qEnvironmentVariableIsSet("PICUT_SCROLL_DIAGNOSTICS") && (best.ambiguous || best.score>maximumAlignmentError)) {
+    QStringList candidates;
+    for(const auto &value:refined) if(value.score<=maximumAlignmentError)
+      candidates.append(QString("%1:%2:%3").arg(value.shift).arg(value.score).arg(value.masked));
+    qInfo()<<"scroll match"<<a.size()<<"best"<<best.shift<<best.score<<"ambiguous"<<best.ambiguous<<"valid"<<candidates;
+    for(const auto &value:refined) if(value.score<=maximumAlignmentError && value.masked) {
+      QList<QRect> patches; bool strong=false;
+      repaintMask(a,b,value.shift,{},&patches,&strong);
+      qInfo()<<"masked candidate"<<value.shift<<patches;
+    }
+  }
   return best;
 }
 int seamReplacement(const QImage &mask,int boundary,bool prepend) {
@@ -517,7 +588,7 @@ ScrollStitcher::Result ScrollStitcher::accept(const QImage &frame, int direction
     for(int y=area.top();y<=area.bottom();++y)
       std::fill(stationaryMask.scanLine(y)+area.left(),stationaryMask.scanLine(y)+area.right()+1,uchar(255));
   }
-  auto movement = motion(previousGray, gray, direction,known,stationaryMask);
+  auto movement = motion(previousGray, gray, direction,known,stationaryMask,previous,value);
   if (movement.score > maximumAlignmentError || movement.ambiguous) return NoOverlap;
   // Direction cannot supply a distance, but an animation-masked, contrary
   // displacement is not sufficient evidence to override current scroll input.
@@ -587,11 +658,20 @@ QSize ScrollStitcher::previewSize(QSize original, QSize available) {
            qMax(1, qRound(original.height() * scale))};
 }
 void ScrollStitcher::paint(QPainter &painter, QRectF target) const {
-  if (!height) return;
+  preview().paint(painter,target);
+}
+ScrollStitcher::Preview ScrollStitcher::preview() const {
+  Preview result; result.size=size(); result.revision=revision;
+  for(const auto &strip:strips)
+    result.parts.append({strip.thumbnail,strip.y,strip.height,strip.sourceY,strip.sourceHeight});
+  return result;
+}
+void ScrollStitcher::Preview::paint(QPainter &painter,QRectF target) const {
+  if (size.isEmpty()) return;
   painter.setRenderHint(QPainter::SmoothPixmapTransform);
-  for (const auto &strip : strips) {
-    const double top=std::round(target.y()+target.height()*strip.y/height);
-    const double bottom=std::round(target.y()+target.height()*(strip.y+strip.height)/height);
+  for (const auto &strip : parts) {
+    const double top=std::round(target.y()+target.height()*strip.y/size.height());
+    const double bottom=std::round(target.y()+target.height()*(strip.y+strip.height)/size.height());
     painter.drawImage(QRectF(target.x(),top,target.width(),bottom-top),
                        strip.thumbnail,QRectF(0,double(strip.sourceY)*strip.thumbnail.height()/strip.sourceHeight,
                            strip.thumbnail.width(),double(strip.height)*strip.thumbnail.height()/strip.sourceHeight));

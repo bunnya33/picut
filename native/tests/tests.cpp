@@ -75,6 +75,28 @@ class NativeTests : public QObject {
     }
     return image;
   }
+  static QImage codeDocument(int width=1080,int height=4300) {
+    QImage doc(width,height,QImage::Format_RGB32); doc.fill(QColor("#282a36"));
+    QPainter p(&doc); p.setFont(QFont("Consolas",11));
+    const QStringList lines={"", "    }", "", "    get config() {", "        return this._config;", "    }",
+      "", "    updateState(value: TaskData) {", "        if (!value) return;",
+      "        this._items.forEach(item => {", "            item.update(value);", "        });", "    }"};
+    for(int row=0,y=17;y<doc.height();++row,y+=20) {
+      p.setPen(QColor("#6272a4")); p.drawText(5,y,QString::number(row+58));
+      p.setPen(QColor("#bd93f9"));
+      auto line=lines[row%lines.size()];
+      if(row%lines.size()==3) line=QString("    get config%1() {").arg(row/lines.size());
+      p.drawText(65,y,line);
+    }
+    return doc;
+  }
+  static QImage codeFrame(const QImage &doc,int offset,int viewport) {
+    auto image=doc.copy(0,offset,doc.width(),viewport);
+    QPainter p(&image); const int right=image.width()-12;
+    p.fillRect(right,0,12,viewport,QColor("#24252f"));
+    p.fillRect(right+2,offset*viewport/doc.height(),8,viewport*viewport/doc.height(),QColor("#666879"));
+    return image;
+  }
   static QList<QRect> chatStickers() {
     return {{65,85,180,150},{450,355,178,170},{70,760,160,180},
             {440,1130,170,150},{65,1510,180,170},{445,1980,170,180}};
@@ -217,7 +239,13 @@ class NativeTests : public QObject {
         line("10.49",220,70,{14,18,8,18,18})}}};
   }
 private slots:
+  void scrollDesktopIndependentProducer_data() {
+    QTest::addColumn<bool>("code");
+    QTest::newRow("paragraphs")<<false;
+    QTest::newRow("code-editor-scrollbar")<<true;
+  }
   void scrollDesktopIndependentProducer() {
+    QFETCH(bool,code);
     if(QGuiApplication::platformName()!="windows") QSKIP("Requires the Windows desktop");
     wchar_t desktopClass[256]{}; GetClassNameW(WindowFromPoint({300,270}),desktopClass,256);
     if(QString::fromWCharArray(desktopClass).startsWith("LockScreen")) QSKIP("Windows desktop is locked");
@@ -228,7 +256,9 @@ private slots:
       std::atomic<HWND> window{nullptr};
       std::atomic<int> offset{0};
       int height=0;
+      bool code=false;
     } context;
+    context.code=code;
     context.height=area.height();
     context.document=QImage(area.width(),area.height()+3000,QImage::Format_RGB32);
     context.document.fill(Qt::white);
@@ -239,6 +269,7 @@ private slots:
       painter.drawText(60,y+15,QString("Amount %1.%2; original content, independent render thread.").arg(row*31).arg(row%99));
     }
     painter.end();
+    if(code) context.document=codeDocument(area.width(),area.height()+3000);
     std::thread producer([&] {
       auto dpi=reinterpret_cast<DPI_AWARENESS_CONTEXT(WINAPI *)(DPI_AWARENESS_CONTEXT)>(
           GetProcAddress(GetModuleHandleW(L"user32.dll"),"SetThreadDpiAwarenessContext"));
@@ -261,6 +292,14 @@ private slots:
           info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=32;
           SetDIBitsToDevice(dc,0,0,DWORD(c->document.width()),DWORD(c->height),0,0,0,UINT(c->height),
                            c->document.constScanLine(c->offset.load()),&info,DIB_RGB_COLORS);
+          if(c->code) {
+            auto brush=CreateSolidBrush(RGB(36,37,47));
+            RECT rail{c->document.width()-12,0,c->document.width(),c->height}; FillRect(dc,&rail,brush); DeleteObject(brush);
+            brush=CreateSolidBrush(RGB(102,104,121));
+            const int y=c->offset*c->height/c->document.height();
+            RECT thumb{rail.left+2,y,rail.right-2,y+c->height*c->height/c->document.height()};
+            FillRect(dc,&thumb,brush); DeleteObject(brush);
+          }
           EndPaint(hwnd,&paint); return 0;
         }
         if(message==WM_DESTROY) { PostQuitMessage(0); return 0; }
@@ -292,7 +331,8 @@ private slots:
     QImage captured;
     session->output=[&](const QImage &image,const QString &) { captured=image; return true; };
     session->finish("copy");
-    QCOMPARE(captured,context.document.copy(0,0,area.width(),area.height()+1880));
+    QCOMPARE(captured.copy(0,0,captured.width()-(code?12:0),captured.height()),
+             context.document.copy(0,0,area.width()-(code?12:0),area.height()+1880));
     qInfo()<<"Independent black/white page: 40 scroll steps, GUI blocked 90ms at a time, exact original pixels";
   }
   void scrollDesktopManualAndAutomatic() {
@@ -553,6 +593,91 @@ private slots:
     std::sort(times.begin(),times.end());
     qInfo() << "Continuous scroll match+cache ms, median:" << times[times.size()/2]
             << "p95:" << times[qMin(times.size()-1,qsizetype(times.size()*.95))];
+  }
+  void scrollDarkCodePages() {
+    auto supplied=qEnvironmentVariable("PICUT_SCROLL_REGRESSION_IMAGE");
+    QImage doc;
+    if(!supplied.isEmpty()) doc=QImage(supplied).convertToFormat(QImage::Format_RGB32);
+    if(doc.isNull()) doc=codeDocument();
+    int failures=0;
+    for(int mode:{0,1,2}) for(int viewport:{400,500,640,900}) for(int step:{31,47,97,213,viewport-70}) {
+      if(viewport>=doc.height()) continue;
+      auto frame=[&](int offset) {
+        auto image=doc.copy(0,offset,doc.width(),viewport);
+        if(mode==1) {
+          image=codeFrame(doc,offset,viewport);
+        }
+        if(mode==2) {
+          // Scrolling Chromium/Electron text is rasterized again at different
+          // fractional vertical positions before it settles on an integer row.
+          image.fill(QColor("#282a36")); QPainter p(&image);
+          p.setRenderHint(QPainter::SmoothPixmapTransform);
+          p.drawImage(QPointF(0,-offset+(offset%3)*.33),doc);
+        }
+        return image;
+      };
+      ScrollStitcher stitcher;
+      QCOMPARE(stitcher.accept(frame(0)),ScrollStitcher::Started);
+      int lastOffset=0;
+      for(int offset=step;offset+viewport<=qMin(2300,doc.height());offset+=step) {
+        auto result=stitcher.accept(frame(offset),1);
+        // With only 70px left, a crop containing just braces/line numbers can
+        // legitimately lack independent anchors. The acquisition queue must
+        // preserve intermediate frames to bridge it, rather than guess a gap.
+        if(result==ScrollStitcher::NoOverlap && viewport-step<96) {
+          QCOMPARE(stitcher.size().height(),lastOffset+viewport);
+          const int bridge=offset-step+step/2;
+          QCOMPARE(stitcher.accept(frame(bridge),1),ScrollStitcher::Appended);
+          result=stitcher.accept(frame(offset),1);
+        }
+        const int actualOffset=mode==2?offset-qRound((offset%3)*.33):offset;
+        if(result!=ScrollStitcher::Appended || stitcher.size().height()!=actualOffset+viewport) {
+          qWarning()<<"Static code match failed:"<<"mode"<<mode<<"viewport"<<viewport<<"step"<<step<<"offset"<<offset<<"result"<<result<<"height"<<stitcher.size().height();
+          ++failures; break;
+        }
+        lastOffset=actualOffset;
+      }
+      if(mode<2) QCOMPARE(stitcher.image().copy(0,0,doc.width()-(mode?12:0),lastOffset+viewport),
+                          doc.copy(0,0,doc.width()-(mode?12:0),lastOffset+viewport));
+    }
+    QCOMPARE(failures,0);
+  }
+  void scrollCodeScrollbarUpwardAndReverse() {
+    const auto doc=codeDocument();
+    ScrollStitcher stitcher; int top=1600,bottom=2240,previous=1600;
+    QCOMPARE(stitcher.accept(codeFrame(doc,1600,640)),ScrollStitcher::Started);
+    for(int y:{1569,1538,1441,1228,1015,802,589,376,163,0,213,426,639,852,1065,1278,1491,1704,1917,2130,2343}) {
+      const auto result=stitcher.accept(codeFrame(doc,y,640),y<previous?-1:1);
+      QVERIFY2(result==ScrollStitcher::Appended || result==ScrollStitcher::Revisited,qPrintable(QString("offset %1 result %2").arg(y).arg(result)));
+      top=qMin(top,y); bottom=qMax(bottom,y+640); previous=y;
+      QCOMPARE(stitcher.size().height(),bottom-top);
+      QCOMPARE(stitcher.image().copy(0,0,doc.width()-12,bottom-top),doc.copy(0,top,doc.width()-12,bottom-top));
+    }
+  }
+  void scrollMatcherRunsWithoutGuiAndPublishesSafePreview() {
+    const auto doc=codeDocument(1080,5000);
+    ScrollStitcher stitcher; QCOMPARE(stitcher.accept(codeFrame(doc,0,640)),ScrollStitcher::Started);
+    std::atomic<int> offset{0};
+    ScrollFramePump source({},[&] { const int y=qMin(2160,offset.fetch_add(40)); return codeFrame(doc,y,640); });
+    source.noteDirection(1);
+    ScrollMatchPump matcher(&source,&stitcher); source.start(); matcher.start();
+    auto cleanup=qScopeGuard([&] { source.stop(); matcher.stop(); });
+    // Neither acquisition nor stitching may depend on GUI event delivery.
+    QThread::msleep(300);
+    auto early=matcher.takeUpdate(0); QVERIFY(early); QVERIFY(early->preview.size.height()>640);
+    const auto frozen=early->preview;
+    int ticks=0; QTimer heartbeat; heartbeat.setInterval(8);
+    connect(&heartbeat,&QTimer::timeout,this,[&] { ++ticks; }); heartbeat.start();
+    QTRY_VERIFY_WITH_TIMEOUT(offset.load()>=2200,5000);
+    QTRY_VERIFY_WITH_TIMEOUT(matcher.takeUpdate(0)->preview.size.height()==2800,5000);
+    QVERIFY(ticks>=10);
+    source.stop(); matcher.stop(true); heartbeat.stop();
+    QCOMPARE(stitcher.image().copy(0,0,1068,2800),doc.copy(0,0,1068,2800));
+    // Snapshots outlive the worker's cache/thumbnail updates and are safe to paint.
+    QImage preview(200,500,QImage::Format_RGB32); preview.fill(Qt::magenta);
+    QPainter p(&preview); frozen.paint(p,preview.rect()); p.end();
+    QVERIFY(preview.pixelColor(100,100)!=QColor(Qt::magenta));
+    QVERIFY(source.captureRate()>20.);
   }
   void scrollRealisticPages_data() {
     QTest::addColumn<int>("kind");

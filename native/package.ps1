@@ -6,7 +6,7 @@ if (-not $QtDir) { $QtDir = Join-Path $floatshotRoot 'build/native-sdk/qt' }
 if (-not $Ffmpeg) { $Ffmpeg = Join-Path $floatshotRoot 'build/native-sdk/ffmpeg.exe' }
 if (-not (Test-Path -LiteralPath $Ffmpeg)) { throw 'FFmpeg missing. Run native/setup-sdk.ps1 or pass -Ffmpeg.' }
 if (-not $SkipBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -QtDir $QtDir }
-$floatshotPackage = if ($PackageDir) { [IO.Path]::GetFullPath($PackageDir) } else { Join-Path $floatshotRoot 'dist/picut-0.5.24-translation-trial' }
+$floatshotPackage = if ($PackageDir) { [IO.Path]::GetFullPath($PackageDir) } else { Join-Path $floatshotRoot 'dist/picut-0.5.25-translation-trial' }
 if ($floatshotPackage -notmatch 'translation-trial') { throw 'Use a distinct translation-trial package directory to preserve the stable release.' }
 New-Item -ItemType Directory -Path $floatshotPackage -Force | Out-Null
 foreach ($floatshotBinary in @('picut.exe', 'NativeVideoPreview.dll', 'FloatShotPaddleOcr.exe', 'onnxruntime.dll', 'FloatShotTranslate.exe', 'ctranslate2.dll')) {
@@ -27,6 +27,10 @@ foreach ($picutDirection in $picutTranslationManifest.models.PSObject.Properties
     }
 }
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/试用版-v0.5.24-图片本地翻译.md') -Destination $floatshotPackage -Force
+Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/试用版-v0.5.25-滚动截屏修复.md') -Destination $floatshotPackage -Force
+foreach ($picutScrollReport in @('native-v0.5.25-tests.txt','native-v0.5.25-scroll-windows-tests.txt','native-v0.5.25-translation-windows-tests.txt','native-v0.5.25-code-desktop-attempt-1.txt','native-v0.5.25-code-desktop-attempt-2.txt','native-v0.5.25-code-desktop-attempt-3.txt')) {
+    Copy-Item -LiteralPath (Join-Path $floatshotRoot ('.test-artifacts/' + $picutScrollReport)) -Destination $floatshotPackage -Force
+}
 foreach ($picutTrialReport in @('native-v0.5.24-tests.txt','native-v0.5.24-translation-windows-tests.txt')) {
     Copy-Item -LiteralPath (Join-Path $floatshotRoot ('.test-artifacts/' + $picutTrialReport)) -Destination $floatshotPackage -Force
 }
