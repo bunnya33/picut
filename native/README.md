@@ -1,4 +1,12 @@
-﻿# picut v0.5.21
+﻿# picut v0.5.22 · optional local translation trial
+
+This branch, `codex/picut-local-translation`, is the independent v0.5.22 translation trial. The v0.5.21 baseline is preserved on `codex/picut-recording` and `codex/picut-stable-before-translation`, tag `v0.5.21-before-local-translation`. Source history and release archives are additionally backed up under `backups/v0.5.21-before-local-translation-20261022/`.
+
+The trial adds CPU-only English/Chinese image translation at original text positions. It uses its own `%LOCALAPPDATA%/FloatShot/FloatShotNative-TranslationTrial` data directory and a separate installer AppId, directory and shortcuts. `run-translation-trial.ps1` starts the trial; existing `run.ps1` continues to start v0.5.21. See `docs/试用版-v0.5.22-图片本地翻译.md` for scope and rollback. Older notes below describe the preserved base release.
+
+Prepare the native inference SDK with `native/setup-translation-sdk.ps1`. Build-only model conversion uses pinned OPUS-MT revisions in `tools/convert_translation_models.py`; `tools/download_translation_weights.py` supports resumable downloads with original weight checksums. The shipping runtime contains C++ workers and INT8 models, without Python. The native SDK uses Ruy with CPU dispatch and no MKL, CUDA or OpenMP runtime dependency.
+
+Build with `native/build.ps1`; package with `native/package.ps1 -SkipBuild`; create the separate installer with `native/build-installer.ps1 -TranslationTrial`. Run `FloatShotTranslationTests.exe` for geometry, layout, cancellation, native model inference and OCR-to-export coverage, using an isolated artifact directory and the offscreen platform.
 
 Scrolling capture checks conflicting textured blocks and competing displacements before modifying the canvas. Dynamic updates retain exact region unions, preserving the untouched gaps. One-pixel strips retain a nonempty thumbnail and previews share rounded row boundaries. See docs/更新记录-v0.5.21-长图内容保护.md.
 

@@ -78,6 +78,12 @@ QIcon toolIcon(const QString &name, QColor color) {
     p.drawPolyline(QPolygonF{{16, 21}, {21, 21}, {21, 16}});
     auto f = p.font(); f.setPixelSize(15); f.setBold(true); p.setFont(f);
     p.drawText(image.rect(), Qt::AlignCenter, "T");
+  } else if (name == "translate") {
+    auto f = p.font(); f.setPixelSize(13); f.setBold(true); p.setFont(f);
+    p.drawText(QRect(1,1,14,15), Qt::AlignCenter, "文");
+    p.drawText(QRect(12,10,12,14), Qt::AlignCenter, "A");
+    p.drawLine(3,19,10,19); p.drawLine(10,19,8,17);
+    p.drawLine(15,5,22,5); p.drawLine(15,5,17,3);
   } else if (name == "scroll") {
     p.drawPolyline(QPolygonF{{8,3},{4,3},{4,21},{8,21}});
     p.drawPolyline(QPolygonF{{16,3},{20,3},{20,21},{16,21}});
@@ -235,7 +241,7 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
   };
   separator();
   for (const auto &action :
-       QStringList{"undo", "redo", "select_text", "scroll", "cancel", "pin", "save", "copy"}) {
+       QStringList{"undo", "redo", "select_text", "translate", "scroll", "cancel", "pin", "save", "copy"}) {
     if (action == "cancel")
       separator();
     auto b = new QToolButton;
@@ -246,6 +252,7 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
     b->setToolTip(QMap<QString, QString>{{"undo", "撤销 · Ctrl+Z"},
                                          {"redo", "重做 · Ctrl+Y"},
                                          {"select_text", "文字识别 · F4"},
+                                         {"translate", "图片翻译（本地试用）"},
                                          {"scroll", "滚动截屏"},
                                          {"cancel", "取消 · Esc"},
                                          {"pin", "贴图 · F3"},

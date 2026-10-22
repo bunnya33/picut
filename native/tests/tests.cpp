@@ -1296,6 +1296,24 @@ private slots:
     QCOMPARE(page.lines.first().glyphs.size(), 1);
     QCOMPARE(page.text, QString("2026/10/03"));
   }
+  void translationPinUsesRenderedImageAndOriginalPosition() {
+    QTemporaryDir dir; Store store(dir.path()); auto overlay=editingFixture(store,"rect");
+    QPointer<CaptureOverlay> alive=overlay; auto cleanup=qScopeGuard([&]{if(alive)delete alive;});
+    overlay->startImageTranslation({},false);
+    auto translation=overlay->imageTranslation; QVERIFY(translation && translation->isVisible());
+    QVERIFY(!overlay->toolbar->isVisible());
+    bool called=false;
+    overlay->output=[&](const QImage &pixels,const QRect &region,const QString &action) {
+      called=true; return action=="pin" && region==overlay->globalSelection() && pixels==translation->translatedImage();
+    };
+    QVERIFY(!overlay->complete("pin")); QVERIFY(!called);
+    translation->setOcrResult(imageTextFixture(),false);
+    QJsonArray blocks;
+    for(const auto &block:translation->page().blocks) blocks.append(QJsonObject{{"id",block.id},{"text","测试"}});
+    translation->setTranslationResult({{"blocks",blocks}});
+    QVERIFY(translation->hasCompletedTranslation()); QVERIFY(overlay->complete("pin")); QVERIFY(called);
+    QVERIFY(!overlay->isVisible());
+  }
   void imageTextSelectionCopyCacheAndExport() {
     QTemporaryDir dir;
     Store store(dir.path());
@@ -1318,6 +1336,11 @@ private slots:
     dragMove(text,end);
     QTest::mouseRelease(text,Qt::LeftButton,Qt::NoModifier,end);
     QCOMPARE(text->selectedText(), QString(".49"));
+    const auto selectedForTranslation=text->translationSelection()["lines"].toArray();
+    QCOMPARE(selectedForTranslation.size(),1);
+    QCOMPARE(selectedForTranslation[0].toObject()["text"].toString(),QString(".49"));
+    const auto translatedQuad=selectedForTranslation[0].toObject()["quad"].toArray();
+    QCOMPARE(translatedQuad[0].toArray()[0].toDouble(),252.);
     auto editor=text->resultEditor();
     QVERIFY(editor->isReadOnly());
     QVERIFY(text->controlBar()->findChildren<QLabel *>().isEmpty());
@@ -1601,10 +1624,11 @@ private slots:
     const auto rendered = bar.mainBar->grab().toImage();
     const QImage expected(":/fixtures/toolbar-reference.png");
     QVERIFY(!expected.isNull());
-    // Number and image-text tools extend the unchanged original glyphs.
-    QCOMPARE(rendered.size(), expected.size() + QSize(64, 0));
+    // Additional trial tools extend the unchanged original glyphs.
+    QCOMPARE(rendered.size(), expected.size() + QSize(96, 0));
     const QList<int> insertedAt{bar.findChild<QToolButton *>("tool_number")->x(),
-                                bar.findChild<QToolButton *>("action_select_text")->x()};
+                                bar.findChild<QToolButton *>("action_select_text")->x(),
+                                bar.findChild<QToolButton *>("action_translate")->x()};
     int different = 0;
     for (int y = 0; y < expected.height(); ++y)
       for (int x = 0; x < expected.width(); ++x) {

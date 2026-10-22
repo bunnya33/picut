@@ -10,7 +10,7 @@
 inline QString &startupLogPath() { static QString path; return path; }
 inline void installStartupLog() {
   auto root=qEnvironmentVariable("FLOATSHOT_DATA_DIR");
-  if (root.isEmpty()) root=qEnvironmentVariable("LOCALAPPDATA")+"/FloatShot/FloatShotNative-ImageTextTrial";
+  if (root.isEmpty()) root=qEnvironmentVariable("LOCALAPPDATA")+"/FloatShot/FloatShotNative-TranslationTrial";
   if (!QDir().mkpath(root+"/logs")) root=QDir::tempPath()+"/picut";
   QDir().mkpath(root+"/logs"); startupLogPath()=root+"/logs/startup.log";
   if (QFileInfo(startupLogPath()).size()>1024*1024) {
@@ -23,5 +23,5 @@ inline void installStartupLog() {
       file.write((QDateTime::currentDateTime().toString(Qt::ISODate)+" ["+QString::number(type)+"] "+message+"\n").toUtf8());
     }
   });
-  qInfo().noquote()<<"picut 0.5.21 startup; Windows"<<QSysInfo::kernelVersion()<<QSysInfo::currentCpuArchitecture();
+  qInfo().noquote()<<"picut 0.5.22 translation trial startup; Windows"<<QSysInfo::kernelVersion()<<QSysInfo::currentCpuArchitecture();
 }

@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.24)
-project(FloatShotNative VERSION 0.5.21 LANGUAGES CXX RC)
+project(FloatShotNative VERSION 0.5.22 LANGUAGES CXX RC)
 # CMake can misdecode the Chinese MSVC /showIncludes prefix on UTF-8 consoles.
 if(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX MATCHES "娉ㄦ剰")
     set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件: ")
@@ -7,6 +7,7 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+include(translation.cmake)
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network Test)
 find_package(Qt6 6.8 REQUIRED COMPONENTS Multimedia MultimediaWidgets)
 set(OCR_SDK "${CMAKE_CURRENT_SOURCE_DIR}/../build/native-sdk")
@@ -66,6 +67,7 @@ qt_add_executable(FloatShotNative WIN32
     src/store.h src/annotation.h src/toolbar.h src/capture.h src/pin.h
     src/editing.h src/recorder.h src/application.h src/native_windows.h app.rc)
 target_compile_definitions(FloatShotNative PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_sources(FloatShotNative PRIVATE src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h)
 set_target_properties(FloatShotNative PROPERTIES OUTPUT_NAME picut)
 target_compile_options(FloatShotNative PRIVATE /utf-8 /W4 /permissive-)
 target_link_libraries(FloatShotNative PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network
@@ -84,6 +86,17 @@ qt_add_resources(FloatShotNative toolbar_icons PREFIX "/toolbar"
     BASE "assets/toolbar" FILES ${TOOLBAR_GLYPHS})
 include(CTest)
 if(BUILD_TESTING)
+    qt_add_executable(FloatShotTranslationTests tests/translation_tests.cpp
+        src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h
+        src/image_text.cpp src/image_text.h src/recognition.cpp src/recognition.h
+        src/store.cpp src/store.h src/toolbar.cpp src/toolbar.h src/annotation.cpp src/annotation.h)
+    target_compile_definitions(FloatShotTranslationTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(FloatShotTranslationTests PRIVATE /utf-8 /W4)
+    target_include_directories(FloatShotTranslationTests PRIVATE src)
+    target_link_libraries(FloatShotTranslationTests PRIVATE Qt6::Test Qt6::Widgets ZXing::ZXing windowsapp)
+    add_dependencies(FloatShotTranslationTests FloatShotTranslate FloatShotPaddleOcr)
+    add_test(NAME offline-translation COMMAND FloatShotTranslationTests)
+    set_tests_properties(offline-translation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 300)
     qt_add_executable(FloatShotOcrTests tests/ocr_tests.cpp src/recognition.cpp src/recognition.h src/store.cpp src/store.h src/image_text.cpp src/image_text.h)
     target_compile_definitions(FloatShotOcrTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(FloatShotOcrTests PRIVATE /utf-8 /W4)
@@ -106,6 +119,7 @@ if(BUILD_TESTING)
         src/application.cpp src/application.h src/recording_overlay.cpp src/recording_overlay.h src/recording_settings.cpp src/recording_settings.h
         src/store.h src/annotation.h src/editing.h src/toolbar.h src/capture.h src/pin.h src/recorder.h src/menu.h)
     target_compile_definitions(FloatShotNativeTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_sources(FloatShotNativeTests PRIVATE src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h)
     target_compile_options(FloatShotNativeTests PRIVATE /utf-8 /W4)
     target_include_directories(FloatShotNativeTests PRIVATE src)
     target_link_libraries(FloatShotNativeTests PRIVATE Qt6::Test Qt6::Widgets Qt6::Network

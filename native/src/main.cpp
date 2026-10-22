@@ -15,14 +15,14 @@ static int runApplication(int argc, char **argv) {
   enableDpi();
   QApplication app(argc, argv);
   app.setApplicationName("picut");
-  app.setApplicationDisplayName("picut");
+  app.setApplicationDisplayName("picut 翻译试用版");
   app.setOrganizationName("picut");
-  app.setApplicationVersion("0.5.21");
-  // This trial has its own configuration/history. Stable v0.5.10 remains usable.
+  app.setApplicationVersion("0.5.22");
+  // Translation is an isolated trial. The stable v0.5.21 profile is untouched.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(
                 QStandardPaths::GenericDataLocation) +
-                "/FloatShot/FloatShotNative-ImageTextTrial").toUtf8());
+                "/FloatShot/FloatShotNative-TranslationTrial").toUtf8());
   app.setQuitOnLastWindowClosed(false);
   app.setStyle("Fusion");
   QCommandLineParser parser;

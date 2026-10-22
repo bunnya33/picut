@@ -1,9 +1,20 @@
-# FloatShot Native v0.5.4 third-party notices
+# picut Native v0.5.22 translation trial third-party notices
 
 This release uses native C++ and dynamically linked Qt. Python, PySide6, Shiboken, NumPy, and PyInstaller are not part of this release.
 
+The optional translation trial includes model weights published by Helsinki-NLP / OPUS-MT, Language Technology Research Group at the University of Helsinki. English-to-Chinese uses Apache-2.0; Chinese-to-English uses CC-BY-4.0 (https://creativecommons.org/licenses/by/4.0/). Original model cards, attribution, fixed upstream revisions and checksums accompany the language packs. The weights were converted to CTranslate2 INT8; tokenizers were retained. These are modified distributions, with no endorsement by the original authors implied. License texts and dependency notices are under `licenses/translation/`. CTranslate2's bundled thread-pool library is by Barak Shoshany: https://github.com/bshoshany/thread-pool.
+
+`FloatShotTranslate.exe` starts only after OCR, uses CPU inference, and exits on completion or cancellation. It makes no network requests and does not require a Python interpreter, CUDA or a discrete GPU. Build-only conversion tools and original PyTorch weights are not included in the release.
+
+CTranslate2 4.6.0 is locally modified by `native/translation-sdk/windows-thread-cleanup.cmake`: its non-OpenMP CPU pool and Ruy context are explicitly destroyed before worker threads return, and on the caller after joining them. This avoids joining their internal threads during Windows DLL TLS teardown under the loader lock. The changes preserve normal RAII process exit. MSVC compiles the SDK sources as UTF-8.
+
 | Component | Version | License and source |
 | --- | --- | --- |
+| CTranslate2, dynamically linked only in translation worker | 4.6.0 | MIT. https://github.com/OpenNMT/CTranslate2/tree/v4.6.0 |
+| Ruy / cpu_features / cpuinfo / spdlog | Fixed commits in native/setup-translation-sdk.ps1 | Apache-2.0 / BSD-2-Clause / MIT; original texts in licenses/translation/ |
+| SentencePiece, native static inference library | 0.2.0 | Apache-2.0 and bundled third-party notices. https://github.com/google/sentencepiece/tree/v0.2.0 |
+| OPUS-MT English to Chinese | Helsinki-NLP/opus-mt-en-zh, revision 408d9bc410a388e1d9aef112a2daba955b945255 | Apache-2.0. https://huggingface.co/Helsinki-NLP/opus-mt-en-zh |
+| OPUS-MT Chinese to English | Helsinki-NLP/opus-mt-zh-en, revision cf109095479db38d6df799875e34039d4938aaa6 | CC-BY-4.0. Helsinki-NLP / OPUS-MT / Language Technology Research Group at the University of Helsinki. https://huggingface.co/Helsinki-NLP/opus-mt-zh-en |
 | Qt Core, Gui, Widgets, Network, Multimedia, MultimediaWidgets, ImageFormats | 6.8.3 | LGPL-3.0 / GPL-3.0 or commercial. https://download.qt.io/archive/qt/6.8/6.8.3/submodules/ |
 | Qt's FFmpeg playback libraries | 7.1 | LGPL-2.1-or-later and individual bundled-component licenses. https://ffmpeg.org/releases/ |
 | ZXing-C++, statically linked | 2.3.0 | Apache-2.0. https://github.com/zxing-cpp/zxing-cpp/tree/v2.3.0 |

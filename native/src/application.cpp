@@ -56,7 +56,7 @@ ApplicationController::ApplicationController(bool test)
     if (!testing && !quitting) QMessageBox::warning(home, "保存失败", message);
   });
   tray.setIcon(picutIcon()); QApplication::setWindowIcon(picutIcon());
-  tray.setToolTip("picut");
+  tray.setToolTip("picut · 本地翻译试用版");
   trayMenu = new QMenu;
   trayMenu->setObjectName("trayMenu");
   auto add = [this](const QString &label, const QString &hotkey,
@@ -443,6 +443,11 @@ void ApplicationController::pinClipboard() {
   const auto request = ++clipboardPinRequest;
   if (overlay) {
     overlay->complete("pin");
+    return;
+  }
+  if (auto translation=qobject_cast<ImageTranslationOverlay *>(QApplication::activeModalWidget())) {
+    const auto image=translation->displayedImage();
+    if (!image.isNull() && imageOutput(image,translation->sourceGlobalRect(),"pin")) translation->finish();
     return;
   }
   qInfo() << "Clipboard pin requested";

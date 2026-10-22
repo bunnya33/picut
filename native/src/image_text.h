@@ -57,8 +57,10 @@ public:
   void setPanelCollapsed(bool collapsed);
   void fitImage();
   int recognitionStarts() const { return starts; }
+  QJsonObject translationSelection() const;
 signals:
   void closed();
+  void translationRequested(QImage image, QJsonObject ocr);
 protected:
   bool eventFilter(QObject *object, QEvent *event) override;
   void paintEvent(QPaintEvent *) override;

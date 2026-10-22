@@ -7,17 +7,29 @@
 #endif
 
 [Setup]
+#ifdef TranslationTrial
+AppId={{82C4C15B-955B-4D88-9A55-1772D08997A8}
+AppName=picut 图片翻译试用版
+AppVerName=picut {#AppVersion} 图片翻译试用版
+DefaultDirName={localappdata}\Programs\picut-translation-trial
+DefaultGroupName=picut 图片翻译试用版
+UninstallDisplayName=picut 图片翻译试用版
+OutputBaseFilename=picut-{#AppVersion}-translation-trial-setup-x64
+#else
 AppId={{226B415D-A271-4655-8B0B-CD525BC942EB}
 AppName=picut
+AppVerName=picut {#AppVersion}
+DefaultDirName={localappdata}\Programs\picut
+DefaultGroupName=picut
+UninstallDisplayName=picut
+OutputBaseFilename=picut-{#AppVersion}-setup-x64
+#endif
 AppVersion={#AppVersion}
 AppPublisher=picut
-AppVerName=picut {#AppVersion}
 VersionInfoVersion={#AppVersion}.0
 VersionInfoProductName=picut
 VersionInfoProductVersion={#AppVersion}
 VersionInfoDescription=picut 安装程序
-DefaultDirName={localappdata}\Programs\picut
-DefaultGroupName=picut
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -29,9 +41,7 @@ WizardStyle=modern
 LanguageDetectionMethod=none
 SetupIconFile={#SourcePath}\..\assets\picut.ico
 UninstallDisplayIcon={app}\picut.exe
-UninstallDisplayName=picut
 OutputDir={#InstallerOutputDir}
-OutputBaseFilename=picut-{#AppVersion}-setup-x64
 Compression=lzma2/max
 SolidCompression=yes
 LZMAUseSeparateProcess=yes
@@ -62,9 +72,15 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
+#ifdef TranslationTrial
+Name: "{group}\picut 图片翻译试用版"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.TranslationTrial"
+Name: "{group}\{cm:ReadmeShortcut}"; Filename: "{app}\使用说明.txt"
+Name: "{autodesktop}\picut 图片翻译试用版"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.TranslationTrial"; Tasks: desktopicon
+#else
 Name: "{group}\picut"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.Desktop"
 Name: "{group}\{cm:ReadmeShortcut}"; Filename: "{app}\使用说明.txt"
 Name: "{autodesktop}\picut"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.Desktop"; Tasks: desktopicon
+#endif
 
 [Run]
 Filename: "{app}\picut.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchPicut}"; Flags: nowait postinstall skipifsilent

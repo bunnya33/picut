@@ -832,6 +832,13 @@ bool CaptureOverlay::complete(const QString &action) {
     close();
     return true;
   }
+  if (imageTranslation && imageTranslation->isVisible()) {
+    const auto image=imageTranslation->displayedImage();
+    if (image.isNull()) return false;
+    if (output && !output(image,region,action)) return false;
+    store->config["last_capture_rect"]=QJsonArray{region.x(),region.y(),region.width(),region.height()};
+    store->saveConfig(); close(); return true;
+  }
   rebuildAnnotation();
   if (annotation->draft) {
     auto mark = *annotation->draft;

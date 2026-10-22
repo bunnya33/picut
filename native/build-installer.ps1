@@ -1,12 +1,13 @@
 ﻿[CmdletBinding()]
-param([string]$PackageDir, [string]$Iscc)
+param([string]$PackageDir, [string]$Iscc, [switch]$TranslationTrial)
 $ErrorActionPreference = 'Stop'
 $picutRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.21' }
+if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.22-translation-trial' }
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $picutMain = Join-Path $PackageDir 'picut.exe'
 $picutVersion = (Get-Item -LiteralPath $picutMain).VersionInfo.ProductVersion
 if ($picutVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'picut.exe has no valid three-part product version.' }
+if ((Get-Item -LiteralPath $picutMain).VersionInfo.ProductName -like '*翻译试用版*' -and -not $TranslationTrial) { throw 'Pass -TranslationTrial to use the separate installer identity and directory.' }
 
 $picutRequired = @(
     'picut.exe', 'picut.ico', 'NativeVideoPreview.dll', 'ffmpeg.exe',
@@ -15,9 +16,19 @@ $picutRequired = @(
     'platforms/qwindows.dll', 'gpu/FloatShotPaddleOcr.exe', 'gpu/onnxruntime.dll',
     'gpu/DirectML.dll', 'ocr/models.json', 'licenses', 'THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd'
 )
+if ($TranslationTrial) { $picutRequired += @('FloatShotTranslate.exe','ctranslate2.dll','translation/models.json') }
 foreach ($picutRelative in $picutRequired) {
     if (-not (Test-Path -LiteralPath (Join-Path $PackageDir $picutRelative))) {
         throw "Runtime incomplete: $picutRelative. Run native/package.ps1 first."
+    }
+}
+if ($TranslationTrial) {
+    $picutTranslation = Get-Content -LiteralPath (Join-Path $PackageDir 'translation/models.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($picutDirection in $picutTranslation.models.PSObject.Properties) {
+        foreach ($picutHash in $picutDirection.Value.checksums.PSObject.Properties) {
+            $picutModel = Join-Path $PackageDir ('translation/' + $picutDirection.Name + '/' + $picutHash.Name)
+            if ((Get-FileHash -LiteralPath $picutModel).Hash -ne $picutHash.Value) { throw 'Translation model checksum mismatch.' }
+        }
     }
 }
 $picutModelManifest = Get-Content -LiteralPath (Join-Path $PackageDir 'ocr/models.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -46,10 +57,10 @@ $picutPayload = Join-Path $picutStage 'payload'
 New-Item -ItemType Directory -Path $picutPayload -Force | Out-Null
 Get-ChildItem -LiteralPath $PackageDir -File | Where-Object {
     $_.Extension -in @('.exe', '.dll', '.ico', '.conf') -or
-    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd')
+    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd', '试用版-v0.5.22-图片本地翻译.md')
 } | Copy-Item -Destination $picutPayload
 Get-ChildItem -LiteralPath $PackageDir -Directory | Where-Object {
-    $_.Name -notin @('annotation-previews', 'image-text-previews')
+    $_.Name -notin @('annotation-previews', 'image-text-previews', 'translation-previews')
 } | Copy-Item -Destination $picutPayload -Recurse
 
 $picutFiles = @(Get-ChildItem -LiteralPath $picutPayload -Recurse -File)
@@ -66,9 +77,11 @@ $picutManifest = @($picutFiles | Sort-Object FullName | ForEach-Object {
 $picutEncoding = New-Object Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $picutStage 'payload-manifest.json'), ($picutManifest | ConvertTo-Json -Depth 5), $picutEncoding)
 $picutOutputDir = Join-Path $picutRoot 'dist'
-& $Iscc ('/DAppVersion=' + $picutVersion) ('/DPayloadDir=' + $picutPayload) ('/DInstallerOutputDir=' + $picutOutputDir) ('/DChineseMessages=' + $picutChinese) (Join-Path $PSScriptRoot 'picut.iss')
+[string[]]$picutTrialArguments = if ($TranslationTrial) { @('/DTranslationTrial=1') } else { @() }
+& $Iscc @picutTrialArguments ('/DAppVersion=' + $picutVersion) ('/DPayloadDir=' + $picutPayload) ('/DInstallerOutputDir=' + $picutOutputDir) ('/DChineseMessages=' + $picutChinese) (Join-Path $PSScriptRoot 'picut.iss')
 if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed: $LASTEXITCODE" }
-$picutInstaller = Join-Path $picutOutputDir ('picut-' + $picutVersion + '-setup-x64.exe')
+$picutSuffix = if ($TranslationTrial) { '-translation-trial-setup-x64.exe' } else { '-setup-x64.exe' }
+$picutInstaller = Join-Path $picutOutputDir ('picut-' + $picutVersion + $picutSuffix)
 $picutInstallerHash = (Get-FileHash -LiteralPath $picutInstaller -Algorithm SHA256).Hash
 [IO.File]::WriteAllText(($picutInstaller + '.sha256'), ($picutInstallerHash + '  ' + [IO.Path]::GetFileName($picutInstaller) + "`r`n"), [Text.Encoding]::ASCII)
 Write-Output "Installer: $picutInstaller"

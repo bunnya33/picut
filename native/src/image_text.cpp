@@ -1,6 +1,7 @@
 #include "image_text.h"
 #include "store.h"
 #include <QtCore/QJsonArray>
+#include <QtCore/QMetaMethod>
 #include <QtCore/QTextBoundaryFinder>
 #include <QtGui/QClipboard>
 #include <QtGui/QContextMenuEvent>
@@ -194,6 +195,12 @@ ImageTextOverlay::ImageTextOverlay(QWidget *parent, Store *s,
   }
   editor->setPalette(palette);
   editor->installEventFilter(this); editor->viewport()->installEventFilter(this);
+  editor->setContextMenuPolicy(Qt::CustomContextMenu);
+  connect(editor,&QTextEdit::customContextMenuRequested,this,[this](QPoint point) {
+    const auto global=editor->mapToGlobal(point);
+    QContextMenuEvent event(QContextMenuEvent::Mouse,mapFromGlobal(global),global);
+    contextMenuEvent(&event);
+  });
   root->addWidget(editor,1);
   auto actions = new QHBoxLayout; actions->addStretch();
   auto cancel = new QPushButton("取消",bar); cancel->setObjectName("imageTextCancel");
@@ -487,6 +494,12 @@ void ImageTextOverlay::contextMenuEvent(QContextMenuEvent *event) {
   menu.addAction("复制选中\tCtrl+C",this,&ImageTextOverlay::copySelection)->setEnabled(!selectedText().isEmpty());
   menu.addAction("复制全文",this,&ImageTextOverlay::copyAll)->setEnabled(!document.text.isEmpty());
   menu.addAction("全选\tCtrl+A",this,&ImageTextOverlay::selectAll)->setEnabled(!document.text.isEmpty());
+  if (isSignalConnected(QMetaMethod::fromSignal(&ImageTextOverlay::translationRequested))) {
+    auto translate=menu.addAction(selectedText().isEmpty()?"翻译图片文字（本地）":"翻译选中文字（本地）",this,[this] {
+      emit translationRequested(source,translationSelection());
+    });
+    translate->setEnabled(ready && !document.text.isEmpty());
+  }
   menu.addAction(collapsed?"展开文字面板":"收起文字面板",this,[this]{setPanelCollapsed(!collapsed);});
   menu.addAction("适应窗口\tCtrl+0",this,&ImageTextOverlay::fitImage);
   menu.addAction("100%",this,[this] {
@@ -496,6 +509,24 @@ void ImageTextOverlay::contextMenuEvent(QContextMenuEvent *event) {
   menu.addAction("重新识别",this,&ImageTextOverlay::recognize);
   menu.addSeparator(); menu.addAction("退出文字识别\tEsc",this,&ImageTextOverlay::finish);
   menu.exec(event->globalPos());
+}
+QJsonObject ImageTextOverlay::translationSelection() const {
+  QJsonArray lines;
+  const bool selected=anchor>=0 && caret>=0 && anchor!=caret;
+  const int first=qMin(anchor,caret),last=qMax(anchor,caret);
+  for (const auto &line:document.lines) {
+    QString text; QRectF bounds;
+    for (const auto &glyph:line.glyphs) {
+      if (selected && (glyph.offset>=last || glyph.offset+glyph.text.size()<=first)) continue;
+      text+=glyph.text; bounds=bounds.isEmpty()?glyph.quad.boundingRect():bounds.united(glyph.quad.boundingRect());
+    }
+    if (text.isEmpty()) continue;
+    QJsonArray quad;
+    for (const auto point:{bounds.topLeft(),bounds.topRight(),bounds.bottomRight(),bounds.bottomLeft()})
+      quad.append(QJsonArray{point.x(),point.y()});
+    lines.append(QJsonObject{{"text",text},{"quad",quad}});
+  }
+  return {{"lines",lines}};
 }
 void ImageTextOverlay::wheelEvent(QWheelEvent *event) {
   if (layout.viewport.contains(event->position().toPoint()) && event->angleDelta().y())

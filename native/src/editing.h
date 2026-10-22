@@ -3,6 +3,7 @@
 #include "toolbar.h"
 #include "text_editor.h"
 #include "image_text.h"
+#include "image_translation.h"
 #include <memory>
 
 class EditingSurface : public QWidget {
@@ -14,6 +15,7 @@ public:
   std::unique_ptr<Annotation> annotation;
   Toolbar *toolbar = nullptr;
   ImageTextOverlay *imageText = nullptr;
+  ImageTranslationOverlay *imageTranslation = nullptr;
   Store *store;
   bool editing = false;
   virtual QRect contentRect() const = 0;
@@ -32,6 +34,7 @@ public:
   void commitText();
   void showMore();
   void startImageText(const QImage &image = {}, bool recognize = true);
+  void startImageTranslation(const QImage &image = {}, bool recognize = true);
   QString editTarget(QPoint point) const;
 
 protected:

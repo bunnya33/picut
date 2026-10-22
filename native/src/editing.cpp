@@ -21,6 +21,9 @@ EditingSurface::EditingSurface(Store *s, QWidget *parent, Qt::WindowFlags flags)
   setFocusPolicy(Qt::StrongFocus);
 }
 EditingSurface::~EditingSurface() {
+  if (imageTranslation) {
+    imageTranslation->disconnect(this); delete imageTranslation; imageTranslation = nullptr;
+  }
   // Remove the parent event filter before annotation members are destroyed.
   // Also stop an in-flight worker before QWidget begins hiding its children.
   if (imageText) {
@@ -67,6 +70,8 @@ void EditingSurface::showToolbar() {
                 showMore();
               else if (action == "select_text")
                 startImageText();
+              else if (action == "translate")
+                startImageTranslation();
               else
                 complete(action == "save" && QApplication::keyboardModifiers() &
                                                  Qt::ShiftModifier
@@ -566,12 +571,16 @@ void EditingSurface::commitText() {
   update();
 }
 void EditingSurface::startImageText(const QImage &input, bool recognize) {
+  if (imageTranslation && imageTranslation->isVisible()) imageTranslation->finish();
   if (imageText && imageText->isVisible()) { imageText->setFocus(); return; }
   commitText();
   const auto image = input.isNull() && annotation ? annotation->render() : input;
   if (image.isNull()) return;
   if (!imageText) {
     imageText = new ImageTextOverlay(this, store, [this] { return contentRect(); });
+    connect(imageText, &ImageTextOverlay::translationRequested, this, [this](QImage image,QJsonObject ocr) {
+      imageText->finish(); startImageTranslation(image,false); imageTranslation->setOcrResult(ocr);
+    });
     connect(imageText, &ImageTextOverlay::closed, this, [this] {
       if (isVisible() && property("imageTextToolbarVisible").toBool() && annotation && toolbar) {
         toolbar->sync(*annotation); positionToolbar(); toolbar->show();
@@ -584,6 +593,26 @@ void EditingSurface::startImageText(const QImage &input, bool recognize) {
   setProperty("imageTextWasEditing", editing);
   if (toolbar) toolbar->hide();
   imageText->begin(image, recognize);
+}
+void EditingSurface::startImageTranslation(const QImage &input, bool recognize) {
+  if (imageTranslation && imageTranslation->isVisible()) { imageTranslation->setFocus(); return; }
+  if (imageText && imageText->isVisible()) imageText->finish();
+  commitText();
+  const auto image = input.isNull() && annotation ? annotation->render() : input;
+  if (image.isNull()) return;
+  if (!imageTranslation) {
+    imageTranslation = new ImageTranslationOverlay(this, store, [this] { return contentRect(); });
+    connect(imageTranslation, &ImageTranslationOverlay::closed, this, [this] {
+      if (isVisible() && property("translationToolbarVisible").toBool() && annotation && toolbar) {
+        toolbar->sync(*annotation); positionToolbar(); toolbar->show();
+      }
+      if (isVisible()) { activateWindow(); setFocus(); }
+      update();
+    });
+  }
+  setProperty("translationToolbarVisible", toolbar && toolbar->isVisible());
+  if (toolbar) toolbar->hide();
+  imageTranslation->begin(image, recognize);
 }
 void EditingSurface::showMore() {
   QMenu menu(this);
@@ -601,6 +630,7 @@ void EditingSurface::showMore() {
   menu.addSeparator();
   menu.addAction(menuLabel("文字识别", "F4"), this,
                    [this] { startImageText(); });
+  menu.addAction("图片翻译（本地试用）", this, [this] { startImageTranslation(); });
   menu.addAction("二维码 / 条形码", this, [this] {
     commitText();
     showRecognition(annotation->render(), true, this);
