@@ -3,10 +3,13 @@
 #include <QtCore/QHash>
 #include <QtCore/QSaveFile>
 #include <QtGui/QPainter>
+#include <QtGui/QRegion>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <bit>
+#include <cstring>
+#include <vector>
 
 namespace {
 constexpr double maximumAlignmentError=.8;
@@ -16,7 +19,7 @@ QImage matchingImage(const QImage &image) {
   return image.convertToFormat(QImage::Format_Grayscale8)
       .scaled(qMin(480,image.width()),image.height(),Qt::IgnoreAspectRatio,Qt::SmoothTransformation);
 }
-bool isolatedChange(const QImage &a,const QImage &b) {
+bool isolatedChange(const QImage &a,const QImage &b,QRect *bounds=nullptr) {
   int left=a.width(),right=-1,top=a.height(),bottom=-1;
   const int maximumWidth=qMax(4,a.width()/3),maximumHeight=qMax(8,qMin(96,a.height()/4));
   for(int y=0;y<a.height();++y) {
@@ -29,6 +32,7 @@ bool isolatedChange(const QImage &a,const QImage &b) {
   // A small isolated animation/caret inside a stationary viewport supplies no
   // evidence that the viewport itself scrolled. In particular it must not
   // stop automatic scrolling or invent a new strip.
+  if(bounds && right>=left) *bounds=QRect(QPoint(left,top),QPoint(right,bottom));
   return right<left || (top>3 && bottom<a.height()-4);
 }
 struct Tile { int left,right; };
@@ -49,7 +53,7 @@ QList<uchar> changingColumns(const QImage &a,const QImage &b) {
   }
   return columns;
 }
-QImage repaintMask(const QImage &a,const QImage &b,int shift,const QList<uchar> &moving={}) {
+QImage repaintMask(const QImage &a,const QImage &b,int shift,const QList<uchar> &moving={},QList<QRect> *areas=nullptr) {
   constexpr int cw=8,ch=12;
   const int begin=qMax(0,-shift),end=qMin(b.height(),a.height()-shift);
   const int columns=(a.width()+cw-1)/cw,rows=(end-begin+ch-1)/ch;
@@ -101,6 +105,22 @@ QImage repaintMask(const QImage &a,const QImage &b,int shift,const QList<uchar> 
   int area=0;
   for(int y=begin;y<end;++y) for(int x=0;x<a.width();++x) area+=mask.constScanLine(y)[x]!=0;
   if(area>a.width()*(end-begin)*.35) return {};
+  if(areas) for(auto patch:patches) areas->append(patch.intersected(QRect(0,begin,a.width(),end-begin)));
+  return mask;
+}
+// Known dynamic rectangles belong to document coordinates. Translate them for
+// each proposed displacement; current text outside them still has to align.
+QImage combinedMask(QImage mask,const QImage &known,int shift) {
+  if(known.isNull()) return mask;
+  if(mask.isNull()) { mask=QImage(known.size(),QImage::Format_Grayscale8); mask.fill(0); }
+  const int begin=qMax(0,-shift),end=qMin(known.height(),known.height()-shift);
+  int area=0;
+  for(int y=begin;y<end;++y) {
+    auto row=mask.scanLine(y); auto prior=known.constScanLine(y+shift);
+    for(int x=0;x<mask.width();++x) { row[x]|=prior[x]; area+=row[x]!=0; }
+  }
+  // A learned region cannot remove most of the evidence for a displacement.
+  if(!area || area>mask.width()*(end-begin)*.5) return {};
   return mask;
 }
 QList<Tile> movingTiles(const QImage &a,const QImage &b) {
@@ -201,7 +221,7 @@ bool reachesEdges(const QImage &a,const QImage &b,int shift,const QList<Tile> &t
   }
   return true;
 }
-Motion motion(const QImage &a,const QImage &b,int direction) {
+Motion motion(const QImage &a,const QImage &b,int direction,const QImage &known={}) {
   const int h=a.height(),overlap=qMax(20,qMin(48,h/20));
   const auto tiles=movingTiles(a,b);
   if(tiles.isEmpty()) return {0,0};
@@ -246,7 +266,7 @@ Motion motion(const QImage &a,const QImage &b,int direction) {
     for(int shift:offsets) {
       if(!shift) continue;
       if(++tested>16) break;
-      const auto mask=repaintMask(a,b,shift);
+      const auto mask=combinedMask(repaintMask(a,b,shift),known,shift);
       if(mask.isNull()) continue;
       auto value=evaluate(a,b,shift,tiles,mask);
       if(value.score<=maximumAlignmentError) masked.append(value);
@@ -313,6 +333,7 @@ bool ScrollStitcher::append(const QImage &part, bool prepend, int replacePixels)
       }
     }
     for(auto &existing:strips) existing.y+=part.height()-replacePixels;
+    for(auto &area:repaintAreas) area.translate(0,part.height()-replacePixels);
     strips.prepend(std::move(strip));
   } else {
     const int cut=height-replacePixels;
@@ -326,6 +347,83 @@ bool ScrollStitcher::append(const QImage &part, bool prepend, int replacePixels)
     strips.append(std::move(strip));
   }
   height += part.height()-replacePixels;
+  ++revision;
+  return true;
+}
+QImage ScrollStitcher::referenceMask() const {
+  QImage mask;
+  const QRect viewport(0,position,width,previous.height());
+  for(const auto &area:repaintAreas) {
+    const auto visible=area.intersected(viewport).translated(0,-position);
+    if(visible.isEmpty()) continue;
+    if(mask.isNull()) { mask=QImage(previousGray.size(),QImage::Format_Grayscale8); mask.fill(0); }
+    const int left=visible.left()*mask.width()/width;
+    const int right=qMin(mask.width(),(visible.right()+1)*mask.width()/width+1);
+    for(int y=visible.top();y<=visible.bottom();++y)
+      std::fill(mask.scanLine(y)+left,mask.scanLine(y)+right,uchar(255));
+  }
+  return mask;
+}
+void ScrollStitcher::rememberRepaints(const QList<QRect> &areas,int at,int matchingWidth) {
+  for(const auto &area:areas) {
+    if(area.isEmpty()) continue;
+    const int left=qMax(0,area.left()*width/matchingWidth);
+    const int right=qMin(width,((area.right()+1)*width+matchingWidth-1)/matchingWidth);
+    QRect value(left,area.top()+at,right-left,area.height());
+    // A new partial observation can enlarge a known object, never shrink it.
+    // This keeps its off-screen half protected on subsequent captures.
+    for(int n=0;n<repaintAreas.size();) {
+      const auto overlap=value.intersected(repaintAreas[n]);
+      if(overlap.width()*overlap.height()*2>=qMin(value.width()*value.height(),repaintAreas[n].width()*repaintAreas[n].height())) {
+        value=value.united(repaintAreas.takeAt(n)); n=0;
+      } else ++n;
+    }
+    if(repaintAreas.size()<8192) repaintAreas.append(value);
+  }
+}
+bool ScrollStitcher::refreshVisible(const QImage &frame,int at) {
+  const QRect viewport(0,at,width,frame.height());
+  QRegion updates;
+  for(const auto &area:repaintAreas) {
+    // Updating only half of an object would combine different animation frames.
+    // Wait until the complete observed rectangle is inside the current viewport.
+    if(viewport.contains(area) && area.top()>at && area.bottom()<viewport.bottom())
+      updates+=area.translated(0,-at);
+  }
+  if(updates.isEmpty()) return true;
+  struct MappedStrip {
+    Strip *strip;
+    QFile file;
+    uchar *pixels=nullptr;
+    explicit MappedStrip(Strip *value):strip(value),file(value->path) {}
+    ~MappedStrip() { if(pixels) file.unmap(pixels); }
+  };
+  std::vector<std::unique_ptr<MappedStrip>> mapped;
+  // Open every affected strip before changing pixels, preserving the last
+  // complete canvas if a cache file cannot be opened or mapped.
+  for(auto &strip:strips) if(updates.intersects(QRect(0,strip.y-at,width,strip.height))) {
+    auto item=std::make_unique<MappedStrip>(&strip);
+    if(!item->file.open(QIODevice::ReadWrite) || item->file.size()% (qint64(width)*4) ||
+       item->file.size()<qint64(strip.sourceY+strip.height)*width*4) return false;
+    item->pixels=item->file.map(0,item->file.size());
+    if(!item->pixels) return false;
+    mapped.push_back(std::move(item));
+  }
+  for(auto &item:mapped) {
+    auto &strip=*item->strip;
+    QImage pixels(item->pixels,width,int(item->file.size()/(qint64(width)*4)),width*4,QImage::Format_RGB32);
+    const int offset=at-strip.y+strip.sourceY;
+    const auto region=updates.translated(0,offset).intersected(QRect(0,strip.sourceY,width,strip.height));
+    bool changed=false;
+    for(const auto &rect:region) for(int y=rect.top();y<=rect.bottom() && !changed;++y)
+      changed=std::memcmp(pixels.constScanLine(y)+rect.left()*4,frame.constScanLine(y-offset)+rect.left()*4,size_t(rect.width())*4)!=0;
+    if(!changed) continue;
+    QPainter painter(&pixels); painter.setCompositionMode(QPainter::CompositionMode_Source);
+    painter.setClipRegion(region); painter.drawImage(0,offset,frame); painter.end();
+    strip.sourceHeight=pixels.height();
+    strip.thumbnail=pixels.scaledToWidth(qMin(280,width),Qt::SmoothTransformation).copy();
+    ++revision;
+  }
   return true;
 }
 ScrollStitcher::Result ScrollStitcher::accept(const QImage &frame, int direction) {
@@ -340,19 +438,28 @@ ScrollStitcher::Result ScrollStitcher::accept(const QImage &frame, int direction
   if (value.size() != previous.size()) return NoOverlap;
   if (value == previous) return Unchanged;
   auto gray=matchingImage(value);
-  if(isolatedChange(previousGray,gray)) {
+  auto stationary=[&](const QList<QRect> &areas) {
+    rememberRepaints(areas,position,gray.width());
+    if(!refreshVisible(value,position)) return CacheError;
     animationSeen=true; previous=value; previousGray=std::move(gray); return Unchanged;
+  };
+  QRect isolated;
+  if(isolatedChange(previousGray,gray,&isolated)) {
+    return stationary(isolated.isEmpty()?QList<QRect>():QList<QRect>{isolated.adjusted(-2,-2,2,2).intersected(gray.rect())});
   }
-  const auto stationaryMask=repaintMask(previousGray,gray,0);
+  const auto known=referenceMask();
+  QList<QRect> stationaryAreas;
+  const auto stationaryMask=combinedMask(repaintMask(previousGray,gray,0,{},&stationaryAreas),known,0);
   if(!stationaryMask.isNull() && evaluate(previousGray,gray,0,allTiles(gray.width()),stationaryMask).score<.15) {
-    animationSeen=true; previous=value; previousGray=std::move(gray); return Unchanged;
+    return stationary(stationaryAreas);
   }
-  auto movement = motion(previousGray, gray, direction);
+  auto movement = motion(previousGray, gray, direction,known);
   if (movement.score > maximumAlignmentError || movement.ambiguous) return NoOverlap;
-  if (!movement.shift) return Unchanged;
+  if (!movement.shift) return stationary(stationaryAreas);
   if (!movement.boundary) return BoundaryMismatch;
   const auto columnsInMotion=changingColumns(previousGray,gray);
-  if(!animationSeen && !repaintMask(previousGray,gray,movement.shift,columnsInMotion).isNull()) animationSeen=true;
+  QList<QRect> areas;
+  if(!repaintMask(previousGray,gray,movement.shift,columnsInMotion,&areas).isNull()) animationSeen=true;
   int nextPosition = position + movement.shift;
   const int leading = qMax(0,-nextPosition);
   const int extra = qMax(0,nextPosition + value.height() - height);
@@ -375,7 +482,12 @@ ScrollStitcher::Result ScrollStitcher::accept(const QImage &frame, int direction
     }
     if (!append(value.copy(0,value.height()-extra-replace,width,extra+replace),false,replace)) return CacheError;
   }
+  rememberRepaints(areas,nextPosition,gray.width());
+  const bool refreshed=refreshVisible(value,nextPosition);
+  // New rows may already have been committed. Keep the reference coordinates
+  // consistent with that canvas even if an optional overlap refresh failed.
   previous = value; previousGray=std::move(gray); position = nextPosition;
+  if(!refreshed) return CacheError;
   return extra > 0 || leading > 0 ? Appended : Revisited;
 }
 QImage ScrollStitcher::image() const {

@@ -25,6 +25,7 @@ public:
   QImage image() const;
   QSize size() const { return {width, height}; }
   int stripCount() const { return int(strips.size()); }
+  quint64 contentRevision() const { return revision; }
   void paint(QPainter &painter, QRectF target) const;
   static QSize previewSize(QSize original, QSize available);
 private:
@@ -32,11 +33,16 @@ private:
   QTemporaryDir cache;
   QList<Strip> strips;
   QImage previous, previousGray;
+  QList<QRect> repaintAreas;
   int width = 0, height = 0, position = 0;
   quint64 nextStrip=0;
+  quint64 revision=0;
   bool animationSeen=false;
   bool append(const QImage &image, bool prepend = false, int replacePixels = 0);
   QImage readRows(int y,int count) const;
+  QImage referenceMask() const;
+  void rememberRepaints(const QList<QRect> &areas, int at, int matchingWidth);
+  bool refreshVisible(const QImage &frame, int at);
 };
 
 class ScrollCapture : public QWidget {

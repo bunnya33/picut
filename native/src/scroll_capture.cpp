@@ -262,6 +262,7 @@ void ScrollCapture::reportAlignmentFailure(ScrollStitcher::Result result) {
 }
 ScrollStitcher::Result ScrollCapture::acceptFrame(const QImage &image, int direction) {
   const bool recovering=pendingFailure!=ScrollStitcher::Unchanged;
+  const auto revision=stitcher.contentRevision();
   const auto result = stitcher.accept(image,direction);
   if (result==ScrollStitcher::Started || result==ScrollStitcher::Appended ||
       result==ScrollStitcher::Revisited || result==ScrollStitcher::Unchanged) {
@@ -284,7 +285,8 @@ ScrollStitcher::Result ScrollCapture::acceptFrame(const QImage &image, int direc
         : result == ScrollStitcher::CacheError ? "临时图片保存失败，请检查磁盘空间"
         : "画面无法可靠拼接，请缓慢滚动或返回上一处；已截内容保留");
   }
-  if(result!=ScrollStitcher::Unchanged || recovering) { place(); preview->update(); }
+  if(result!=ScrollStitcher::Unchanged || recovering) place();
+  if(stitcher.contentRevision()!=revision || result!=ScrollStitcher::Unchanged || recovering) preview->update();
   return result;
 }
 void ScrollCapture::place() {

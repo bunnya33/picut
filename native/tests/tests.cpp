@@ -439,13 +439,18 @@ private slots:
     QCOMPARE(session->imageSize().height(),qRound(2566.*area.height()/640));
     QVERIFY(page.wheels>=18);
     QVERIFY2(status->text().contains("页面未继续滚动"),qPrintable(status->text()));
+    animation.stop();
+    // Let the independent producer consume the final displayed animation frame.
+    QTest::qWait(400);
     QImage captured; session->output=[&](const QImage &image,const QString &) { captured=image; return true; };
-    session->finish("copy"); animation.stop();
+    session->finish("copy");
     if(area.size()==QSize(720,640)) {
       for(int y=0;y<captured.height();++y) for(int x=0;x<captured.width();++x) {
         bool sticker=false; for(auto r:chatStickers()) if(r.contains(x,y)) sticker=true;
         if(!sticker) QCOMPARE(captured.pixel(x,y),doc.pixel(x,y));
       }
+      const auto last=chatStickers().last();
+      QCOMPARE(captured.copy(last),page.frame.copy(last.translated(0,-page.offset)));
     }
     if(auto folder=qEnvironmentVariable("FLOATSHOT_ANNOTATION_TEST_DIR");!folder.isEmpty()) {
       QDir().mkpath(folder); QVERIFY(captured.save(folder+"/chat-desktop-long.png"));
@@ -626,20 +631,97 @@ private slots:
     const auto doc=scrollDocument(760,900);
     auto first=doc.copy(0,0,760,500);
     ScrollStitcher stitcher; QCOMPARE(stitcher.accept(first),ScrollStitcher::Started);
+    QImage frame;
     for(int n=1;n<=12;++n) {
-      auto frame=first; QPainter p(&frame);
+      frame=first; QPainter p(&frame);
       p.fillRect(510,120,60,32,QColor::fromHsv(n*27%360,180,220)); p.end();
       QCOMPARE(stitcher.accept(frame,1),ScrollStitcher::Unchanged);
     }
-    QCOMPARE(stitcher.image(),first);
+    QCOMPARE(stitcher.image(),frame);
   }
   void scrollChatMultipleAnimatedStickersIdle() {
     const auto doc=chatDocument(); auto first=chatFrame(doc,0,0);
     ScrollStitcher stitcher; QCOMPARE(stitcher.accept(first),ScrollStitcher::Started);
     for(int phase=1;phase<=10;++phase) {
-      QCOMPARE(stitcher.accept(chatFrame(doc,0,phase)),ScrollStitcher::Unchanged);
-      QCOMPARE(stitcher.image(),first);
+      const auto frame=chatFrame(doc,0,phase);
+      QCOMPARE(stitcher.accept(frame),ScrollStitcher::Unchanged);
+      QCOMPARE(stitcher.size(),first.size());
+      QCOMPARE(stitcher.image(),frame);
     }
+  }
+  void scrollChatRefreshesCapturedContentOnRevisit() {
+    const auto doc=chatDocument(); ScrollStitcher stitcher;
+    QCOMPARE(stitcher.accept(chatFrame(doc,0,0)),ScrollStitcher::Started);
+    QCOMPARE(stitcher.accept(chatFrame(doc,0,1)),ScrollStitcher::Unchanged);
+    QCOMPARE(stitcher.accept(chatFrame(doc,300,2),1),ScrollStitcher::Appended);
+    QCOMPARE(stitcher.accept(chatFrame(doc,600,3),1),ScrollStitcher::Appended);
+    const auto before=stitcher.image();
+    auto frame=chatFrame(doc,600,4);
+    QCOMPARE(stitcher.accept(frame),ScrollStitcher::Unchanged);
+    QCOMPARE(stitcher.size(),before.size());
+    auto after=stitcher.image();
+    const auto third=chatStickers()[2];
+    QCOMPARE(after.copy(third),frame.copy(third.translated(0,-600)));
+    QCOMPARE(after.copy(0,0,720,600),before.copy(0,0,720,600));
+    frame=chatFrame(doc,300,5);
+    QCOMPARE(stitcher.accept(frame,-1),ScrollStitcher::Revisited);
+    const auto second=chatStickers()[1];
+    QCOMPARE(stitcher.image().copy(second),frame.copy(second.translated(0,-300)));
+    QCOMPARE(stitcher.size(),before.size());
+  }
+  void scrollChatRefreshKeepsPartlyVisibleStickerWhole() {
+    const auto doc=chatDocument(); ScrollStitcher stitcher;
+    QCOMPARE(stitcher.accept(chatFrame(doc,0,0)),ScrollStitcher::Started);
+    auto frame=chatFrame(doc,0,1);
+    QCOMPARE(stitcher.accept(frame),ScrollStitcher::Unchanged);
+    const auto sticker=chatStickers().first();
+    const auto whole=frame.copy(sticker);
+    QCOMPARE(stitcher.accept(chatFrame(doc,160,2),1),ScrollStitcher::Appended);
+    QCOMPARE(stitcher.image().copy(sticker),whole);
+    QCOMPARE(stitcher.accept(chatFrame(doc,160,3)),ScrollStitcher::Unchanged);
+    QCOMPARE(stitcher.image().copy(sticker),whole);
+    frame=chatFrame(doc,0,4);
+    QCOMPARE(stitcher.accept(frame,-1),ScrollStitcher::Revisited);
+    QCOMPARE(stitcher.image().copy(sticker),frame.copy(sticker));
+  }
+  void scrollSmallCanvasRefreshOwnsPreviewPixels() {
+    const auto doc=scrollDocument(200,800);
+    auto frame=doc.copy(0,0,200,400); ScrollStitcher stitcher;
+    QCOMPARE(stitcher.accept(frame),ScrollStitcher::Started);
+    for(int phase=1;phase<=60;++phase) {
+      frame=doc.copy(0,0,200,400);
+      QPainter p(&frame); p.fillRect(95,145,50,44,QColor::fromHsv(phase*43%360,190,210)); p.end();
+      QCOMPARE(stitcher.accept(frame),ScrollStitcher::Unchanged);
+      QCOMPARE(stitcher.image(),frame);
+      QCOMPARE(stitcher.stripCount(),1);
+      QImage preview(200,400,QImage::Format_RGB32); preview.fill(Qt::magenta);
+      QPainter painter(&preview); stitcher.paint(painter,preview.rect()); painter.end();
+      QCOMPARE(preview,frame); // Includes the no-scale thumbnail after the file mapping was closed.
+    }
+    const auto revision=stitcher.contentRevision();
+    QCOMPARE(stitcher.accept(frame),ScrollStitcher::Unchanged);
+    QCOMPARE(stitcher.contentRevision(),revision);
+  }
+  void scrollSessionRepaintsPreviewWithoutGrowth() {
+    QTemporaryDir dir; Store store(dir.path());
+    auto session=std::make_unique<ScrollCapture>(&store,QRect(40,40,720,640),0);
+    session->setAttribute(Qt::WA_DeleteOnClose,false); session->begin(false);
+    const auto doc=chatDocument(); int phase=0;
+    session->frameProvider=[&] { return chatFrame(doc,0,phase); };
+    auto preview=session->findChild<QWidget *>("scrollPreview"); QVERIFY(preview);
+    struct PaintCounter:QObject {
+      int count=0;
+      bool eventFilter(QObject *,QEvent *event) override { if(event->type()==QEvent::Paint) ++count; return false; }
+    } counter;
+    preview->installEventFilter(&counter);
+    session->sample(); QCoreApplication::processEvents();
+    const int count=counter.count;
+    phase=1; session->sample(); QCoreApplication::processEvents();
+    QVERIFY(counter.count>count);
+    QCOMPARE(session->imageSize(),QSize(720,640));
+    QImage output;
+    session->output=[&](const QImage &image,const QString &) { output=image; return true; };
+    session->finish("copy"); QCOMPARE(output,chatFrame(doc,0,1));
   }
   void scrollChatAnimatedStickersWhileMoving() {
     const auto doc=chatDocument();
@@ -685,10 +767,11 @@ private slots:
     for(int offset:{700,807,940,1141,1470,1791,2200,2475}) {
       ScrollStitcher stitcher; QCOMPARE(stitcher.accept(first),ScrollStitcher::Started);
       QCOMPARE(stitcher.accept(chatFrame(doc,0,1)),ScrollStitcher::Unchanged);
+      const auto before=stitcher.image();
       const auto result=stitcher.accept(chatFrame(doc,offset,2),1);
       QVERIFY2(result==ScrollStitcher::NoOverlap || result==ScrollStitcher::BoundaryMismatch,
           qPrintable(QString("chat gap %1 result %2, height %3").arg(offset).arg(result).arg(stitcher.size().height())));
-      QCOMPARE(stitcher.image(),first);
+      QCOMPARE(stitcher.image(),before);
     }
   }
   void scrollChatAnimatedStickersUpward() {
