@@ -1,8 +1,10 @@
-﻿# picut v0.5.23 · optional local translation trial
+﻿# picut v0.5.24 · optional local translation trial
 
-This branch, `codex/picut-local-translation`, is the independent v0.5.23 translation trial. The v0.5.21 baseline is preserved on `codex/picut-recording` and `codex/picut-stable-before-translation`, tag `v0.5.21-before-local-translation`. Source history and release archives are additionally backed up under `backups/v0.5.21-before-local-translation-20261022/`.
+This branch, `codex/picut-local-translation`, is the independent v0.5.24 translation trial. The v0.5.21 baseline is preserved on `codex/picut-recording` and `codex/picut-stable-before-translation`, tag `v0.5.21-before-local-translation`. Source history and release archives are additionally backed up under `backups/v0.5.21-before-local-translation-20261022/`.
 
-The trial adds CPU-only English/Chinese image translation at original text positions. It uses its own `%LOCALAPPDATA%/FloatShot/FloatShotNative-TranslationTrial` data directory and a separate installer AppId, directory and shortcuts. `run-translation-trial.ps1` starts the trial; existing `run.ps1` continues to start v0.5.21. See `docs/试用版-v0.5.23-图片本地翻译.md` for scope and rollback. Older notes below describe the preserved base release.
+The trial adds CPU-only English/Chinese image translation at original text positions. It uses its own `%LOCALAPPDATA%/FloatShot/FloatShotNative-TranslationTrial` data directory and a separate installer AppId, directory and shortcuts. `run-translation-trial.ps1` starts the trial; existing `run.ps1` continues to start v0.5.21. See `docs/试用版-v0.5.24-图片本地翻译.md` for scope and rollback. Older notes below describe the preserved base release.
+
+v0.5.24 translates source-language prose inside mixed-language OCR paragraphs while preserving existing target-language text and technical names. A Chinese citation no longer skips an English paragraph. Raster bullets omitted by OCR still separate wrapped list items. Earlier translation packages and tags remain available.
 
 v0.5.23 keeps the screenshot's global position and display size, cycles a wide soft diagonal white sweep while processing, and publishes only a complete validated result. Product names, technical identifiers and URLs such as HybridCLR, CLR, C++ and il2cpp are protected before translation and verified afterward. The v0.5.22 trial packages and tag remain available.
 

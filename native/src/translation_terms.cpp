@@ -1,5 +1,6 @@
 #include "translation_terms.h"
 #include <QtCore/QRegularExpression>
+#include <algorithm>
 
 static const QRegularExpression &wordPattern() {
   static const QRegularExpression pattern(
@@ -28,22 +29,46 @@ TranslationTerminology::TranslationTerminology(const QStringList &page) {
     }
   }
 }
-ProtectedTranslationText TranslationTerminology::protect(const QString &text) const {
+ProtectedTranslationText TranslationTerminology::protect(const QString &text, const QString &targetLanguage) const {
   ProtectedTranslationText result; result.original=text;
-  auto matches=wordPattern().globalMatch(text); qsizetype previous=0; QString natural;
-  QString prefix="ZXQ";
-  while(text.contains(prefix,Qt::CaseInsensitive))prefix+='X';
+  struct Span { qsizetype start, end; };
+  QList<Span> spans;
+  auto matches=wordPattern().globalMatch(text);
   while(matches.hasNext()) {
     const auto match=matches.next(); auto word=match.captured();
     // Sentence punctuation is outside a URL/path. Keep it available to the model.
     while(word.size()>1 && QString(".,;:!?)]}").contains(word.back()))word.chop(1);
     if(!intrinsicTerm(word) && !names.contains(word.toCaseFolded()))continue;
-    const auto gap=text.mid(previous,match.capturedStart()-previous);
+    spans.append({match.capturedStart(),match.capturedStart()+word.size()});
+    ++result.technicalTerms;
+  }
+  // Existing text in the target language is kept verbatim even when OCR joins
+  // it to a sentence in the other language (for example a Chinese citation).
+  if(targetLanguage=="zh" || targetLanguage=="en") {
+    const QRegularExpression targetText(targetLanguage=="zh" ? QString("\\p{Han}+") :
+        QString(R"([A-Za-z][A-Za-z0-9\s.,:;!?'"()\[\]/+#_\-]*)"));
+    auto targets=targetText.globalMatch(text);
+    while(targets.hasNext()) {
+      const auto match=targets.next(); spans.append({match.capturedStart(),match.capturedEnd()});
+      ++result.preservedLanguageSpans;
+    }
+  }
+  std::sort(spans.begin(),spans.end(),[](const auto &a,const auto &b){return a.start<b.start;});
+  QList<Span> merged;
+  for(const auto &span:spans) {
+    if(!merged.isEmpty() && span.start<=merged.last().end) merged.last().end=qMax(merged.last().end,span.end);
+    else merged.append(span);
+  }
+  qsizetype previous=0; QString natural, prefix="ZXQ";
+  while(text.contains(prefix,Qt::CaseInsensitive))prefix+='X';
+  for(const auto &span:merged) {
+    const auto word=text.mid(span.start,span.end-span.start);
+    const auto gap=text.mid(previous,span.start-previous);
     if(!gap.isEmpty())result.pieces.append({gap,false});
     natural+=gap; result.masked+=gap;
     const auto marker=prefix+QString::number(result.replacements.size()).rightJustified(3,'0')+"QXZ";
     result.replacements.append({marker,word}); result.masked+=marker;
-    result.pieces.append({word,true}); previous=match.capturedStart()+word.size();
+    result.pieces.append({word,true}); previous=span.end;
   }
   const auto tail=text.mid(previous); result.masked+=tail; natural+=tail;
   if(!tail.isEmpty())result.pieces.append({tail,false});

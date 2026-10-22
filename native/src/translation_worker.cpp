@@ -30,10 +30,6 @@ static void event(const QJsonObject &value) {
   const auto json = QJsonDocument(value).toJson(QJsonDocument::Compact);
   std::cout.write(json.constData(), json.size()); std::cout << '\n' << std::flush;
 }
-static bool hasChinese(const QString &text) {
-  for (const auto c : text) if (c.unicode() >= 0x3400 && c.unicode() <= 0x9fff) return true;
-  return false;
-}
 static bool hasLetters(const QString &text) {
   for (const auto c : text) if (c.isLetter()) return true;
   return false;
@@ -74,7 +70,7 @@ int main(int argc, char **argv) {
     const QString direction = (target == "zh" ? "en-zh" : "zh-en");
     std::unique_ptr<ctranslate2::Translator> translator;
     sentencepiece::SentencePieceProcessor sourceTokenizer, targetTokenizer;
-    QJsonArray translated; int done = 0, outputTokens = 0, protectedTerms = 0, termFallbacks = 0;
+    QJsonArray translated; int done = 0, outputTokens = 0, protectedTerms = 0, termFallbacks = 0, preservedLanguageSpans = 0;
     QStringList pageTexts; for(const auto &block:blocks)pageTexts<<block.toObject()["text"].toString();
     const TranslationTerminology terminology(pageTexts);
     const auto load = [&] {
@@ -136,9 +132,13 @@ int main(int argc, char **argv) {
       const auto block = value.toObject();
       const auto text = block["text"].toString().trimmed();
       if (text.size() > 16000) throw std::runtime_error("单个文字区域过长，请缩小截图区域。");
-      const auto language = selectedSource == "auto" ? (hasChinese(text) ? "zh" : "en") : selectedSource;
-      const auto protectedText=terminology.protect(text);
-      protectedTerms+=int(protectedText.replacements.size());
+      const auto protectedText=terminology.protect(text,target);
+      // Auto translation examines the remaining prose after preserving target
+      // language spans. One Chinese label must not skip an English paragraph.
+      const auto language = selectedSource == "auto" ?
+          (protectedText.onlyTerms ? target : (target=="zh" ? QString("en") : QString("zh"))) : selectedSource;
+      protectedTerms+=protectedText.technicalTerms;
+      preservedLanguageSpans+=protectedText.preservedLanguageSpans;
       QString output = text;
       const bool unchanged = !hasLetters(text) || language == target || protectedText.onlyTerms;
       if (!unchanged) {
@@ -150,7 +150,8 @@ int main(int argc, char **argv) {
           ++termFallbacks; output.clear();
           for(const auto &piece:protectedText.pieces) {
             const auto part=piece.protectedTerm || !hasLetters(piece.text) ? piece.text : translateText(piece.text.trimmed());
-            if(target=="en" && !output.isEmpty() && !part.isEmpty() && output.back().isLetterOrNumber() && part.front().isLetterOrNumber())output+=' ';
+            if(target=="en" && !output.isEmpty() && !part.isEmpty() &&
+               (output.back().isLetterOrNumber() || output.back()=='+' || output.back()=='#') && part.front().isLetterOrNumber())output+=' ';
             output+=part;
           }
         }
@@ -164,6 +165,7 @@ int main(int argc, char **argv) {
     result = {{"blocks", translated}, {"elapsed_ms", total.elapsed()}, {"output_tokens", outputTokens},
               {"peak_working_set", qint64(memory.PeakWorkingSetSize)}, {"private_bytes", qint64(memory.PrivateUsage)},
               {"protected_terms",protectedTerms},{"term_fallbacks",termFallbacks},
+              {"preserved_language_spans",preservedLanguageSpans},
               {"engine", "CTranslate2 4.6.0 / Ruy / CPU INT8"}};
   } catch (const std::exception &error) {
     result = {{"error", QString::fromUtf8(error.what())}, {"elapsed_ms", total.elapsed()}};

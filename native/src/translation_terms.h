@@ -8,6 +8,7 @@ struct ProtectedTranslationText {
   QString original, masked;
   QList<TranslationTextPiece> pieces;
   QList<QPair<QString,QString>> replacements;
+  int technicalTerms = 0, preservedLanguageSpans = 0;
   bool onlyTerms = false;
   bool restore(QString *translation) const;
 };
@@ -17,7 +18,7 @@ struct ProtectedTranslationText {
 class TranslationTerminology {
 public:
   explicit TranslationTerminology(const QStringList &page);
-  ProtectedTranslationText protect(const QString &text) const;
+  ProtectedTranslationText protect(const QString &text, const QString &targetLanguage = {}) const;
 private:
   QSet<QString> names;
 };

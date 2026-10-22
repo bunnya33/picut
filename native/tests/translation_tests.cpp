@@ -97,6 +97,19 @@ private slots:
     page.apply({{"id",-1},{"text","wrong"}}); QCOMPARE(page.blocks[0].translated,rejected);
     QVERIFY(original.save(artifact+"/synthetic-source.png")); QVERIFY(image.save(artifact+"/synthetic-in-place.png"));
   }
+  void omittedBulletKeepsWrappedListItemsSeparate() {
+    QImage image(700,200,QImage::Format_ARGB32); image.fill(Qt::white);
+    const QJsonObject ocr{{"lines",QJsonArray{
+        line("First feature detects application windows and elements",{60,40,550,20}),
+        line("and stitches scrolling pages automatically.",{60,67,420,20}),
+        line("Second feature keeps images above other windows",{60,94,500,20}),
+        line("with adjustable transparency and zoom.",{60,121,400,20})}}};
+    TranslationPage page; page.load(image,ocr); QCOMPARE(page.blocks.size(),1);
+    {QPainter p(&image);p.setPen(Qt::NoPen);p.setBrush(Qt::black);p.drawEllipse(QPoint(49,50),2,2);p.drawEllipse(QPoint(49,104),2,2);}
+    page.load(image,ocr); QCOMPARE(page.blocks.size(),2);
+    QCOMPARE(page.blocks[0].lines.size(),2); QCOMPARE(page.blocks[1].lines.size(),2);
+    QVERIFY(!page.blocks[0].original.contains("Second feature"));
+  }
   void overflowKeepsOriginalAndCompleteText() {
     QImage image(100,60,QImage::Format_ARGB32); image.fill(Qt::white); TranslationPage page;
     page.load(image,{{"lines",QJsonArray{line("A",{10,10,10,12})}}});
@@ -177,6 +190,18 @@ private slots:
     QVERIFY(!protectedText.restore(&duplicate));
     for(const auto &label:{QString("My Site Logo"),QString("Quick Start Guide"),QString("THIS IS A TEST")})
       QVERIFY(glossary.protect(label).replacements.isEmpty());
+  }
+  void mixedLanguageProtectionKeepsTargetTextAndTechnicalNames() {
+    TranslationTerminology glossary({"HybridCLR"});
+    for(const auto &target:{QString("zh"),QString("en")}) {
+      const auto text=QString("Save image 保存图片 HybridCLR C++");
+      const auto guarded=glossary.protect(text,target); QVERIFY(!guarded.onlyTerms);
+      QVERIFY(guarded.preservedLanguageSpans>0); QCOMPARE(guarded.technicalTerms,2);
+      auto restored=guarded.masked; QVERIFY(guarded.restore(&restored)); QCOMPARE(restored,text);
+    }
+    QVERIFY(glossary.protect("这是中文说明，使用 HybridCLR 和 C++。","zh").onlyTerms);
+    QVERIFY(glossary.protect("This text is already English.","en").onlyTerms);
+    QVERIFY(!glossary.protect("This text is already English.","zh").onlyTerms);
   }
   void workspaceComparisonSelectionAndCancel() {
     QTemporaryDir dir; Store store(dir.path()); QWidget parent; parent.show();
@@ -263,6 +288,33 @@ private slots:
     job.start(QJsonArray{QJsonObject{{"id",0},{"text","Translate this sentence."}}},"en","zh");
     QVERIFY(job.running()); const auto temporary=job.temporaryPath(); QVERIFY(QFile::exists(temporary+"/request.json"));
     job.cancel(); QVERIFY(!job.running()); QVERIFY(!QFile::exists(temporary)); QTest::qWait(30); QVERIFY(finished.isEmpty());
+  }
+  void workerTranslatesMixedProseWithoutSkippingWholeBlock() {
+    const QJsonArray input{
+      QJsonObject{{"id",0},{"text","Smart Screenshots: Auto-detects windows and UI elements, and stitches long scrolling pages or chat logs automatically. 长截图 +1"}},
+      QJsonObject{{"id",1},{"text","Floating Pins: Keeps images on top of your workspace. 来源：PixPin +1"}},
+      QJsonObject{{"id",2},{"text","这是中文说明，使用 HybridCLR 和 C++。"}}};
+    const auto result=worker(input,"zh"); QVERIFY2(!result.contains("error"),qPrintable(result["error"].toString()));
+    const auto blocks=result["blocks"].toArray(); QCOMPARE(blocks.size(),3);
+    for(int n=0;n<2;++n) {
+      const auto block=blocks[n].toObject(); const auto text=block["text"].toString();
+      QVERIFY(!block["unchanged"].toBool()); QVERIFY(text!=input[n].toObject()["text"].toString());
+      QVERIFY2(text.contains(QRegularExpression("\\p{Han}")),qPrintable(text));
+      QVERIFY(!text.contains(n==0 ? "Auto-detects windows" : "Keeps images"));
+    }
+    QVERIFY(blocks[0].toObject()["text"].toString().contains("长截图"));
+    QVERIFY(blocks[1].toObject()["text"].toString().contains("来源"));
+    QVERIFY(blocks[1].toObject()["text"].toString().contains("PixPin"));
+    QVERIFY(blocks[2].toObject()["unchanged"].toBool());
+    QCOMPARE(blocks[2].toObject()["text"],input[2].toObject()["text"]);
+    const auto english=worker(QJsonArray{
+      QJsonObject{{"id",0},{"text","Click Save，保存图片。"}},
+      QJsonObject{{"id",1},{"text","This text is already English."}}},"en");
+    QVERIFY2(!english.contains("error"),qPrintable(english["error"].toString()));
+    const auto translated=english["blocks"].toArray()[0].toObject();
+    QVERIFY(!translated["unchanged"].toBool()); QVERIFY(translated["text"].toString().contains("Click Save"));
+    QVERIFY2(!translated["text"].toString().contains(QRegularExpression("\\p{Han}")),qPrintable(translated["text"].toString()));
+    QVERIFY(english["blocks"].toArray()[1].toObject()["unchanged"].toBool());
   }
   void languagePackIntegrityAndUnicodePaths() {
     QTemporaryDir dir; const auto modelRoot=dir.path()+"/中文路径 测试";
@@ -378,6 +430,29 @@ private slots:
     QVERIFY(translated!=image); QVERIFY(image.save(artifact+"/reference-source.png"));
     QVERIFY(translated.save(artifact+"/reference-translated.png"));
     QVERIFY(Store::writeJson(artifact+"/reference-translation-report.json",QJsonObject{{"ocr",ocr},{"translation",result}}));
+  }
+  void mixedReferenceScreenshotTranslation() {
+    const auto file=qEnvironmentVariable("PICUT_TRANSLATION_MIXED_REFERENCE_IMAGE");
+    if(file.isEmpty())QSKIP("Set PICUT_TRANSLATION_MIXED_REFERENCE_IMAGE to check a mixed-language screenshot.");
+    const auto reportSize=report.size();
+    const auto privateReport=qScopeGuard([&]{while(report.size()>reportSize)report.removeLast();});
+    const QImage image(file); QVERIFY(!image.isNull());
+    PaddleOcrJob job; QSignalSpy completed(&job,&PaddleOcrJob::finished);
+    job.start(image,"common",0,"cpu"); QTRY_VERIFY_WITH_TIMEOUT(!completed.isEmpty(),30000);
+    const auto ocr=completed.first().first().toJsonObject(); QVERIFY2(!ocr.contains("error"),qPrintable(ocr["error"].toString()));
+    TranslationPage page; page.load(image,ocr); const auto result=worker(page.request(),"zh");
+    QVERIFY2(!result.contains("error"),qPrintable(result["error"].toString()));
+    for(const auto &value:result["blocks"].toArray())page.apply(value.toObject());
+    const auto translated=page.render(image);
+    for(const auto &label:{"Smart Screenshots","Floating Pins","Offline"}) {
+      const auto block=std::find_if(page.blocks.cbegin(),page.blocks.cend(),[&](const auto &b){return b.original.startsWith(label);});
+      QVERIFY2(block!=page.blocks.cend(),label); QVERIFY(!block->unchanged); QVERIFY(!block->clipped);
+      QVERIFY(block->translated!=block->original); QVERIFY(block->translated.contains(QRegularExpression("\\p{Han}")));
+      for(const auto &other:{"Smart Screenshots","Floating Pins","Offline"})
+        if(QString(other)!=label)QVERIFY(!block->original.contains(other));
+    }
+    QVERIFY(image.save(artifact+"/mixed-reference-source.png")); QVERIFY(translated.save(artifact+"/mixed-reference-translated.png"));
+    QVERIFY(Store::writeJson(artifact+"/mixed-reference-report.json",QJsonObject{{"ocr",ocr},{"translation",result}}));
   }
   void cleanupTestCase() { QVERIFY(Store::writeJson(artifact+"/translation-report.json",report)); }
 };

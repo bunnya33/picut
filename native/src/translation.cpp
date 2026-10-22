@@ -6,6 +6,7 @@
 #include <QtCore/QFileInfo>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QRegularExpression>
+#include <QtCore/QSet>
 #include <QtGui/QPainter>
 #include <QtGui/QTextLayout>
 #include <algorithm>
@@ -111,6 +112,36 @@ static QColor foregroundAt(const QImage &image, QRect rect, QColor background) {
   for (const auto c : dominant) { red += c.red(); green += c.green(); blue += c.blue(); }
   return QColor(int(red / dominant.size()), int(green / dominant.size()), int(blue / dominant.size()));
 }
+static bool hasBulletBefore(const QImage &image, QRect text) {
+  const int height=text.height();
+  if(height<8)return false;
+  const QRect gutter=QRect(QPoint(text.left()-int(std::ceil(height*1.7)),text.top()+int(height*.18)),
+                          QPoint(text.left()-3,text.top()+int(height*.82))).intersected(image.rect());
+  if(gutter.isEmpty())return false;
+  const auto background=backgroundAt(image,text);
+  QSet<QPoint> visited;
+  for(int y=gutter.top();y<=gutter.bottom();++y)for(int x=gutter.left();x<=gutter.right();++x) {
+    const QPoint first(x,y);
+    if(visited.contains(first) || colorDistance(image.pixelColor(first),background)<120)continue;
+    QList<QPoint> component{first}; visited.insert(first); QRect bounds(first,QSize(1,1));
+    for(qsizetype n=0;n<component.size();++n) {
+      const auto point=component[n]; bounds=bounds.united(QRect(point,QSize(1,1)));
+      for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx) {
+        const auto next=point+QPoint(dx,dy);
+        if(!gutter.contains(next) || visited.contains(next) || colorDistance(image.pixelColor(next),background)<120)continue;
+        visited.insert(next); component.append(next);
+      }
+    }
+    // OCR often omits the bullet itself. An isolated compact dot to the left
+    // of the text still starts a new list item; wrapped lines have no such dot.
+    const int maximum=qMax(3,int(height*.42));
+    if(component.size()>=3 && bounds.width()<=maximum && bounds.height()<=maximum &&
+       bounds.width()*2>=bounds.height() && bounds.height()*2>=bounds.width() &&
+       component.size()>=bounds.width()*bounds.height()*.35 &&
+       gutter.adjusted(1,1,-1,-1).contains(bounds))return true;
+  }
+  return false;
+}
 void TranslationPage::load(const QImage &image, const QJsonObject &ocr) {
   blocks.clear();
   if (image.isNull()) return;
@@ -121,6 +152,7 @@ void TranslationPage::load(const QImage &image, const QJsonObject &ocr) {
     // OCR boxes can miss a few anti-aliased edge pixels, especially punctuation.
     const auto box = rawBox.adjusted(-2,-2,2,2).intersected(image.rect());
     if (box.width() < 2 || box.height() < 2) continue;
+    const bool startsList=listItem.match(line.text).hasMatch() || hasBulletBefore(image,rawBox);
     int previous = -1; double bestGap = 1e9;
     for (int i = 0; i < blocks.size(); ++i) {
       const auto &block = blocks[i];
@@ -130,7 +162,7 @@ void TranslationPage::load(const QImage &image, const QJsonObject &ocr) {
       bool chinese = false;
       for (const auto c : block.original) if (c.unicode() >= 0x3400 && c.unicode() <= 0x9fff) { chinese = true; break; }
       // Merge wrapped prose conservatively. Short labels and table cells stay independent.
-      if (listItem.match(line.text).hasMatch() || block.lines.size() >= 12 || block.original.size() > 1000 || gap < 0 || gap > h * .9 ||
+      if (startsList || block.lines.size() >= 12 || block.original.size() > 1000 || gap < 0 || gap > h * .9 ||
           qAbs(last.height() - box.height()) > h * .35 || qAbs(last.left() - box.left()) > h * .7 ||
           last.width() < h * 8 || block.original.size() < (chinese ? 12 : 28) || gap >= bestGap) continue;
       const auto combined = block.bounds.united(box);
