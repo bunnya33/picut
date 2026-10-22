@@ -1,12 +1,15 @@
 #include "scroll_capture.h"
 #include <QtCore/QFile>
 #include <QtCore/QHash>
+#include <QtCore/QSaveFile>
 #include <QtGui/QPainter>
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <bit>
 
 namespace {
+constexpr double maximumAlignmentError=.8;
 // Keep every vertical row. Only the horizontal axis is reduced, so the
 // displacement is still measured in original pixels, including short overlaps.
 QImage matchingImage(const QImage &image) {
@@ -29,6 +32,77 @@ bool isolatedChange(const QImage &a,const QImage &b) {
   return right<left || (top>3 && bottom<a.height()-4);
 }
 struct Tile { int left,right; };
+QList<Tile> allTiles(int width) {
+  QList<Tile> result; const int size=qMax(12,width/12);
+  for(int x=0;x<width;x+=size) result.append({x,qMin(width,x+size)});
+  return result;
+}
+// Locate compact repainting objects in coordinates of the new frame after a
+// proposed alignment. Several independent stickers are supported; the old
+// bounding-box shortcut treated their combined extent as a whole-page change.
+QList<uchar> changingColumns(const QImage &a,const QImage &b) {
+  QList<uchar> columns(a.width(),0);
+  for(int x=0;x<a.width();++x) {
+    double sum=0; int count=0;
+    for(int y=0;y<a.height();y+=3) { sum+=std::abs(int(a.constScanLine(y)[x])-int(b.constScanLine(y)[x])); ++count; }
+    columns[x]=sum>count*.35;
+  }
+  return columns;
+}
+QImage repaintMask(const QImage &a,const QImage &b,int shift,const QList<uchar> &moving={}) {
+  constexpr int cw=8,ch=12;
+  const int begin=qMax(0,-shift),end=qMin(b.height(),a.height()-shift);
+  const int columns=(a.width()+cw-1)/cw,rows=(end-begin+ch-1)/ch;
+  if(rows<2) return {};
+  const auto columnsInMotion=shift ? (moving.isEmpty()?changingColumns(a,b):moving) : QList<uchar>();
+  QList<int> changed(columns*rows,0),samples(columns*rows,0);
+  for(int y=begin;y<end;y+=2) {
+    auto p=a.constScanLine(y+shift),q=b.constScanLine(y);
+    for(int x=0;x<a.width();x+=2) {
+      if(shift && !columnsInMotion[x]) continue;
+      const int cell=(y-begin)/ch*columns+x/cw; ++samples[cell];
+      if(std::abs(int(p[x])-int(q[x]))>12) ++changed[cell];
+    }
+  }
+  QList<uchar> active(changed.size(),0);
+  for(int n=0;n<changed.size();++n) active[n]=changed[n]>=qMax(3,samples[n]/8);
+  QList<QRect> patches;
+  for(int seed=0;seed<active.size();++seed) if(active[seed]) {
+    QList<int> pending{seed}; active[seed]=0;
+    int left=columns,right=0,top=rows,bottom=0,total=0;
+    for(int index=0;index<pending.size();++index) {
+      const int cell=pending[index],x=cell%columns,y=cell/columns;
+      left=qMin(left,x);right=qMax(right,x);top=qMin(top,y);bottom=qMax(bottom,y);total+=changed[cell];
+      for(auto point:{QPoint(x-1,y),QPoint(x+1,y),QPoint(x,y-1),QPoint(x,y+1)}) {
+        if(point.x()<0 || point.x()>=columns || point.y()<0 || point.y()>=rows) continue;
+        const int next=point.y()*columns+point.x();
+        if(active[next]) { active[next]=0; pending.append(next); }
+      }
+    }
+    QRect patch(left*cw,begin+top*ch,(right-left+1)*cw,(bottom-top+1)*ch);
+    patch=patch.intersected(QRect(0,begin,a.width(),end-begin));
+    // Do not erase distributed text mismatches, fixed headers, or most of a
+    // viewport to manufacture a match. Ordinary page motion fails these tests.
+    // During motion, keep single text-line differences in the score: masking
+    // changing message numbers could otherwise join unrelated repeated bubbles.
+    const bool clipped=patch.top()==begin || patch.bottom()==end-1;
+    if(patch.width()<16 || (patch.height()<(shift?36:16) && !clipped) || patch.width()>a.width()*.65 ||
+       patch.height()>(end-begin)*.7 || patch.width()*patch.height()>a.width()*(end-begin)*.25 ||
+       total*4<patch.width()*patch.height()*.18) continue;
+    patches.append(patch.adjusted(-4,-4,4,4));
+    if(patches.size()>8) return {};
+  }
+  if(patches.isEmpty()) return {};
+  QImage mask(a.size(),QImage::Format_Grayscale8); mask.fill(0);
+  for(auto patch:patches) {
+    patch=patch.intersected(QRect(0,begin,a.width(),end-begin));
+    for(int y=patch.top();y<=patch.bottom();++y) std::fill(mask.scanLine(y)+patch.left(),mask.scanLine(y)+patch.right()+1,uchar(255));
+  }
+  int area=0;
+  for(int y=begin;y<end;++y) for(int x=0;x<a.width();++x) area+=mask.constScanLine(y)[x]!=0;
+  if(area>a.width()*(end-begin)*.35) return {};
+  return mask;
+}
 QList<Tile> movingTiles(const QImage &a,const QImage &b) {
   QList<Tile> result;
   const int size=qMax(12,a.width()/12);
@@ -58,10 +132,11 @@ quint32 descriptor(const QImage &image,int y,Tile tile) {
   return key;
 }
 struct Motion { int shift=0; double score=1e9; int blocks=0; bool ambiguous=false, boundary=false; };
-Motion evaluate(const QImage &a,const QImage &b,int shift,const QList<Tile> &tiles) {
+Motion evaluate(const QImage &a,const QImage &b,int shift,const QList<Tile> &tiles,const QImage &mask={}) {
   const int begin=qMax(0,-shift),end=qMin(b.height(),a.height()-shift);
   QList<double> errors;
-  int points=0;
+  int points=0,first=end,last=begin,goodBlocks=0;
+  unsigned bands=0;
   const int block=qMin(28,qMax(8,(end-begin)/4));
   for(auto tile:tiles) for(int top=begin;top<end;top+=block) {
     double sum=0; int count=0;
@@ -70,6 +145,7 @@ Motion evaluate(const QImage &a,const QImage &b,int shift,const QList<Tile> &til
       const auto pn=a.constScanLine(qMin(a.height()-1,y+shift+1));
       const auto qn=b.constScanLine(qMin(b.height()-1,y+1));
       for(int x=tile.left;x<tile.right-1;x+=2) {
+        if(!mask.isNull() && mask.constScanLine(y)[x]) continue;
         // White space contributes no false evidence of a match. Evaluate the
         // actual character/image edges in either image, not a diluted mean.
         int texture=std::max({std::abs(int(p[x])-int(p[x+1])),std::abs(int(q[x])-int(q[x+1])),
@@ -78,9 +154,18 @@ Motion evaluate(const QImage &a,const QImage &b,int shift,const QList<Tile> &til
         sum+=qMin(90,qMax(0,std::abs(int(p[x])-int(q[x]))-6)); ++count;
       }
     }
-    if(count>=4) { errors.append(sum/count); points+=count; }
+    if(count>=4) {
+      errors.append(sum/count); points+=count;
+      if(sum/count<1) {
+        ++goodBlocks;first=qMin(first,top);last=qMax(last,qMin(end,top+block));
+        bands|=1u<<qMin(5,(top-begin)*6/qMax(1,end-begin));
+      }
+    }
   }
   if(points<16 || errors.size()<2) return {};
+  if(!mask.isNull() && (points<80 || goodBlocks<4 || last-first<qMin(96,(end-begin)/3))) return {};
+  if(!mask.isNull() && shift && end-begin<64) return {};
+  if(!mask.isNull() && !shift && std::popcount(bands)<3) return {};
   // Bound the influence of local animation; keep every informative block in
   // the score so a unique number can disambiguate otherwise repeated rows.
   double sum=0; int bad=0;
@@ -155,25 +240,92 @@ Motion motion(const QImage &a,const QImage &b,int direction) {
     if(std::abs(other.shift-best.shift)>2 && other.score<=best.score+qMax(.025,best.score*.08))
       best.ambiguous=true;
   }
+  if(best.score>maximumAlignmentError || best.ambiguous) {
+    QList<Motion> masked;
+    int tested=0;
+    for(int shift:offsets) {
+      if(!shift) continue;
+      if(++tested>16) break;
+      const auto mask=repaintMask(a,b,shift);
+      if(mask.isNull()) continue;
+      auto value=evaluate(a,b,shift,tiles,mask);
+      if(value.score<=maximumAlignmentError) masked.append(value);
+    }
+    if(!masked.isEmpty()) {
+      Motion robust;
+      for(auto value:masked) if(value.score<robust.score) robust=value;
+      for(auto other:masked) {
+        if(direction && robust.shift*direction>0 && other.shift*direction<0) continue;
+        if(std::abs(other.shift-robust.shift)>2 && other.score<=robust.score+qMax(.025,robust.score*.08)) robust.ambiguous=true;
+      }
+      if(!robust.ambiguous) best=robust;
+    }
+  }
   if(best.shift) best.boundary=reachesEdges(a,b,best.shift,tiles);
   return best;
 }
+int seamReplacement(const QImage &mask,int boundary,bool prepend) {
+  if(mask.isNull()) return 0;
+  auto active=[&](int y) {
+    for(int x=0;x<mask.width();++x) if(mask.constScanLine(y)[x]) return true;
+    return false;
+  };
+  if(prepend) {
+    int end=boundary;
+    while(end<mask.height() && active(end)) ++end;
+    return end-boundary;
+  }
+  int start=boundary;
+  while(start>0 && active(start-1)) --start;
+  return boundary-start;
 }
-bool ScrollStitcher::append(const QImage &part, bool prepend) {
+}
+bool ScrollStitcher::append(const QImage &part, bool prepend, int replacePixels) {
   if (!cache.isValid() || part.isNull()) return false;
-  const QString path = cache.filePath(QString::number(strips.size()) + ".rgb");
+  const QString path = cache.filePath(QString::number(nextStrip++) + ".rgb");
   QFile file(path);
   if (!file.open(QIODevice::WriteOnly) ||
       file.write(reinterpret_cast<const char *>(part.constBits()),part.sizeInBytes()) != part.sizeInBytes() ||
       !file.flush())
     return false;
   Strip strip{path, part.scaledToWidth(qMin(280, part.width()), Qt::SmoothTransformation),
-              prepend ? 0 : height, part.height()};
+              prepend ? 0 : height-replacePixels, part.height(),0,part.height()};
   if (prepend) {
-    for(auto &existing:strips) existing.y+=part.height();
+    while(!strips.isEmpty() && strips.first().y+strips.first().height<=replacePixels) {
+      QFile::remove(strips.first().path); strips.removeFirst();
+    }
+    if(!strips.isEmpty() && strips.first().y<replacePixels) {
+      auto &first=strips.first(); const int clipped=replacePixels-first.y;
+      first.sourceY+=clipped; first.height-=clipped; first.y=replacePixels;
+      // Reclaim discarded head pixels. Commit before changing the offsets so
+      // a failed optional compaction leaves the original strip readable.
+      QImage kept(width,first.height,QImage::Format_RGB32);
+      QFile original(first.path);
+      if(!kept.isNull() && original.open(QIODevice::ReadOnly) &&
+         original.seek(qint64(first.sourceY)*width*4) &&
+         original.read(reinterpret_cast<char *>(kept.bits()),kept.sizeInBytes())==kept.sizeInBytes()) {
+        original.close(); QSaveFile compact(first.path);
+        if(compact.open(QIODevice::WriteOnly) &&
+           compact.write(reinterpret_cast<const char *>(kept.constBits()),kept.sizeInBytes())==kept.sizeInBytes() && compact.commit()) {
+          first.sourceY=0; first.sourceHeight=first.height;
+          first.thumbnail=kept.scaledToWidth(qMin(280,width),Qt::SmoothTransformation);
+        }
+      }
+    }
+    for(auto &existing:strips) existing.y+=part.height()-replacePixels;
     strips.prepend(std::move(strip));
-  } else strips.append(std::move(strip));
-  height += part.height();
+  } else {
+    const int cut=height-replacePixels;
+    while(!strips.isEmpty() && strips.last().y>=cut) {
+      QFile::remove(strips.last().path); strips.removeLast();
+    }
+    if(!strips.isEmpty() && strips.last().y+strips.last().height>cut) {
+      auto &last=strips.last(); last.height=cut-last.y;
+      QFile::resize(last.path,qint64(last.sourceY+last.height)*width*4);
+    }
+    strips.append(std::move(strip));
+  }
+  height += part.height()-replacePixels;
   return true;
 }
 ScrollStitcher::Result ScrollStitcher::accept(const QImage &frame, int direction) {
@@ -188,37 +340,62 @@ ScrollStitcher::Result ScrollStitcher::accept(const QImage &frame, int direction
   if (value.size() != previous.size()) return NoOverlap;
   if (value == previous) return Unchanged;
   auto gray=matchingImage(value);
-  if(isolatedChange(previousGray,gray)) return Unchanged;
+  if(isolatedChange(previousGray,gray)) {
+    animationSeen=true; previous=value; previousGray=std::move(gray); return Unchanged;
+  }
+  const auto stationaryMask=repaintMask(previousGray,gray,0);
+  if(!stationaryMask.isNull() && evaluate(previousGray,gray,0,allTiles(gray.width()),stationaryMask).score<.15) {
+    animationSeen=true; previous=value; previousGray=std::move(gray); return Unchanged;
+  }
   auto movement = motion(previousGray, gray, direction);
-  if (movement.score > 3.2 || movement.ambiguous) return NoOverlap;
+  if (movement.score > maximumAlignmentError || movement.ambiguous) return NoOverlap;
   if (!movement.shift) return Unchanged;
   if (!movement.boundary) return BoundaryMismatch;
+  const auto columnsInMotion=changingColumns(previousGray,gray);
+  if(!animationSeen && !repaintMask(previousGray,gray,movement.shift,columnsInMotion).isNull()) animationSeen=true;
   int nextPosition = position + movement.shift;
   const int leading = qMax(0,-nextPosition);
   const int extra = qMax(0,nextPosition + value.height() - height);
   if (extra || leading) {
     if (qint64(width) * (qint64(height) + extra + leading) > 64000000 ||
         height + extra + leading > 100000 || strips.size() >= 8192) return LimitReached;
-    if (leading && !append(value.copy(0,0,width,leading),true)) return CacheError;
+    int replace=0;
+    if(leading && animationSeen) {
+      const auto frozen=matchingImage(readRows(0,value.height()));
+      if(!frozen.isNull()) replace=seamReplacement(repaintMask(frozen,gray,nextPosition,columnsInMotion),leading,true);
+    }
+    if (leading && !append(value.copy(0,0,width,leading+replace),true,replace)) return CacheError;
     nextPosition+=leading;
   }
   if (extra > 0) {
-    if (!append(value.copy(0, value.height() - extra, width, extra))) return CacheError;
+    int replace=0;
+    if(animationSeen) {
+      const auto frozen=matchingImage(readRows(height-value.height(),value.height()));
+      if(!frozen.isNull()) replace=seamReplacement(repaintMask(frozen,gray,nextPosition-(height-value.height()),columnsInMotion),value.height()-extra,false);
+    }
+    if (!append(value.copy(0,value.height()-extra-replace,width,extra+replace),false,replace)) return CacheError;
   }
   previous = value; previousGray=std::move(gray); position = nextPosition;
   return extra > 0 || leading > 0 ? Appended : Revisited;
 }
 QImage ScrollStitcher::image() const {
   if (!width || !height) return {};
-  QImage result(width, height, QImage::Format_RGB32);
+  return readRows(0,height);
+}
+QImage ScrollStitcher::readRows(int y,int count) const {
+  if(y<0 || count<1 || y+count>height) return {};
+  QImage result(width, count, QImage::Format_RGB32);
   if (result.isNull()) return {};
   QPainter painter(&result);
   for (const auto &strip : strips) {
-    QImage part(width,strip.height,QImage::Format_RGB32);
+    const int top=qMax(y,strip.y),bottom=qMin(y+count,strip.y+strip.height);
+    if(top>=bottom) continue;
+    QImage part(width,bottom-top,QImage::Format_RGB32);
     QFile file(strip.path);
     if (part.isNull() || !file.open(QIODevice::ReadOnly) ||
+        !file.seek(qint64(strip.sourceY+top-strip.y)*width*4) ||
         file.read(reinterpret_cast<char *>(part.bits()),part.sizeInBytes()) != part.sizeInBytes()) return {};
-    painter.drawImage(0, strip.y, part);
+    painter.drawImage(0, top-y, part);
   }
   return result;
 }
@@ -235,5 +412,6 @@ void ScrollStitcher::paint(QPainter &painter, QRectF target) const {
   for (const auto &strip : strips)
     painter.drawImage(QRectF(target.x(), target.y() + target.height() * strip.y / height,
                               target.width(), target.height() * strip.height / height),
-                       strip.thumbnail);
+                       strip.thumbnail,QRectF(0,double(strip.sourceY)*strip.thumbnail.height()/strip.sourceHeight,
+                           strip.thumbnail.width(),double(strip.height)*strip.thumbnail.height()/strip.sourceHeight));
 }

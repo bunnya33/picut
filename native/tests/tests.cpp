@@ -75,6 +75,42 @@ class NativeTests : public QObject {
     }
     return image;
   }
+  static QList<QRect> chatStickers() {
+    return {{65,85,180,150},{450,355,178,170},{70,760,160,180},
+            {440,1130,170,150},{65,1510,180,170},{445,1980,170,180}};
+  }
+  static QImage chatDocument() {
+    QImage image(720,3200,QImage::Format_RGB32); image.fill(QColor("#ededed"));
+    QPainter p(&image); p.setFont(QFont("Microsoft YaHei UI",11));
+    for(int row=0,y=32;y<image.height();++row,y+=67) {
+      const int x=row%2?280:65;
+      QRect bubble(x,y,340,43);
+      bool sticker=false; for(auto r:chatStickers()) if(r.adjusted(-10,-10,10,10).intersects(bubble)) sticker=true;
+      if(sticker) continue;
+      p.setPen(Qt::NoPen); p.setBrush(row%2?QColor("#95ec69"):Qt::white); p.drawRoundedRect(bubble,6,6);
+      p.setPen(QColor("#242424"));
+      p.drawText(bubble.adjusted(12,0,-4,0),Qt::AlignVCenter,QString("消息 %1 · 金额 %2 / Chat %3").arg(row).arg(row*173+27).arg(row*97));
+    }
+    return image;
+  }
+  static QImage chatFrame(const QImage &doc,int offset,int phase) {
+    auto image=doc.copy(0,offset,720,640);
+    QPainter p(&image); p.setRenderHint(QPainter::Antialiasing);
+    for(auto sticker:chatStickers()) {
+      sticker.translate(0,-offset);
+      if(!sticker.intersects(image.rect())) continue;
+      p.save(); p.setClipRect(sticker);
+      p.fillRect(sticker,QColor::fromHsv((phase*71+sticker.x())%360,170,230));
+      p.setPen(QPen(QColor::fromHsv((phase*53+180)%360,190,140),7));
+      for(int n=-6;n<=8;++n)
+        p.drawLine(sticker.topLeft()+QPoint(n*25+phase*9%25,0),sticker.bottomLeft()+QPoint(n*25+phase*9%25+65,0));
+      p.setPen(Qt::NoPen); p.setBrush(Qt::white);
+      const auto center=sticker.center()+QPoint((phase%3-1)*12,(phase%4-2)*8);
+      p.drawEllipse(center,29,24); p.setBrush(Qt::black); p.drawEllipse(center+QPoint(8,-4),6,7);
+      p.restore();
+    }
+    return image;
+  }
   static CaptureOverlay *editingFixture(Store &store, const QString &tool) {
     DesktopSnapshot desktop;
     desktop.bounds = {0, 0, 800, 600};
@@ -298,6 +334,15 @@ private slots:
     QTRY_COMPARE_WITH_TIMEOUT(session->imageSize().height(),qRound(803.*physical.height()/page.height()),2000);
     QCOMPARE(session->scrollDirection(),1);
     page.activateWindow(); page.setFocus();
+    // Windows may deny SetForegroundWindow to a background test process.
+    // A real click on our own unobstructed fixture models the user's focus.
+    QCOMPARE(GetAncestor(WindowFromPoint(POINT{cursorTarget.x(),cursorTarget.y()}),GA_ROOT),hwnd);
+    INPUT focusClick[2]{};
+    focusClick[0].type=focusClick[1].type=INPUT_MOUSE;
+    focusClick[0].mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
+    focusClick[1].mi.dwFlags=MOUSEEVENTF_LEFTUP;
+    QCOMPARE(SendInput(2,focusClick,sizeof(INPUT)),UINT(2));
+    QTest::qWait(50);
     SetForegroundWindow(hwnd); SetFocus(hwnd);
     QTest::qWait(80);
     QCOMPARE(GetForegroundWindow(),hwnd);
@@ -342,6 +387,70 @@ private slots:
     QVERIFY(completed);
     if (physical.width()==460)
       QCOMPARE(captured,page.document.copy(0,0,460,captured.height()));
+  }
+  void scrollDesktopAnimatedChat() {
+    if(QGuiApplication::platformName()!="windows") QSKIP("Requires the Windows desktop");
+    wchar_t desktopClass[256]{}; GetClassNameW(WindowFromPoint({300,270}),desktopClass,256);
+    if(QString::fromWCharArray(desktopClass).startsWith("LockScreen")) QSKIP("Windows desktop is locked");
+    const auto oldForeground=GetForegroundWindow();
+    POINT oldCursor{}; GetCursorPos(&oldCursor);
+    auto restore=qScopeGuard([&] {
+      SetCursorPos(oldCursor.x,oldCursor.y);
+      if(IsWindow(oldForeground)) SetForegroundWindow(oldForeground);
+    });
+    struct ChatPage : QWidget {
+      QImage frame;
+      int offset=0,phase=0,wheels=0;
+      void paintEvent(QPaintEvent *) override { QPainter p(this); p.drawImage(0,0,frame); }
+      void wheelEvent(QWheelEvent *event) override {
+        ++wheels; offset=qBound(0,offset-event->angleDelta().y()/120*137,1926);
+        event->accept();
+      }
+    } page;
+    const auto doc=chatDocument();
+    auto render=[&] { page.frame=chatFrame(doc,page.offset,page.phase++); page.update(); };
+    page.setWindowFlags(Qt::FramelessWindowHint|Qt::WindowStaysOnTopHint);
+    page.setGeometry(70,60,720,640); render(); page.show(); page.activateWindow();
+    QTest::qWait(150);
+    const auto hwnd=reinterpret_cast<HWND>(page.winId()); SetForegroundWindow(hwnd);
+    const auto area=physicalRect(page.geometry());
+    QTemporaryDir dir; Store store(dir.path());
+    auto session=std::make_unique<ScrollCapture>(&store,page.geometry(),reinterpret_cast<quintptr>(hwnd));
+    session->setAttribute(Qt::WA_DeleteOnClose,false); session->begin();
+    QTRY_COMPARE_WITH_TIMEOUT(session->imageSize(),area.size(),3000);
+    QTimer animation; animation.setInterval(40);
+    connect(&animation,&QTimer::timeout,&page,render); animation.start();
+    auto status=session->findChild<QLabel *>("scrollStatus"); QVERIFY(status);
+    QTest::qWait(500);
+    QCOMPARE(session->imageSize(),area.size());
+    QVERIFY2(status->text().contains(QString::number(area.height())),qPrintable(status->text()));
+    const auto target=area.center(); SetCursorPos(target.x(),target.y());
+    for(int n=0;n<3;++n) {
+      INPUT input{}; input.type=INPUT_MOUSE; input.mi.dwFlags=MOUSEEVENTF_WHEEL;
+      input.mi.mouseData=DWORD(-WHEEL_DELTA);
+      QCOMPARE(SendInput(1,&input,sizeof(INPUT)),UINT(1)); QTest::qWait(45);
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(page.offset,411,2000);
+    QTRY_COMPARE_WITH_TIMEOUT(session->imageSize().height(),qRound(1051.*area.height()/640),4000);
+    auto automatic=session->findChild<QToolButton *>("scroll_automatic"); QVERIFY(automatic);
+    automatic->click();
+    QTRY_VERIFY_WITH_TIMEOUT(!automatic->isChecked(),12000);
+    QCOMPARE(page.offset,1926);
+    QCOMPARE(session->imageSize().height(),qRound(2566.*area.height()/640));
+    QVERIFY(page.wheels>=18);
+    QVERIFY2(status->text().contains("页面未继续滚动"),qPrintable(status->text()));
+    QImage captured; session->output=[&](const QImage &image,const QString &) { captured=image; return true; };
+    session->finish("copy"); animation.stop();
+    if(area.size()==QSize(720,640)) {
+      for(int y=0;y<captured.height();++y) for(int x=0;x<captured.width();++x) {
+        bool sticker=false; for(auto r:chatStickers()) if(r.contains(x,y)) sticker=true;
+        if(!sticker) QCOMPARE(captured.pixel(x,y),doc.pixel(x,y));
+      }
+    }
+    if(auto folder=qEnvironmentVariable("FLOATSHOT_ANNOTATION_TEST_DIR");!folder.isEmpty()) {
+      QDir().mkpath(folder); QVERIFY(captured.save(folder+"/chat-desktop-long.png"));
+    }
+    qInfo()<<"Real Windows animated chat: idle animations, wheel input, automatic scrolling and stop; final size"<<captured.size();
   }
   void scrollContinuousFramesWithoutSettling() {
     QTemporaryDir dir; Store store(dir.path());
@@ -524,6 +633,110 @@ private slots:
     }
     QCOMPARE(stitcher.image(),first);
   }
+  void scrollChatMultipleAnimatedStickersIdle() {
+    const auto doc=chatDocument(); auto first=chatFrame(doc,0,0);
+    ScrollStitcher stitcher; QCOMPARE(stitcher.accept(first),ScrollStitcher::Started);
+    for(int phase=1;phase<=10;++phase) {
+      QCOMPARE(stitcher.accept(chatFrame(doc,0,phase)),ScrollStitcher::Unchanged);
+      QCOMPARE(stitcher.image(),first);
+    }
+  }
+  void scrollChatAnimatedStickersWhileMoving() {
+    const auto doc=chatDocument();
+    ScrollStitcher stitcher; auto first=chatFrame(doc,0,0);
+    QCOMPARE(stitcher.accept(first),ScrollStitcher::Started);
+    QList<QPair<int,QImage>> observed{{0,first}};
+    int phase=0,maximum=0;
+    for(int offset:{73,198,369,521,741,983,1186,1420,1331,1497,1733,1926}) {
+      auto frame=chatFrame(doc,offset,++phase); observed.append({offset,frame});
+      const auto result=stitcher.accept(frame,offset==1331?-1:1);
+      QVERIFY2(result==ScrollStitcher::Appended || result==ScrollStitcher::Revisited,
+          qPrintable(QString("offset %1; result %2").arg(offset).arg(result)));
+      maximum=qMax(maximum,offset); QCOMPARE(stitcher.size(),QSize(720,maximum+640));
+      frame=chatFrame(doc,offset,++phase); observed.append({offset,frame});
+      const auto idle=stitcher.accept(frame);
+      QVERIFY2(idle==ScrollStitcher::Unchanged,qPrintable(QString("idle offset %1 phase %2 result %3").arg(offset).arg(phase).arg(idle)));
+    }
+    const auto joined=stitcher.image();
+    if(auto folder=qEnvironmentVariable("FLOATSHOT_ANNOTATION_TEST_DIR");!folder.isEmpty()) {
+      QDir().mkpath(folder); joined.save(folder+"/chat-animated-long.png"); first.save(folder+"/chat-original-first.png");
+    }
+    // Static bubbles, text and all original pixels outside the animated objects
+    // must remain exact. No recognition or synthetic redraw of chat content.
+    for(int y=0;y<joined.height();++y) for(int x=0;x<joined.width();++x) {
+      bool sticker=false; for(auto r:chatStickers()) if(r.contains(x,y)) sticker=true;
+      if(!sticker) QCOMPARE(joined.pixel(x,y),doc.pixel(x,y));
+    }
+    for(auto r:chatStickers()) if(joined.rect().contains(r)) {
+      bool wholeFrame=false;
+      for(const auto &[top,frame]:observed) {
+        const auto local=r.translated(0,-top);
+        if(frame.rect().contains(local) && joined.copy(r)==frame.copy(local)) wholeFrame=true;
+      }
+      QVERIFY2(wholeFrame,qPrintable(QString("Sticker at y=%1 combines multiple animation frames").arg(r.y())));
+    }
+    QVERIFY(stitcher.stripCount()>1);
+    if(auto folder=qEnvironmentVariable("FLOATSHOT_ANNOTATION_TEST_DIR");!folder.isEmpty()) {
+      QDir().mkpath(folder); joined.save(folder+"/chat-animated-long.png");
+    }
+  }
+  void scrollChatRejectsMissingOverlap() {
+    const auto doc=chatDocument(); auto first=chatFrame(doc,0,0);
+    for(int offset:{700,807,940,1141,1470,1791,2200,2475}) {
+      ScrollStitcher stitcher; QCOMPARE(stitcher.accept(first),ScrollStitcher::Started);
+      QCOMPARE(stitcher.accept(chatFrame(doc,0,1)),ScrollStitcher::Unchanged);
+      const auto result=stitcher.accept(chatFrame(doc,offset,2),1);
+      QVERIFY2(result==ScrollStitcher::NoOverlap || result==ScrollStitcher::BoundaryMismatch,
+          qPrintable(QString("chat gap %1 result %2, height %3").arg(offset).arg(result).arg(stitcher.size().height())));
+      QCOMPARE(stitcher.image(),first);
+    }
+  }
+  void scrollChatAnimatedStickersUpward() {
+    const auto doc=chatDocument();
+    ScrollStitcher stitcher;
+    auto first=chatFrame(doc,1200,0);
+    QCOMPARE(stitcher.accept(first),ScrollStitcher::Started);
+    QList<QPair<int,QImage>> observed{{1200,first}};
+    int previous=1200,phase=0,top=1200,bottom=1840;
+    for(int offset:{1060,850,620,440,210,0,360,690,960,1350,1670}) {
+      const auto frame=chatFrame(doc,offset,++phase); observed.append({offset,frame});
+      const auto result=stitcher.accept(frame,offset>previous?1:-1);
+      QVERIFY2(result==ScrollStitcher::Appended || result==ScrollStitcher::Revisited,
+          qPrintable(QString("upward offset %1 result %2").arg(offset).arg(result)));
+      top=qMin(top,offset); bottom=qMax(bottom,offset+640); previous=offset;
+      QCOMPARE(stitcher.size(),QSize(720,bottom-top));
+    }
+    const auto joined=stitcher.image();
+    for(int y=0;y<joined.height();++y) for(int x=0;x<joined.width();++x) {
+      bool sticker=false; for(auto r:chatStickers()) if(r.contains(x,y+top)) sticker=true;
+      if(!sticker) QCOMPARE(joined.pixel(x,y),doc.pixel(x,y+top));
+    }
+    for(auto r:chatStickers()) if(joined.rect().contains(r.translated(0,-top))) {
+      bool whole=false;
+      for(const auto &[offset,frame]:observed) {
+        const auto local=r.translated(0,-offset);
+        if(frame.rect().contains(local) && joined.copy(r.translated(0,-top))==frame.copy(local)) whole=true;
+      }
+      QVERIFY2(whole,qPrintable(QString("upward sticker y=%1 combines frames").arg(r.y())));
+    }
+  }
+  void scrollChatSessionIgnoresIdleAnimation() {
+    QTemporaryDir dir; Store store(dir.path());
+    auto session=std::make_unique<ScrollCapture>(&store,QRect(40,40,720,640),0);
+    session->setAttribute(Qt::WA_DeleteOnClose,false); session->begin(false);
+    const auto doc=chatDocument(); int offset=0,phase=0;
+    session->frameProvider=[&] { return chatFrame(doc,offset,phase++); };
+    for(int n=0;n<8;++n) session->sample();
+    QCOMPARE(session->imageSize(),QSize(720,640));
+    auto status=session->findChild<QLabel *>("scrollStatus"); QVERIFY(status);
+    QVERIFY(status->text().contains("720 × 640"));
+    offset=198; session->noteScrollInput(1); session->sample();
+    QCOMPARE(session->imageSize(),QSize(720,838));
+    for(int n=0;n<8;++n) session->sample();
+    QVERIFY(status->text().contains("720 × 838"));
+    QCOMPARE(session->imageSize(),QSize(720,838));
+    session->finish("cancel");
+  }
   void scrollStitchingAndBacktracking() {
     QImage document(420,3600,QImage::Format_RGB32);
     document.fill(QColor("#262834"));
@@ -571,7 +784,8 @@ private slots:
       auto original=frame(0,padding);
       QCOMPARE(stitcher.accept(original),ScrollStitcher::Started);
       auto result=stitcher.accept(frame(71,padding));
-      QVERIFY(result==ScrollStitcher::BoundaryMismatch || result==ScrollStitcher::NoOverlap);
+      QVERIFY2(result==ScrollStitcher::BoundaryMismatch || result==ScrollStitcher::NoOverlap,
+          qPrintable(QString("padding %1 result %2").arg(padding).arg(result)));
       QCOMPARE(stitcher.image(),original);
       QCOMPARE(stitcher.size(),original.size());
     }

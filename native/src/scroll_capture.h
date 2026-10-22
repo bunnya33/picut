@@ -28,12 +28,15 @@ public:
   void paint(QPainter &painter, QRectF target) const;
   static QSize previewSize(QSize original, QSize available);
 private:
-  struct Strip { QString path; QImage thumbnail; int y, height; };
+  struct Strip { QString path; QImage thumbnail; int y, height, sourceY=0, sourceHeight=0; };
   QTemporaryDir cache;
   QList<Strip> strips;
   QImage previous, previousGray;
   int width = 0, height = 0, position = 0;
-  bool append(const QImage &image, bool prepend = false);
+  quint64 nextStrip=0;
+  bool animationSeen=false;
+  bool append(const QImage &image, bool prepend = false, int replacePixels = 0);
+  QImage readRows(int y,int count) const;
 };
 
 class ScrollCapture : public QWidget {

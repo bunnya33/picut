@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FloatShotNative VERSION 0.5.18 LANGUAGES CXX RC)
+project(FloatShotNative VERSION 0.5.19 LANGUAGES CXX RC)
 # CMake can misdecode the Chinese MSVC /showIncludes prefix on UTF-8 consoles.
 if(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX MATCHES "娉ㄦ剰")
     set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件: ")
