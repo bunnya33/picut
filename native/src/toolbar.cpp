@@ -222,7 +222,8 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
     b->setIconSize({16, 16});
     b->setFixedSize(32, 32);
     b->setCheckable(true);
-    b->setToolTip(titles[n] + " · Ctrl+" + QString::number(n + 1));
+    b->setToolTip(titles[n] + " · Ctrl+" + QString::number(n + 1) +
+                  (names[n] == "pen" ? " · 按住 Shift 拖动画直线" : ""));
     row->addWidget(b);
     tools.append(b);
     connect(b, &QToolButton::clicked, this, [this, n] {
@@ -252,7 +253,7 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
     b->setToolTip(QMap<QString, QString>{{"undo", "撤销 · Ctrl+Z"},
                                          {"redo", "重做 · Ctrl+Y"},
                                          {"select_text", "文字识别 · F4"},
-                                         {"translate", "图片翻译（本地试用）"},
+                                         {"translate", "图片翻译（本地）"},
                                          {"scroll", "滚动截屏"},
                                          {"cancel", "取消 · Esc"},
                                          {"pin", "贴图 · F3"},

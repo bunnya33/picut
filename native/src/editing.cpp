@@ -208,7 +208,7 @@ QString EditingSurface::editTarget(QPoint point) const {
       annotation->selected >= annotation->marks.size())
     return {};
   auto mark = annotation->marks[annotation->selected];
-  if (mark.kind == "pen")
+  if (mark.kind == "pen" && !mark.straight)
     return {};
   auto location = imagePoint(point);
   double tolerance =
@@ -284,6 +284,9 @@ bool EditingSurface::annotationPress(QMouseEvent *e) {
   }
   auto mark = annotation->preferences;
   mark.kind = annotation->tool;
+  // Choose once per stroke so releasing Shift before the mouse does not
+  // convert a straight line into a freehand path.
+  mark.straight = mark.kind == "pen" && (e->modifiers() & Qt::ShiftModifier);
   mark.points = {image, image};
   annotation->draft = mark;
   if (mark.kind == "pen" && toolbar)
@@ -305,7 +308,7 @@ bool EditingSurface::annotationMove(QMouseEvent *e) {
     } else if (dragHandle == "start" || dragHandle == "end") {
       int index = dragHandle == "start" ? 0 : int(mark.points.size() - 1);
       auto fixed = mark.points[index ? 0 : mark.points.size() - 1];
-      if (e->modifiers() & Qt::ShiftModifier) {
+      if (mark.kind != "pen" && (e->modifiers() & Qt::ShiftModifier)) {
         auto d = point - fixed;
         double angle =
             std::round(std::atan2(d.y(), d.x()) / (std::numbers::pi / 4)) *
@@ -362,6 +365,8 @@ bool EditingSurface::annotationMove(QMouseEvent *e) {
     auto &mark = *annotation->draft;
     if (mark.kind == "number") {
       // A numbered circle is placed at the press position, not dragged out.
+    } else if (mark.kind == "pen" && mark.straight) {
+      mark.points.last() = point;
     } else if (QStringList{"pen", "eraser", "mosaic", "blur"}.contains(mark.kind) &&
         mark.areaShape == "stroke") {
       if (mark.points.last() != point)
@@ -630,7 +635,7 @@ void EditingSurface::showMore() {
   menu.addSeparator();
   menu.addAction(menuLabel("文字识别", "F4"), this,
                    [this] { startImageText(); });
-  menu.addAction("图片翻译（本地试用）", this, [this] { startImageTranslation(); });
+  menu.addAction("图片翻译（本地）", this, [this] { startImageTranslation(); });
   menu.addAction("二维码 / 条形码", this, [this] {
     commitText();
     showRecognition(annotation->render(), true, this);

@@ -24,6 +24,7 @@ QJsonObject Mark::json() const {
           {"arrow_mode", arrowMode},
           {"area_shape", areaShape},
           {"filled", filled},
+          {"straight", straight},
           {"font_family", fontFamily},
           {"bold", bold},
           {"italic", italic},
@@ -53,6 +54,7 @@ Mark Mark::fromJson(const QJsonObject &v) {
   m.arrowMode = v["arrow_mode"].toString("forward");
   m.areaShape = v["area_shape"].toString("stroke");
   m.filled = v["filled"].toBool();
+  m.straight = v["straight"].toBool();
   m.fontFamily = v["font_family"].toString("Microsoft YaHei UI");
   m.bold = v["bold"].toBool();
   m.italic = v["italic"].toBool();
@@ -107,6 +109,7 @@ QRectF numberLabelRect(const Mark &mark) {
 }
 bool isEndpointMark(const Mark &mark) {
   return mark.kind == "line" || mark.kind == "arrow" ||
+         (mark.kind == "pen" && mark.straight) ||
          (mark.kind == "marker" && mark.areaShape == "stroke");
 }
 bool isBoxMark(const Mark &mark) {
@@ -246,7 +249,8 @@ QRectF markBounds(const Mark &mark) {
   return markPath(mark).boundingRect();
 }
 QMap<QString, QPointF> markControls(const Mark &mark) {
-  if (mark.points.isEmpty() || mark.kind == "pen" || mark.kind == "number")
+  if (mark.points.isEmpty() || (mark.kind == "pen" && !mark.straight) ||
+      mark.kind == "number")
     return {};
   if (isEndpointMark(mark))
     return {{"start", mark.points.first()}, {"end", mark.points.last()}};
@@ -452,6 +456,7 @@ void Annotation::chooseTool(const QString &value) {
   if (value == "pen") {
     preferences.rotation = 0;
     preferences.areaShape = "stroke";
+    preferences.straight = false;
   }
   if (value == "marker") {
     if (preferences.areaShape != "rect")
@@ -510,7 +515,8 @@ void Annotation::redo() {
 void Annotation::add(Mark mark) {
   checkpoint();
   marks.append(std::move(mark));
-  selected = marks.last().kind == "pen" ? -1 : int(marks.size() - 1);
+  selected = marks.last().kind == "pen" && !marks.last().straight
+                 ? -1 : int(marks.size() - 1);
   draft.reset();
   refresh();
 }

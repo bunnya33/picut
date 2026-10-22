@@ -15,10 +15,10 @@ static int runApplication(int argc, char **argv) {
   enableDpi();
   QApplication app(argc, argv);
   app.setApplicationName("picut");
-  app.setApplicationDisplayName("picut 翻译试用版");
+  app.setApplicationDisplayName("picut");
   app.setOrganizationName("picut");
-  app.setApplicationVersion("0.5.25");
-  // Translation is an isolated trial. The stable v0.5.21 profile is untouched.
+  app.setApplicationVersion("0.5.26");
+  // Keep the accepted translation profile, including settings, history and pins.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(
                 QStandardPaths::GenericDataLocation) +

@@ -42,10 +42,10 @@ static void verifyModel(const QString &folder, const QJsonObject &metadata) {
     if (it.key().contains('/') || it.key().contains('\\') || it.key().contains(".."))
       throw std::runtime_error("翻译语言包清单包含无效路径。");
     QFile file(folder + '/' + it.key());
-    if (!file.open(QIODevice::ReadOnly)) throw std::runtime_error("翻译语言包文件缺失，请重新解压试用包。");
+    if (!file.open(QIODevice::ReadOnly)) throw std::runtime_error("翻译语言包文件缺失，请重新解压完整程序包。");
     QCryptographicHash hash(QCryptographicHash::Sha256);
     if (!hash.addData(&file) || QString::fromLatin1(hash.result().toHex()).compare(it.value().toString(), Qt::CaseInsensitive))
-      throw std::runtime_error("翻译语言包校验失败，请重新解压试用包。");
+      throw std::runtime_error("翻译语言包校验失败，请重新解压完整程序包。");
   }
 }
 int main(int argc, char **argv) {
@@ -62,7 +62,7 @@ int main(int argc, char **argv) {
     const auto selectedSource = request["source"].toString("auto");
     if ((target != "zh" && target != "en") ||
         (selectedSource != "auto" && selectedSource != "en" && selectedSource != "zh"))
-      throw std::runtime_error("本试用版支持中文和英文互译。");
+      throw std::runtime_error("当前支持中文和英文互译。");
     const auto modelsRoot = parser.value("models");
     const auto manifest = readJson(modelsRoot + "/models.json")["models"].toObject();
     const auto blocks = request["blocks"].toArray();

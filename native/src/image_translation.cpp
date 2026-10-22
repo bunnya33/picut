@@ -144,7 +144,7 @@ protected:
 ImageTranslationOverlay::ImageTranslationOverlay(QWidget *parent, Store *s, std::function<QRect()> rect)
     : QWidget(parent, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint),
       store(s), imageRect(std::move(rect)), ocr(this), translator(this) {
-  setObjectName("imageTranslationOverlay"); setWindowTitle("picut · 图片翻译试用");
+  setObjectName("imageTranslationOverlay"); setWindowTitle("picut · 图片翻译");
   setWindowModality(Qt::WindowModal); setFocusPolicy(Qt::StrongFocus);
   setAttribute(Qt::WA_TranslucentBackground);
   if (parent) parent->installEventFilter(this);

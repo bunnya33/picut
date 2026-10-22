@@ -291,7 +291,7 @@ void PinWindow::contextMenuEvent(QContextMenuEvent *e) {
   menu.setObjectName("pinMenu");
   for (const auto &pair :
        QList<QPair<QString, QString>>{{"select_text", "文字识别"},
-                                      {"translate", "图片翻译（本地试用）"},
+                                      {"translate", "图片翻译（本地）"},
                                       {"edit", "标注"},
                                       {"copy", "复制"},
                                       {"save", "保存"},

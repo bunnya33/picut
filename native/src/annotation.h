@@ -21,7 +21,7 @@ struct Mark {
   QColor textBackground = Qt::transparent, textOutline = Qt::transparent;
   int rotation = 0, radius = 0, intensity = 12, number = 1,
       magnification = 2, outlineWidth = 0;
-  bool bold = false, italic = false, filled = false;
+  bool bold = false, italic = false, filled = false, straight = false;
   QJsonObject json() const;
   static Mark fromJson(const QJsonObject &value);
 };

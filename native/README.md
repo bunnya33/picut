@@ -1,16 +1,15 @@
-﻿# picut v0.5.24 · optional local translation trial
+﻿# picut v0.5.26 · native Windows release
 
-This branch, `codex/picut-local-translation`, is the independent v0.5.24 translation trial. The v0.5.21 baseline is preserved on `codex/picut-recording` and `codex/picut-stable-before-translation`, tag `v0.5.21-before-local-translation`. Source history and release archives are additionally backed up under `backups/v0.5.21-before-local-translation-20261022/`.
+The accepted translation branch has been fast-forwarded into `main`. The original v0.5.21 baseline remains on `codex/picut-stable-before-translation`, tag `v0.5.21-before-local-translation`; v0.5.25 translation trial packages and tags remain available.
 
-The trial adds CPU-only English/Chinese image translation at original text positions. It uses its own `%LOCALAPPDATA%/FloatShot/FloatShotNative-TranslationTrial` data directory and a separate installer AppId, directory and shortcuts. `run-translation-trial.ps1` starts the trial; existing `run.ps1` continues to start v0.5.21. See `docs/试用版-v0.5.24-图片本地翻译.md` for scope and rollback. Older notes below describe the preserved base release.
-
+The official release includes CPU-only English/Chinese image translation at original text positions and the v0.5.25 scrolling fixes. It retains the accepted translation profile `%LOCALAPPDATA%/FloatShot/FloatShotNative-TranslationTrial` for settings/history compatibility, with the normal picut installer identity. `run.ps1` starts v0.5.26 silently in the tray. Shift-drag with the pen draws a line at the exact mouse position, followed by two editable endpoints. The gesture mode is fixed at mouse press; freehand paths remain immutable. See `docs/更新记录-v0.5.26-正式翻译与Shift画笔.md`. Older notes below describe historical releases.
 v0.5.24 translates source-language prose inside mixed-language OCR paragraphs while preserving existing target-language text and technical names. A Chinese citation no longer skips an English paragraph. Raster bullets omitted by OCR still separate wrapped list items. Earlier translation packages and tags remain available.
 
 v0.5.23 keeps the screenshot's global position and display size, cycles a wide soft diagonal white sweep while processing, and publishes only a complete validated result. Product names, technical identifiers and URLs such as HybridCLR, CLR, C++ and il2cpp are protected before translation and verified afterward. The v0.5.22 trial packages and tag remain available.
 
 Prepare the native inference SDK with `native/setup-translation-sdk.ps1`. Build-only model conversion uses pinned OPUS-MT revisions in `tools/convert_translation_models.py`; `tools/download_translation_weights.py` supports resumable downloads with original weight checksums. The shipping runtime contains C++ workers and INT8 models, without Python. The native SDK uses Ruy with CPU dispatch and no MKL, CUDA or OpenMP runtime dependency.
 
-Build with `native/build.ps1`; package with `native/package.ps1 -SkipBuild`; create the separate installer with `native/build-installer.ps1 -TranslationTrial`. Run `FloatShotTranslationTests.exe` for geometry, layout, cancellation, native model inference and OCR-to-export coverage, using an isolated artifact directory and the offscreen platform.
+Build with `native/build.ps1`; package with `native/package.ps1 -SkipBuild`; create the official installer with `native/build-installer.ps1`. Run `FloatShotTranslationTests.exe` for geometry, layout, cancellation, native model inference and OCR-to-export coverage, using an isolated artifact directory and the offscreen platform.
 
 Scrolling capture checks conflicting textured blocks and competing displacements before modifying the canvas. Dynamic updates retain exact region unions, preserving the untouched gaps. One-pixel strips retain a nonempty thumbnail and previews share rounded row boundaries. See docs/更新记录-v0.5.21-长图内容保护.md.
 
@@ -36,7 +35,7 @@ F4, the toolbar and text recognition menus open one frameless workspace with the
 
 Adjacent layouts preserve the image's global rectangle and put the panel on a fitting side. Full-screen, tall and overflowing regions use a split workspace within one screen's available geometry, with a draggable divider, wheel zoom, space/middle-button pan, fit/100% and collapse actions in the image context menu. A view transform maps all interaction back into the immutable original image; parent capture/pin geometry and pixels stay intact. Completed OCR results are cached per surface until pixels/profile/acceleration change. Recognition always receives the full-resolution original and uses PaddleOCR Small. Windows OCR remains in benchmark/helper code rather than a selectable sidebar backend.
 
-The data directory remains `%LOCALAPPDATA%/FloatShot/FloatShotNative-ImageTextTrial`, preserving trial settings and history without migrating stable data. Packages are in `dist/picut-0.5.21*`; both `run.ps1` and `run-image-text-trial.ps1` start this version. Earlier packages remain available for rollback. Git `main` and tag `v0.5.10` retain the stable source baseline, and tags `v0.5.11-image-text-trial` and `v0.5.12-ocr-sidebar` preserve the prior OCR interfaces. See `docs/版本回滚.md`.
+The current release uses the accepted translation profile noted above. Earlier image-text releases used `%LOCALAPPDATA%/FloatShot/FloatShotNative-ImageTextTrial`; that directory is preserved. `run-image-text-trial.ps1` remains an old-version launcher. The original v0.5.10 baseline remains tagged; `main` now contains the accepted translation release. See `docs/版本回滚.md`.
 
 Windows C++20 / Qt 6.8.3 Widgets application. No Python interpreter, bindings, build scripts, or runtime are required. Qt Multimedia is an optional DLL loaded on first video preview. Recording uses a separately deployed FFmpeg executable; audio capture uses Windows WASAPI.
 

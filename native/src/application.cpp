@@ -56,7 +56,7 @@ ApplicationController::ApplicationController(bool test)
     if (!testing && !quitting) QMessageBox::warning(home, "保存失败", message);
   });
   tray.setIcon(picutIcon()); QApplication::setWindowIcon(picutIcon());
-  tray.setToolTip("picut · 本地翻译试用版");
+  tray.setToolTip("picut");
   trayMenu = new QMenu;
   trayMenu->setObjectName("trayMenu");
   auto add = [this](const QString &label, const QString &hotkey,

@@ -57,7 +57,7 @@ void LocalTranslationJob::start(const QJsonArray &blocks, const QString &source,
   cancel(); active = true;
   if (blocks.isEmpty()) { complete({{"error", "没有可翻译的文字。"}}); return; }
   if (!QFileInfo::exists(modelsPath() + "/models.json")) {
-    complete({{"error", "缺少本地翻译语言包，请使用完整的翻译试用包。"}}); return;
+    complete({{"error", "缺少本地翻译语言包，请使用完整程序包。"}}); return;
   }
   temporary = std::make_unique<QTemporaryDir>(QDir::tempPath() + "/picut-translation-XXXXXX");
   if (!temporary->isValid()) { complete({{"error", "无法创建翻译临时目录。"}}); return; }

@@ -762,7 +762,9 @@ private slots:
       const auto result=stitcher.accept(pump.take(),1);
       QVERIFY(result==ScrollStitcher::Started || result==ScrollStitcher::Appended || result==ScrollStitcher::Unchanged);
     }
-    const int lastOffset=qMin(1400,offset.load()-70);
+    // stop() may discard a provider call still in flight. Only enqueued
+    // captures contribute to the expected document, not provider attempts.
+    const int lastOffset=qMin(1400,int(pump.frameCount()-1)*70);
     QCOMPARE(stitcher.image(),doc.copy(0,0,460,lastOffset+400));
     qInfo()<<"Frames captured while GUI blocked:"<<pump.frameCount()<<"coalesced:"<<pump.droppedCount();
   }
@@ -2580,6 +2582,91 @@ private slots:
     QCOMPARE(a.marks.size(), 1);
     QCOMPARE(a.marks.first().json(), fixed);
     overlay->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  }
+  void shiftPenTracksMouseAndEditsEndpoints() {
+    QTemporaryDir dir;
+    Store store(dir.path());
+    auto overlay = editingFixture(store, "pen");
+    auto &a = *overlay->annotation;
+    overlay->setPreference("width", 6);
+    QTest::mousePress(overlay, Qt::LeftButton, Qt::ShiftModifier, {140, 140});
+    dragMove(overlay, {260, 178}, Qt::ShiftModifier);
+    QVERIFY(a.draft->straight);
+    QCOMPARE(a.draft->points, QList<QPointF>({{40, 60}, {160, 98}}));
+    QVERIFY(a.render() != a.original);
+    // The gesture stays straight if Shift is released before the mouse.
+    dragMove(overlay, {330, 195});
+    QCOMPARE(a.draft->points, QList<QPointF>({{40, 60}, {230, 115}}));
+    wheel(overlay, {330, 195}, 1);
+    QCOMPARE(a.draft->width, 6.0);
+    QTest::mouseRelease(overlay, Qt::LeftButton, Qt::NoModifier, {390, 215});
+    QCOMPARE(a.marks.first().points, QList<QPointF>({{40, 60}, {290, 135}}));
+    QCOMPARE(a.selected, 0);
+    QCOMPARE(markControls(a.marks.first()).keys(), QStringList({"end", "start"}));
+    QCOMPARE(overlay->editTarget({140, 140}), QString("start"));
+    QTest::mouseMove(overlay, {140, 140});
+    QCOMPARE(overlay->cursor().shape(), Qt::SizeAllCursor);
+    QTest::mousePress(overlay, Qt::LeftButton, Qt::NoModifier, {140, 140});
+    QTest::mouseRelease(overlay, Qt::LeftButton, Qt::ShiftModifier, {160, 165});
+    QCOMPARE(a.marks.first().points, QList<QPointF>({{60, 85}, {290, 135}}));
+    QTest::mousePress(overlay, Qt::LeftButton, Qt::NoModifier, {390, 215});
+    dragMove(overlay, {420, 240});
+    QTest::mouseRelease(overlay, Qt::LeftButton, Qt::NoModifier, {450, 255});
+    QCOMPARE(a.marks.first().points, QList<QPointF>({{60, 85}, {350, 175}}));
+    auto line = a.marks.first().json();
+    QTest::keyClick(overlay, Qt::Key_Z, Qt::ControlModifier);
+    QCOMPARE(a.marks.first().points.last(), QPointF(290, 135));
+    QTest::keyClick(overlay, Qt::Key_Y, Qt::ControlModifier);
+    QCOMPARE(a.marks.first().json(), line);
+    // Serialized annotations retain endpoint editing; legacy pen paths do not.
+    QVERIFY(Store::writeJson(store.path("line.json"), line));
+    auto restored = Mark::fromJson(Store::readJson(store.path("line.json"), QJsonObject()).toObject());
+    QCOMPARE(restored.json(), line);
+    QCOMPARE(markControls(restored).size(), 2);
+    line.remove("straight");
+    QVERIFY(markControls(Mark::fromJson(line)).isEmpty());
+    // Start another freehand stroke without Shift: the previous line is fixed.
+    QTest::mousePress(overlay, Qt::LeftButton, Qt::NoModifier, {180, 300});
+    dragMove(overlay, {220, 310}, Qt::ShiftModifier);
+    dragMove(overlay, {250, 280});
+    QVERIFY(!a.draft->straight);
+    QVERIFY(a.draft->points.size() > 2);
+    QTest::mouseRelease(overlay, Qt::LeftButton, Qt::NoModifier, {280, 320});
+    QCOMPARE(a.marks.size(), 2);
+    QCOMPARE(a.selected, -1);
+    QVERIFY(markControls(a.marks.last()).isEmpty());
+    QVERIFY(overlay->editTarget({160, 165}).isEmpty());
+    overlay->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  }
+  void shiftPenOnScaledPinAndClickConfirmation() {
+    QTemporaryDir dir;
+    Store store(dir.path());
+    store.config["annotation_last_tool"] = "pen";
+    QImage image(640, 360, QImage::Format_ARGB32);
+    image.fill(Qt::white);
+    auto pin = new PinWindow(image, &store, {100, 100, 320, 180});
+    pin->show(); pin->startEditing();
+    auto position = pin->pos();
+    auto start = pin->imagePoint({52, 52});
+    QTest::mousePress(pin, Qt::LeftButton, Qt::ShiftModifier, {52, 52});
+    QTest::mouseRelease(pin, Qt::LeftButton, Qt::ShiftModifier, {182, 97});
+    auto &a = *pin->annotation;
+    QCOMPARE(a.marks.first().points, QList<QPointF>({start, pin->imagePoint({182, 97})}));
+    QCOMPARE(markControls(a.marks.first()).size(), 2);
+    QTest::mousePress(pin, Qt::LeftButton, Qt::NoModifier, {52, 52});
+    QTest::mouseRelease(pin, Qt::LeftButton, Qt::NoModifier, {62, 72});
+    QCOMPARE(a.marks.first().points.first(), pin->imagePoint({62, 72}));
+    auto fixed = a.marks.first().json();
+    QTest::mouseClick(pin, Qt::LeftButton, Qt::NoModifier, {220, 150});
+    QCOMPARE(a.selected, -1);
+    QCOMPARE(a.marks.size(), 1);
+    wheel(pin, {220, 150}, 1);
+    QCOMPARE(a.marks.first().json(), fixed);
+    QCOMPARE(pin->pos(), position);
+    QVERIFY(savePreview(pin, "shift-pen-endpoints.png"));
+    pin->close();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   }
   void markerStraightLineEndpointWidthAndConfirmation() {

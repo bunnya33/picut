@@ -2,7 +2,7 @@
 param([string]$PackageDir, [string]$Iscc, [switch]$TranslationTrial)
 $ErrorActionPreference = 'Stop'
 $picutRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.25-translation-trial' }
+if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.26' }
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $picutMain = Join-Path $PackageDir 'picut.exe'
 $picutVersion = (Get-Item -LiteralPath $picutMain).VersionInfo.ProductVersion
@@ -16,19 +16,17 @@ $picutRequired = @(
     'platforms/qwindows.dll', 'gpu/FloatShotPaddleOcr.exe', 'gpu/onnxruntime.dll',
     'gpu/DirectML.dll', 'ocr/models.json', 'licenses', 'THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd'
 )
-if ($TranslationTrial) { $picutRequired += @('FloatShotTranslate.exe','ctranslate2.dll','translation/models.json') }
+$picutRequired += @('FloatShotTranslate.exe','ctranslate2.dll','translation/models.json')
 foreach ($picutRelative in $picutRequired) {
     if (-not (Test-Path -LiteralPath (Join-Path $PackageDir $picutRelative))) {
         throw "Runtime incomplete: $picutRelative. Run native/package.ps1 first."
     }
 }
-if ($TranslationTrial) {
-    $picutTranslation = Get-Content -LiteralPath (Join-Path $PackageDir 'translation/models.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    foreach ($picutDirection in $picutTranslation.models.PSObject.Properties) {
-        foreach ($picutHash in $picutDirection.Value.checksums.PSObject.Properties) {
-            $picutModel = Join-Path $PackageDir ('translation/' + $picutDirection.Name + '/' + $picutHash.Name)
-            if ((Get-FileHash -LiteralPath $picutModel).Hash -ne $picutHash.Value) { throw 'Translation model checksum mismatch.' }
-        }
+$picutTranslation = Get-Content -LiteralPath (Join-Path $PackageDir 'translation/models.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+foreach ($picutDirection in $picutTranslation.models.PSObject.Properties) {
+    foreach ($picutHash in $picutDirection.Value.checksums.PSObject.Properties) {
+        $picutModel = Join-Path $PackageDir ('translation/' + $picutDirection.Name + '/' + $picutHash.Name)
+        if ((Get-FileHash -LiteralPath $picutModel).Hash -ne $picutHash.Value) { throw 'Translation model checksum mismatch.' }
     }
 }
 $picutModelManifest = Get-Content -LiteralPath (Join-Path $PackageDir 'ocr/models.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -57,7 +55,7 @@ $picutPayload = Join-Path $picutStage 'payload'
 New-Item -ItemType Directory -Path $picutPayload -Force | Out-Null
 Get-ChildItem -LiteralPath $PackageDir -File | Where-Object {
     $_.Extension -in @('.exe', '.dll', '.ico', '.conf') -or
-    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd', '试用版-v0.5.25-滚动截屏修复.md')
+    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd', '更新记录-v0.5.26-正式翻译与Shift画笔.md')
 } | Copy-Item -Destination $picutPayload
 Get-ChildItem -LiteralPath $PackageDir -Directory | Where-Object {
     $_.Name -notin @('annotation-previews', 'image-text-previews', 'translation-previews')
