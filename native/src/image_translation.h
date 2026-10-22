@@ -12,6 +12,11 @@ class QPlainTextEdit;
 class QToolButton;
 class TranslationCanvas;
 
+struct ImageTranslationLayout {
+  QRect window, image, toolbar, status, panel;
+  static ImageTranslationLayout arrange(QRect image, QRect available, QSize toolbar, bool panelVisible);
+};
+
 class ImageTranslationOverlay : public QWidget {
   Q_OBJECT
 public:
@@ -31,12 +36,15 @@ public:
   void setShowingOriginal(bool original);
   void setPanelVisible(bool visible);
   QPointF imageToView(QPointF point) const;
+  QRect imageGlobalRect() const;
+  bool isBusy() const;
 signals:
   void closed();
 protected:
   bool eventFilter(QObject *object, QEvent *event) override;
   void keyPressEvent(QKeyEvent *event) override;
   void closeEvent(QCloseEvent *event) override;
+  void paintEvent(QPaintEvent *event) override;
 private:
   Store *store;
   std::function<QRect()> imageRect;
@@ -49,11 +57,13 @@ private:
   QLabel *status;
   QComboBox *sourceLanguage, *targetLanguage;
   QToolButton *compare, *panelToggle, *copy, *save, *retry;
+  QFrame *bar;
   bool active = false, ready = false, syncing = false;
   QString completedKey;
   QString cachedProfile, cachedAcceleration;
   QHash<QString, TranslationPage> cache;
-  QTimer renderTimer;
+  ImageTranslationLayout layout;
+  void setBusy(bool busy);
   void translate();
   void refresh();
   void refreshEditor();

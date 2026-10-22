@@ -17,7 +17,7 @@ static int runApplication(int argc, char **argv) {
   app.setApplicationName("picut");
   app.setApplicationDisplayName("picut 翻译试用版");
   app.setOrganizationName("picut");
-  app.setApplicationVersion("0.5.22");
+  app.setApplicationVersion("0.5.23");
   // Translation is an isolated trial. The stable v0.5.21 profile is untouched.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(

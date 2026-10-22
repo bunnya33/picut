@@ -1,5 +1,6 @@
 #include <ctranslate2/translator.h>
 #include <sentencepiece_processor.h>
+#include "translation_terms.h"
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCommandLineParser>
 #include <QtCore/QCryptographicHash>
@@ -73,7 +74,9 @@ int main(int argc, char **argv) {
     const QString direction = (target == "zh" ? "en-zh" : "zh-en");
     std::unique_ptr<ctranslate2::Translator> translator;
     sentencepiece::SentencePieceProcessor sourceTokenizer, targetTokenizer;
-    QJsonArray translated; int done = 0, outputTokens = 0;
+    QJsonArray translated; int done = 0, outputTokens = 0, protectedTerms = 0, termFallbacks = 0;
+    QStringList pageTexts; for(const auto &block:blocks)pageTexts<<block.toObject()["text"].toString();
+    const TranslationTerminology terminology(pageTexts);
     const auto load = [&] {
       if (translator) return;
       event({{"phase", "loading"}, {"done", done}, {"total", blocks.size()}});
@@ -91,14 +94,7 @@ int main(int argc, char **argv) {
       translator = std::make_unique<ctranslate2::Translator>(folder.toStdString(), ctranslate2::Device::CPU,
                                     ctranslate2::ComputeType::INT8, std::vector<int>{0}, false, config);
     };
-    for (const auto &value : blocks) {
-      const auto block = value.toObject();
-      const auto text = block["text"].toString().trimmed();
-      if (text.size() > 16000) throw std::runtime_error("单个文字区域过长，请缩小截图区域。");
-      const auto language = selectedSource == "auto" ? (hasChinese(text) ? "zh" : "en") : selectedSource;
-      QString output = text;
-      const bool unchanged = !hasLetters(text) || language == target;
-      if (!unchanged) {
+    const auto translateText = [&](const QString &text) {
         load();
         std::vector<std::string> tokens;
         const auto status = sourceTokenizer.Encode(text.toStdString(), &tokens);
@@ -132,17 +128,42 @@ int main(int argc, char **argv) {
           if (!targetTokenizer.Decode(translatedTokens, &decoded).ok()) throw std::runtime_error("译文解码失败。");
           pieces << QString::fromStdString(decoded); outputTokens += int(translatedTokens.size()); start = end;
         }
-        output = pieces.join(target == "zh" ? QString() : QString(" ")).trimmed();
+        const auto output = pieces.join(target == "zh" ? QString() : QString(" ")).trimmed();
         if (output.isEmpty()) throw std::runtime_error("翻译结果为空，已保留原文。");
+        return output;
+    };
+    for (const auto &value : blocks) {
+      const auto block = value.toObject();
+      const auto text = block["text"].toString().trimmed();
+      if (text.size() > 16000) throw std::runtime_error("单个文字区域过长，请缩小截图区域。");
+      const auto language = selectedSource == "auto" ? (hasChinese(text) ? "zh" : "en") : selectedSource;
+      const auto protectedText=terminology.protect(text);
+      protectedTerms+=int(protectedText.replacements.size());
+      QString output = text;
+      const bool unchanged = !hasLetters(text) || language == target || protectedText.onlyTerms;
+      if (!unchanged) {
+        output=translateText(protectedText.masked);
+        if(!protectedText.restore(&output)) {
+          // A changed, missing or duplicated placeholder must never turn a
+          // product name into an invented translation. Fall back to translating
+          // prose spans while copying every protected identifier verbatim.
+          ++termFallbacks; output.clear();
+          for(const auto &piece:protectedText.pieces) {
+            const auto part=piece.protectedTerm || !hasLetters(piece.text) ? piece.text : translateText(piece.text.trimmed());
+            if(target=="en" && !output.isEmpty() && !part.isEmpty() && output.back().isLetterOrNumber() && part.front().isLetterOrNumber())output+=' ';
+            output+=part;
+          }
+        }
       }
       QJsonObject item{{"id", block["id"]}, {"text", output}, {"source", language}, {"unchanged", unchanged}};
       translated.append(item); ++done;
-      event({{"phase", "translating"}, {"done", done}, {"total", blocks.size()}, {"block", item}});
+      event({{"phase", "translating"}, {"done", done}, {"total", blocks.size()}});
     }
     PROCESS_MEMORY_COUNTERS_EX memory{}; memory.cb = sizeof(memory);
     GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&memory), sizeof(memory));
     result = {{"blocks", translated}, {"elapsed_ms", total.elapsed()}, {"output_tokens", outputTokens},
               {"peak_working_set", qint64(memory.PeakWorkingSetSize)}, {"private_bytes", qint64(memory.PrivateUsage)},
+              {"protected_terms",protectedTerms},{"term_fallbacks",termFallbacks},
               {"engine", "CTranslate2 4.6.0 / Ruy / CPU INT8"}};
   } catch (const std::exception &error) {
     result = {{"error", QString::fromUtf8(error.what())}, {"elapsed_ms", total.elapsed()}};

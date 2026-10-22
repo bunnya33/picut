@@ -1,4 +1,5 @@
 #include "image_translation.h"
+#include "translation_terms.h"
 #include "store.h"
 #include <QtCore/QDir>
 #include <QtCore/QFile>
@@ -104,6 +105,79 @@ private slots:
     QCOMPARE(page.text(),page.blocks[0].translated);
     page.blocks[0].unchanged = true; QCOMPARE(page.render(image),image);
   }
+  void anchoredLayoutKeepsImageWhenControlsMove() {
+    for(const auto &available:{QRect(0,0,1920,1032),QRect(-1920,0,1920,1032)}) {
+      for(auto image:{QRect(80,60,800,500),QRect(1050,410,800,500),QRect(0,0,1920,1080),QRect(10,970,80,40)}) {
+        image.translate(available.topLeft());
+        for(bool panel:{false,true}) {
+          const auto layout=ImageTranslationLayout::arrange(image,available,{510,36},panel);
+          QCOMPARE(layout.image.translated(layout.window.topLeft()),image);
+          QVERIFY(available.contains(layout.toolbar.translated(layout.window.topLeft())));
+          QVERIFY(available.contains(layout.status.translated(layout.window.topLeft())));
+          if(panel)QVERIFY(available.contains(layout.panel.translated(layout.window.topLeft())));
+        }
+      }
+    }
+    const auto right=ImageTranslationLayout::arrange({1100,200,800,500},{0,0,1920,1032},{510,36},true);
+    QVERIFY(right.panel.right()<right.image.left());
+  }
+  void scanAnimationPublishesOnlyCompleteResult() {
+    QTemporaryDir dir; Store store(dir.path()); QWidget parent; parent.move(35,20); parent.show();
+    QJsonObject ocr; const auto original=fixture(&ocr);
+    ImageTranslationOverlay overlay(&parent,&store,[]{return QRect(200,180,800,520);});
+    overlay.begin(original,false); overlay.setOcrResult(ocr,false);
+    const auto position=overlay.sourceGlobalRect(); QCOMPARE(overlay.imageGlobalRect(),position);
+    overlay.setPanelVisible(true); QCOMPARE(overlay.imageGlobalRect(),position);
+    overlay.setPanelVisible(false); QCOMPARE(overlay.imageGlobalRect(),position);
+    QVERIFY(overlay.isBusy()); QVERIFY(!overlay.hasCompletedTranslation());
+    auto canvas=overlay.findChild<QWidget *>("translationCanvas"); QVERIFY(canvas);
+    QTest::qWait(400); const auto scan=canvas->grab().toImage(); QTest::qWait(160);
+    QVERIFY(scan!=canvas->grab().toImage());
+    auto job=overlay.findChild<LocalTranslationJob *>(); QVERIFY(job);
+    job->blockFinished({{"id",0},{"text","这个部分结果必须保持不可见"}});
+    QTest::qWait(140);
+    QCOMPARE(overlay.translatedImage(),original); QVERIFY(overlay.page().blocks[0].translated.isEmpty());
+    QVERIFY(!overlay.findChild<QToolButton *>("translation_copy")->isEnabled());
+    QVERIFY(overlay.grab().save(artifact+"/translation-loading.png"));
+    QJsonArray values; for(const auto &block:overlay.page().blocks)values.append(QJsonObject{{"id",block.id},{"text","完整结果"}});
+    overlay.setTranslationResult({{"blocks",values}});
+    QVERIFY(!overlay.isBusy()); QVERIFY(overlay.hasCompletedTranslation());
+    QVERIFY(overlay.translatedImage()!=original); QCOMPARE(overlay.imageGlobalRect(),position);
+    overlay.finish(); overlay.begin(original,false);
+    overlay.setShowingOriginal(true); QVERIFY(!overlay.showingOriginal());
+    overlay.setTranslationResult({{"error","模拟翻译失败"}});
+    QVERIFY(!overlay.isBusy()); QVERIFY(!overlay.hasCompletedTranslation()); QCOMPARE(overlay.translatedImage(),original);
+    overlay.setPanelVisible(true);
+    auto panel=overlay.findChild<QPlainTextEdit *>("translationText"); QVERIFY(panel);
+    QCOMPARE(panel->toPlainText(),overlay.page().text(true));
+    const auto point=canvas->mapFrom(&overlay,overlay.imageToView(overlay.page().blocks[1].bounds.center()).toPoint());
+    QTest::mouseClick(canvas,Qt::LeftButton,Qt::NoModifier,point);
+    QCOMPARE(panel->textCursor().selectedText(),overlay.page().blocks[1].original);
+    overlay.finish();
+    QImage dark(800,520,QImage::Format_ARGB32); dark.fill(QColor("#22232d"));
+    { QPainter p(&dark); p.setPen(QColor("#f2f2f3")); p.setFont(QFont("Microsoft YaHei",12));
+      p.drawText(20,40,"picut · 图片翻译");
+      for(int row=0;row<9;++row)p.drawText(20,95+row*44,"正在识别并翻译图片中的文字，完成后统一显示结果。"); }
+    overlay.begin(dark,false); QTest::qWait(730);
+    QCOMPARE(overlay.sourceImage(),dark); QCOMPARE(overlay.translatedImage(),dark);
+    QVERIFY(overlay.grab().save(artifact+"/translation-loading-dark.png"));
+    overlay.finish();
+  }
+  void terminologyProtectsIdentifiersAndRejectsMissingMarkers() {
+    TranslationTerminology glossary({"HybridCLR", "hybridclr is a native C# runtime."});
+    for(const auto &text:{QString("HybridCLR"),QString("CLR"),QString("C++"),QString("il2cpp"),
+                         QString("https://www.hybridclr.cn/docs"),QString(".NET"),QString("mail@example.com")}) {
+      const auto protectedText=glossary.protect(text); QVERIFY(protectedText.onlyTerms);
+      auto translated=protectedText.masked; QVERIFY(protectedText.restore(&translated)); QCOMPARE(translated,text);
+    }
+    const auto protectedText=glossary.protect("hybridclr integrates CLR and il2cpp using C++.");
+    QCOMPARE(protectedText.replacements.size(),4); QVERIFY(!protectedText.onlyTerms);
+    auto missing=QString("错误结果"); QVERIFY(!protectedText.restore(&missing));
+    auto duplicate=protectedText.masked+' '+protectedText.replacements[0].first;
+    QVERIFY(!protectedText.restore(&duplicate));
+    for(const auto &label:{QString("My Site Logo"),QString("Quick Start Guide"),QString("THIS IS A TEST")})
+      QVERIFY(glossary.protect(label).replacements.isEmpty());
+  }
   void workspaceComparisonSelectionAndCancel() {
     QTemporaryDir dir; Store store(dir.path()); QWidget parent; parent.show();
     QJsonObject ocr; const auto image=fixture(&ocr);
@@ -162,6 +236,27 @@ private slots:
     QCOMPARE(blocks[1].toObject()["text"].toString(),QString("取消"));
     QCOMPARE(blocks[2].toObject()["text"].toString(),QString("复制"));
     QCOMPARE(blocks[3].toObject()["text"].toString(),QString("关闭"));
+  }
+  void workerPreservesTechnicalNamesInBothDirections() {
+    const auto value=worker(QJsonArray{QJsonObject{{"id",0},{"text","HybridCLR"}},
+        QJsonObject{{"id",1},{"text","HybridCLR is a native runtime implementation, so calling ..."}},
+        QJsonObject{{"id",2},{"text","hybridclr is the core code of the interpreter part, including ..."}},
+        QJsonObject{{"id",3},{"text","C++ implementation, deep integration with il2cpp and CLR."}},
+        QJsonObject{{"id",4},{"text","https://www.hybridclr.cn"}}},"zh");
+    QVERIFY2(!value.contains("error"),qPrintable(value["error"].toString()));
+    const auto blocks=value["blocks"].toArray(); QCOMPARE(blocks.size(),5);
+    QCOMPARE(blocks[0].toObject()["text"].toString(),QString("HybridCLR"));
+    QVERIFY(blocks[0].toObject()["unchanged"].toBool());
+    QVERIFY(blocks[1].toObject()["text"].toString().contains("HybridCLR"));
+    QVERIFY(blocks[2].toObject()["text"].toString().contains("hybridclr"));
+    const auto mixed=blocks[3].toObject()["text"].toString();
+    QVERIFY2(mixed.contains("C++") && mixed.contains("il2cpp") && mixed.contains("CLR"),qPrintable(mixed));
+    QVERIFY(mixed.contains(QRegularExpression("[\\x{4e00}-\\x{9fff}]")));
+    QCOMPARE(blocks[4].toObject()["text"].toString(),QString("https://www.hybridclr.cn"));
+    const auto english=worker(QJsonArray{QJsonObject{{"id",0},{"text","HybridCLR 使用 CLR 和 C++，请先安装 SDK。"}}},"en");
+    QVERIFY2(!english.contains("error"),qPrintable(english["error"].toString()));
+    const auto output=english["blocks"].toArray()[0].toObject()["text"].toString();
+    for(const auto &term:{"HybridCLR","CLR","C++","SDK"})QVERIFY2(output.contains(term),qPrintable(output));
   }
   void cancellationCleansTemporaryText() {
     LocalTranslationJob job; QSignalSpy finished(&job,&LocalTranslationJob::finished);
@@ -262,6 +357,27 @@ private slots:
     QVERIFY(overlay.hasCompletedTranslation()); QCOMPARE(overlay.displayedImage(),result);
     QVERIFY(!overlay.findChild<LocalTranslationJob *>()->running());
     overlay.finish();
+  }
+  void referenceScreenshotTranslation() {
+    const auto file=qEnvironmentVariable("PICUT_TRANSLATION_REFERENCE_IMAGE");
+    if(file.isEmpty())QSKIP("Set PICUT_TRANSLATION_REFERENCE_IMAGE to check a supplied screenshot.");
+    const auto reportSize=report.size();
+    const auto privateReport=qScopeGuard([&]{while(report.size()>reportSize)report.removeLast();});
+    const QImage image(file); QVERIFY(!image.isNull());
+    PaddleOcrJob job; QSignalSpy completed(&job,&PaddleOcrJob::finished);
+    job.start(image,"common",0,"cpu"); QTRY_VERIFY_WITH_TIMEOUT(!completed.isEmpty(),30000);
+    const auto ocr=completed.first().first().toJsonObject(); QVERIFY2(!ocr.contains("error"),qPrintable(ocr["error"].toString()));
+    TranslationPage page; page.load(image,ocr); const auto result=worker(page.request(),"zh");
+    QVERIFY2(!result.contains("error"),qPrintable(result["error"].toString()));
+    for(const auto &value:result["blocks"].toArray()) {
+      const auto block=value.toObject(); const auto original=page.blocks[block["id"].toInt()].original;
+      if(original.contains("HybridCLR",Qt::CaseInsensitive))QVERIFY2(block["text"].toString().contains("HybridCLR",Qt::CaseInsensitive),qPrintable(block["text"].toString()));
+      page.apply(block);
+    }
+    const auto translated=page.render(image);
+    QVERIFY(translated!=image); QVERIFY(image.save(artifact+"/reference-source.png"));
+    QVERIFY(translated.save(artifact+"/reference-translated.png"));
+    QVERIFY(Store::writeJson(artifact+"/reference-translation-report.json",QJsonObject{{"ocr",ocr},{"translation",result}}));
   }
   void cleanupTestCase() { QVERIFY(Store::writeJson(artifact+"/translation-report.json",report)); }
 };
