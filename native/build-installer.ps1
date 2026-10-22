@@ -1,13 +1,16 @@
 ﻿[CmdletBinding()]
-param([string]$PackageDir, [string]$Iscc, [switch]$TranslationTrial)
+param([string]$PackageDir, [string]$Iscc, [switch]$TranslationTrial, [switch]$ScrollTrial)
 $ErrorActionPreference = 'Stop'
+if ($TranslationTrial -and $ScrollTrial) { throw 'Choose one installer identity.' }
 $picutRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.26' }
+if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.27-scroll-trial' }
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $picutMain = Join-Path $PackageDir 'picut.exe'
 $picutVersion = (Get-Item -LiteralPath $picutMain).VersionInfo.ProductVersion
 if ($picutVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'picut.exe has no valid three-part product version.' }
 if ((Get-Item -LiteralPath $picutMain).VersionInfo.ProductName -like '*翻译试用版*' -and -not $TranslationTrial) { throw 'Pass -TranslationTrial to use the separate installer identity and directory.' }
+
+if ((Get-Item -LiteralPath $picutMain).VersionInfo.ProductName -like '*长截图试验版*' -and -not $ScrollTrial) { throw 'Pass -ScrollTrial for the separate installer identity.' }
 
 $picutRequired = @(
     'picut.exe', 'picut.ico', 'NativeVideoPreview.dll', 'ffmpeg.exe',
@@ -55,7 +58,7 @@ $picutPayload = Join-Path $picutStage 'payload'
 New-Item -ItemType Directory -Path $picutPayload -Force | Out-Null
 Get-ChildItem -LiteralPath $PackageDir -File | Where-Object {
     $_.Extension -in @('.exe', '.dll', '.ico', '.conf') -or
-    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd', '更新记录-v0.5.26-正式翻译与Shift画笔.md')
+    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd', '试验版-v0.5.27-长截图重做.md', '更新记录-v0.5.26-正式翻译与Shift画笔.md')
 } | Copy-Item -Destination $picutPayload
 Get-ChildItem -LiteralPath $PackageDir -Directory | Where-Object {
     $_.Name -notin @('annotation-previews', 'image-text-previews', 'translation-previews')
@@ -75,10 +78,10 @@ $picutManifest = @($picutFiles | Sort-Object FullName | ForEach-Object {
 $picutEncoding = New-Object Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $picutStage 'payload-manifest.json'), ($picutManifest | ConvertTo-Json -Depth 5), $picutEncoding)
 $picutOutputDir = Join-Path $picutRoot 'dist'
-[string[]]$picutTrialArguments = if ($TranslationTrial) { @('/DTranslationTrial=1') } else { @() }
+[string[]]$picutTrialArguments = if ($ScrollTrial) { @('/DScrollTrial=1') } elseif ($TranslationTrial) { @('/DTranslationTrial=1') } else { @() }
 & $Iscc @picutTrialArguments ('/DAppVersion=' + $picutVersion) ('/DPayloadDir=' + $picutPayload) ('/DInstallerOutputDir=' + $picutOutputDir) ('/DChineseMessages=' + $picutChinese) (Join-Path $PSScriptRoot 'picut.iss')
 if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed: $LASTEXITCODE" }
-$picutSuffix = if ($TranslationTrial) { '-translation-trial-setup-x64.exe' } else { '-setup-x64.exe' }
+$picutSuffix = if ($ScrollTrial) { '-scroll-trial-setup-x64.exe' } elseif ($TranslationTrial) { '-translation-trial-setup-x64.exe' } else { '-setup-x64.exe' }
 $picutInstaller = Join-Path $picutOutputDir ('picut-' + $picutVersion + $picutSuffix)
 $picutInstallerHash = (Get-FileHash -LiteralPath $picutInstaller -Algorithm SHA256).Hash
 [IO.File]::WriteAllText(($picutInstaller + '.sha256'), ($picutInstallerHash + '  ' + [IO.Path]::GetFileName($picutInstaller) + "`r`n"), [Text.Encoding]::ASCII)

@@ -1,15 +1,18 @@
 ﻿[CmdletBinding()]
-param([string]$QtDir, [string]$Ffmpeg, [string]$PackageDir, [switch]$SkipBuild, [switch]$NoZip)
+param([string]$QtDir, [string]$Ffmpeg, [string]$PackageDir, [string]$BuildDir, [switch]$SkipBuild, [switch]$NoZip)
 $ErrorActionPreference = 'Stop'
 $floatshotRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if (-not $BuildDir) { $BuildDir = Join-Path $floatshotRoot 'build/native-scroll-v2' }
+$BuildDir = [IO.Path]::GetFullPath($BuildDir)
 if (-not $QtDir) { $QtDir = Join-Path $floatshotRoot 'build/native-sdk/qt' }
 if (-not $Ffmpeg) { $Ffmpeg = Join-Path $floatshotRoot 'build/native-sdk/ffmpeg.exe' }
 if (-not (Test-Path -LiteralPath $Ffmpeg)) { throw 'FFmpeg missing. Run native/setup-sdk.ps1 or pass -Ffmpeg.' }
-if (-not $SkipBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -QtDir $QtDir }
-$floatshotPackage = if ($PackageDir) { [IO.Path]::GetFullPath($PackageDir) } else { Join-Path $floatshotRoot 'dist/picut-0.5.26' }
+if (-not $SkipBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -QtDir $QtDir -BuildDir $BuildDir }
+$floatshotPackage = if ($PackageDir) { [IO.Path]::GetFullPath($PackageDir) } else { Join-Path $floatshotRoot 'dist/picut-0.5.27-scroll-trial' }
+if ($floatshotPackage -notmatch 'scroll-trial') { throw 'Use a separate scroll-trial package directory.' }
 New-Item -ItemType Directory -Path $floatshotPackage -Force | Out-Null
 foreach ($floatshotBinary in @('picut.exe', 'NativeVideoPreview.dll', 'FloatShotPaddleOcr.exe', 'onnxruntime.dll', 'FloatShotTranslate.exe', 'ctranslate2.dll')) {
-    Copy-Item -LiteralPath (Join-Path $floatshotRoot ('build/native/' + $floatshotBinary)) -Destination $floatshotPackage -Force
+    Copy-Item -LiteralPath (Join-Path $BuildDir $floatshotBinary) -Destination $floatshotPackage -Force
 }
 $picutTranslationSource = Join-Path $floatshotRoot 'build/translation-sdk/models'
 $picutTranslationManifest = Get-Content -LiteralPath (Join-Path $picutTranslationSource 'models.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -25,22 +28,23 @@ foreach ($picutDirection in $picutTranslationManifest.models.PSObject.Properties
         if ((Get-FileHash -LiteralPath (Join-Path $picutDirectionTarget $picutModelFile.Name)).Hash -ne $picutModelFile.Value) { throw 'Translation model checksum mismatch.' }
     }
 }
+Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/试验版-v0.5.27-长截图重做.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.26-正式翻译与Shift画笔.md') -Destination $floatshotPackage -Force
-foreach ($picutReport in @('native-v0.5.26-tests.txt','native-v0.5.26-translation-tests.txt')) {
+foreach ($picutReport in @('native-v0.5.27-tests.txt','native-v0.5.27-scroll-v2-tests.txt','native-v0.5.27-translation-tests.txt','native-v0.5.27-ocr-tests.txt')) {
     $picutReportSource = Join-Path $floatshotRoot ('.test-artifacts/' + $picutReport)
     if (Test-Path -LiteralPath $picutReportSource) { Copy-Item -LiteralPath $picutReportSource -Destination $floatshotPackage -Force }
 }
 $floatshotGpuFolder = Join-Path $floatshotPackage 'gpu'
 New-Item -ItemType Directory -Path $floatshotGpuFolder -Force | Out-Null
 foreach ($floatshotGpuFile in @('FloatShotPaddleOcr.exe','onnxruntime.dll','onnxruntime_providers_shared.dll','DirectML.dll')) {
-    Copy-Item -LiteralPath (Join-Path $floatshotRoot ('build/native/gpu/' + $floatshotGpuFile)) -Destination $floatshotGpuFolder -Force
+    Copy-Item -LiteralPath (Join-Path $BuildDir ('gpu/' + $floatshotGpuFile)) -Destination $floatshotGpuFolder -Force
 }
 $floatshotOcrFolder = Join-Path $floatshotPackage 'ocr'
 New-Item -ItemType Directory -Path $floatshotOcrFolder -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $floatshotRoot 'build/native/ocr/models.json') -Destination $floatshotOcrFolder -Force
+Copy-Item -LiteralPath (Join-Path $BuildDir 'ocr/models.json') -Destination $floatshotOcrFolder -Force
 $floatshotModelManifest = Get-Content -LiteralPath (Join-Path $floatshotOcrFolder 'models.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 foreach ($floatshotChecksum in $floatshotModelManifest.checksums.PSObject.Properties) {
-    Copy-Item -LiteralPath (Join-Path $floatshotRoot ('build/native/ocr/' + $floatshotChecksum.Name)) -Destination $floatshotOcrFolder -Force
+    Copy-Item -LiteralPath (Join-Path $BuildDir ('ocr/' + $floatshotChecksum.Name)) -Destination $floatshotOcrFolder -Force
     $floatshotModelFile = Join-Path $floatshotPackage ('ocr/' + $floatshotChecksum.Name)
     if ((Get-FileHash -LiteralPath $floatshotModelFile).Hash -ne $floatshotChecksum.Value) { throw "Packaged OCR model checksum mismatch: $floatshotModelFile" }
 }

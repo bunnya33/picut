@@ -4,6 +4,9 @@
 #include <memory>
 #include <algorithm>
 #include <QtCore/QDebug>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <wrl/client.h>
 
 namespace {
 qint64 monotonicNs() {
@@ -45,10 +48,87 @@ private:
   void *pixels=nullptr;
   QImage last;
 };
+
+class DuplicationGrabber {
+  template<class T> using ComPtr=Microsoft::WRL::ComPtr<T>;
+public:
+  explicit DuplicationGrabber(QRect value):region(value) {
+    ComPtr<IDXGIFactory1> factory;
+    HRESULT hr=CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    if(FAILED(hr)) { failure=QString("DXGI factory 0x%1").arg(quint32(hr),8,16,QChar('0')); return; }
+    for(UINT a=0;;++a) {
+      ComPtr<IDXGIAdapter1> adapter;
+      if(factory->EnumAdapters1(a,&adapter)==DXGI_ERROR_NOT_FOUND) break;
+      for(UINT o=0;;++o) {
+        ComPtr<IDXGIOutput> output;
+        if(adapter->EnumOutputs(o,&output)==DXGI_ERROR_NOT_FOUND) break;
+        DXGI_OUTPUT_DESC desc{}; if(FAILED(output->GetDesc(&desc))) continue;
+        const auto r=desc.DesktopCoordinates;
+        const QRect bounds(r.left,r.top,r.right-r.left,r.bottom-r.top);
+        if(!desc.AttachedToDesktop || !bounds.contains(region)) continue;
+        if(desc.Rotation!=DXGI_MODE_ROTATION_IDENTITY) { failure="rotated display uses GDI"; return; }
+        origin=bounds.topLeft();
+        hr=D3D11CreateDevice(adapter.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                             nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context);
+        if(FAILED(hr)) { failure=QString("D3D device 0x%1").arg(quint32(hr),8,16,QChar('0')); return; }
+        ComPtr<IDXGIOutput1> output1; hr=output.As(&output1);
+        if(SUCCEEDED(hr)) hr=output1->DuplicateOutput(device.Get(),&duplication);
+        if(FAILED(hr)) { failure=QString("DuplicateOutput 0x%1").arg(quint32(hr),8,16,QChar('0')); return; }
+        D3D11_TEXTURE2D_DESC stagingDesc{};
+        stagingDesc.Width=UINT(region.width()); stagingDesc.Height=UINT(region.height());
+        stagingDesc.MipLevels=1; stagingDesc.ArraySize=1; stagingDesc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;
+        stagingDesc.SampleDesc.Count=1; stagingDesc.Usage=D3D11_USAGE_STAGING; stagingDesc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+        hr=device->CreateTexture2D(&stagingDesc,nullptr,&staging);
+        if(FAILED(hr)) { failure="DXGI staging texture unavailable"; duplication.Reset(); }
+        return;
+      }
+    }
+    failure="selection is not within one active display";
+  }
+  bool ready() const { return duplication && staging; }
+  bool hasFrame() const { return !last.isNull(); }
+  QString error() const { return failure; }
+  QImage grab() {
+    if(!ready()) return {};
+    DXGI_OUTDUPL_FRAME_INFO info{}; ComPtr<IDXGIResource> resource;
+    auto hr=duplication->AcquireNextFrame(16,&info,&resource);
+    if(hr==DXGI_ERROR_WAIT_TIMEOUT) return last;
+    if(FAILED(hr)) { failure=QString("AcquireNextFrame 0x%1").arg(quint32(hr),8,16,QChar('0')); duplication.Reset(); return {}; }
+    ComPtr<ID3D11Texture2D> texture; hr=resource.As(&texture);
+    if(SUCCEEDED(hr)) {
+      const auto offset=region.topLeft()-origin;
+      const D3D11_BOX box{UINT(offset.x()),UINT(offset.y()),0,UINT(offset.x()+region.width()),UINT(offset.y()+region.height()),1};
+      context->CopySubresourceRegion(staging.Get(),0,0,0,0,texture.Get(),0,&box);
+      D3D11_MAPPED_SUBRESOURCE mapped{};
+      hr=context->Map(staging.Get(),0,D3D11_MAP_READ,0,&mapped);
+      if(SUCCEEDED(hr)) {
+        QImage image(region.size(),QImage::Format_RGB32);
+        if(!image.isNull()) for(int y=0;y<image.height();++y) {
+          auto target=reinterpret_cast<QRgb *>(image.scanLine(y));
+          const auto source=reinterpret_cast<const QRgb *>(static_cast<const uchar *>(mapped.pData)+size_t(y)*mapped.RowPitch);
+          for(int x=0;x<image.width();++x) target[x]=source[x]|0xff000000;
+        }
+        context->Unmap(staging.Get(),0); last=std::move(image);
+      }
+    }
+    duplication->ReleaseFrame();
+    if(FAILED(hr)) { failure="DXGI texture read failed"; duplication.Reset(); return {}; }
+    return last;
+  }
+private:
+  QRect region; QPoint origin; QString failure; QImage last;
+  ComPtr<ID3D11Device> device;
+  ComPtr<ID3D11DeviceContext> context;
+  ComPtr<IDXGIOutputDuplication> duplication;
+  ComPtr<ID3D11Texture2D> staging;
+};
 }
 ScrollFramePump::ScrollFramePump(QRect area,std::function<QImage()> value)
     :region(area),provider(std::move(value)) {}
 ScrollFramePump::~ScrollFramePump() { stop(); }
+QString ScrollFramePump::backendName() const { std::lock_guard lock(mutex); return backend; }
+QString ScrollFramePump::captureError() const { std::lock_guard lock(mutex); return error; }
+void ScrollFramePump::setExternalBackend(const QString &name) { std::lock_guard lock(mutex); backend=name; }
 void ScrollFramePump::stop() {
   { std::lock_guard lock(mutex); stopping=true; }
   wake.notify_all(); wait();
@@ -75,8 +155,9 @@ void ScrollFramePump::enqueue(const QImage &frame) {
   if(!captured) firstCapture=now;
   else maximumCaptureInterval=qMax(maximumCaptureInterval.load(),now-lastCapture.load());
   lastCapture=now; ++captured;
-  const size_t capacity=size_t(std::clamp<qint64>(32*1024*1024/qMax<qint64>(1,frame.sizeInBytes()),2,8));
+  const size_t capacity=size_t(std::clamp<qint64>(96*1024*1024/qMax<qint64>(1,frame.sizeInBytes()),3,32));
   if(latest==frame) return;
+  ++changed;
   const int hint=now-directionAt.load()<600000000?direction.load():0;
   frames.push_back({quint64(captured.load()),{frame,hint,now}}); latest=frame;
   // Spread retained samples across the pending interval, keeping both ends.
@@ -91,17 +172,47 @@ void ScrollFramePump::enqueue(const QImage &frame) {
 }
 void ScrollFramePump::run() {
   std::unique_ptr<RegionGrabber> grabber;
-  if(!provider) grabber=std::make_unique<RegionGrabber>(region);
+  std::unique_ptr<DuplicationGrabber> duplication;
+  if(!provider) duplication=std::make_unique<DuplicationGrabber>(region);
+  if(provider) setExternalBackend("test provider");
+  else if(duplication->ready()) setExternalBackend("DXGI Desktop Duplication");
+  else {
+    qWarning()<<"Scroll acquisition fallback:"<<duplication->error();
+    setExternalBackend("GDI fallback ("+duplication->error()+")");
+    duplication.reset(); grabber=std::make_unique<RegionGrabber>(region);
+  }
+  qInfo()<<"Scroll capture backend:"<<backendName();
+  const auto acquisitionStarted=monotonicNs();
   for(;;) {
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(12);
     { std::lock_guard lock(mutex); if(stopping) break; }
-    auto frame=provider?provider():grabber->grab();
+    auto frame=provider?provider():duplication?duplication->grab():grabber->grab();
+    if(duplication && !duplication->hasFrame() && monotonicNs()-acquisitionStarted>1000000000) {
+      qWarning()<<"Scroll acquisition fallback: DXGI supplied no initial desktop frame";
+      setExternalBackend("GDI fallback (DXGI supplied no initial desktop frame)");
+      duplication.reset(); grabber=std::make_unique<RegionGrabber>(region); frame=grabber->grab();
+    }
+    if(duplication && !duplication->ready()) {
+      qWarning()<<"Scroll acquisition fallback:"<<duplication->error();
+      setExternalBackend("GDI fallback ("+duplication->error()+")");
+      duplication.reset(); grabber=std::make_unique<RegionGrabber>(region); frame=grabber->grab();
+    }
+    { std::lock_guard lock(mutex); error=frame.isNull() && !duplication?QStringLiteral("未能读取画面，请检查窗口或结束当前截图"):QString(); }
     enqueue(frame);
     std::unique_lock lock(mutex);
     if(wake.wait_until(lock,deadline,[&] { return stopping; })) break;
   }
 }
-ScrollMatchPump::ScrollMatchPump(ScrollFramePump *value,ScrollStitcher *stitcher):source(value),target(stitcher) {}
+ScrollMatchPump::ScrollMatchPump(ScrollFramePump *value,ScrollStitcher *stitcher):source(value) {
+  engineName="legacy comparison";
+  accept=[stitcher](const QImage &image,int direction) { return stitcher->accept(image,direction); };
+  getPreview=[stitcher] { return stitcher->preview(); }; getRevision=[stitcher] { return stitcher->contentRevision(); };
+}
+ScrollMatchPump::ScrollMatchPump(ScrollFramePump *value,ScrollStitcherV2 *stitcher):source(value) {
+  engineName="V2 document-coordinate matcher";
+  accept=[stitcher](const QImage &image,int direction) { return stitcher->accept(image,direction); };
+  getPreview=[stitcher] { return stitcher->preview(); }; getRevision=[stitcher] { return stitcher->contentRevision(); };
+}
 ScrollMatchPump::~ScrollMatchPump() { stop(); }
 void ScrollMatchPump::stop(bool drain) {
   draining=drain; stopping=true; wait();
@@ -124,19 +235,20 @@ void ScrollMatchPump::run() {
     previous=sample.image;
     const auto before=monotonicNs();
     maximumAge=qMax(maximumAge,before-sample.capturedAtNs);
-    const auto result=target->accept(sample.image,sample.direction);
+    const auto result=accept(sample.image,sample.direction);
     const auto elapsed=monotonicNs()-before;
     ++processed; totalNs+=elapsed; maximumNs=qMax(maximumNs,elapsed);
     if(result==ScrollStitcher::NoOverlap || result==ScrollStitcher::BoundaryMismatch) ++failures;
     {
       std::lock_guard lock(mutex);
       update.result=result; ++update.serial;
-      if(update.preview.revision!=target->contentRevision()) update.preview=target->preview();
+      if(update.preview.revision!=getRevision() || result==ScrollStitcher::Revisited) update.preview=getPreview();
     }
     if(result==ScrollStitcher::CacheError || result==ScrollStitcher::LimitReached) break;
   }
   qInfo()<<"Scroll session: elapsed_ms"<<(monotonicNs()-started)/1000000
-         <<"captured"<<source->frameCount()<<"capture_fps"<<source->captureRate()
+         <<"engine"<<engineName<<"backend"<<source->backendName()
+         <<"sample_polls"<<source->frameCount()<<"sample_poll_hz"<<source->captureRate()<<"changed_frames"<<source->changedFrameCount()
          <<"capture_interval_max_ms"<<source->maximumCaptureIntervalMs()
          <<"coalesced"<<source->droppedCount()<<"matched"<<processed
          <<"alignment_failures"<<failures<<"match_mean_ms"<<(processed?totalNs/processed/1000000.:0.)

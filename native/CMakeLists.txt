@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.24)
-project(FloatShotNative VERSION 0.5.26 LANGUAGES CXX RC)
+project(FloatShotNative VERSION 0.5.27 LANGUAGES CXX RC)
 # CMake can misdecode the Chinese MSVC /showIncludes prefix on UTF-8 consoles.
 if(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX MATCHES "娉ㄦ剰")
     set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件: ")
@@ -67,11 +67,11 @@ qt_add_executable(FloatShotNative WIN32
     src/store.h src/annotation.h src/toolbar.h src/capture.h src/pin.h
     src/editing.h src/recorder.h src/application.h src/native_windows.h app.rc)
 target_compile_definitions(FloatShotNative PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
-target_sources(FloatShotNative PRIVATE src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h)
+target_sources(FloatShotNative PRIVATE src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h src/scroll_stitcher_v2.cpp)
 set_target_properties(FloatShotNative PROPERTIES OUTPUT_NAME picut)
 target_compile_options(FloatShotNative PRIVATE /utf-8 /W4 /permissive-)
 target_link_libraries(FloatShotNative PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network
-    user32 gdi32 ole32 uuid shell32 dwmapi psapi avrt windowsapp ZXing::ZXing)
+    user32 gdi32 ole32 uuid shell32 dwmapi psapi avrt windowsapp d3d11 dxgi ZXing::ZXing)
 set(TOOLBAR_GLYPHS
     assets/toolbar/panel-check.png assets/toolbar/panel-up.png assets/toolbar/panel-down.png
     assets/toolbar/shapes.png assets/toolbar/arrow.png assets/toolbar/pen.png
@@ -86,6 +86,14 @@ qt_add_resources(FloatShotNative toolbar_icons PREFIX "/toolbar"
     BASE "assets/toolbar" FILES ${TOOLBAR_GLYPHS})
 include(CTest)
 if(BUILD_TESTING)
+    qt_add_executable(FloatShotScrollV2Tests tests/scroll_v2_tests.cpp
+        src/scroll_stitcher.cpp src/scroll_stitcher_v2.cpp src/scroll_grabber.cpp)
+    target_compile_definitions(FloatShotScrollV2Tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(FloatShotScrollV2Tests PRIVATE /utf-8 /W4)
+    target_include_directories(FloatShotScrollV2Tests PRIVATE src)
+    target_link_libraries(FloatShotScrollV2Tests PRIVATE Qt6::Test Qt6::Widgets user32 gdi32 d3d11 dxgi dwmapi)
+    add_test(NAME scroll-v2 COMMAND FloatShotScrollV2Tests)
+    set_tests_properties(scroll-v2 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PICUT_SCROLL_V2_TEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../.test-artifacts/native-v0.5.27-scroll-v2" TIMEOUT 180)
     qt_add_executable(FloatShotTranslationTests tests/translation_tests.cpp
         src/translation_terms.cpp src/translation_terms.h
         src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h
@@ -120,11 +128,11 @@ if(BUILD_TESTING)
         src/application.cpp src/application.h src/recording_overlay.cpp src/recording_overlay.h src/recording_settings.cpp src/recording_settings.h
         src/store.h src/annotation.h src/editing.h src/toolbar.h src/capture.h src/pin.h src/recorder.h src/menu.h)
     target_compile_definitions(FloatShotNativeTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
-    target_sources(FloatShotNativeTests PRIVATE src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h)
+    target_sources(FloatShotNativeTests PRIVATE src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h src/scroll_stitcher_v2.cpp)
     target_compile_options(FloatShotNativeTests PRIVATE /utf-8 /W4)
     target_include_directories(FloatShotNativeTests PRIVATE src)
     target_link_libraries(FloatShotNativeTests PRIVATE Qt6::Test Qt6::Widgets Qt6::Network
-        user32 gdi32 ole32 uuid shell32 dwmapi psapi avrt windowsapp ZXing::ZXing)
+        user32 gdi32 ole32 uuid shell32 dwmapi psapi avrt windowsapp d3d11 dxgi ZXing::ZXing)
     qt_add_resources(FloatShotNativeTests toolbar_icons PREFIX "/toolbar"
         BASE "assets/toolbar" FILES ${TOOLBAR_GLYPHS})
     qt_add_resources(FloatShotNativeTests toolbar_reference PREFIX "/fixtures"

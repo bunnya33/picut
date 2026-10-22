@@ -1,4 +1,6 @@
-﻿# picut v0.5.26 · native Windows release
+# picut v0.5.27 · scrolling capture V2 trial
+
+This branch is the independent scroll V2 trial. Build with `native/build.ps1 -BuildDir build/native-scroll-v2`, package with `native/package.ps1 -SkipBuild`, and create its separate installer with `native/build-installer.ps1 -ScrollTrial`. Use `run-scroll-trial.ps1`; the main `run.ps1` still starts v0.5.26. Trial data is isolated under `FloatShot/FloatShotNative-ScrollV2Trial`. See `docs/试验版-v0.5.27-长截图重做.md`. Release notes below describe the preserved official version.
 
 The accepted translation branch has been fast-forwarded into `main`. The original v0.5.21 baseline remains on `codex/picut-stable-before-translation`, tag `v0.5.21-before-local-translation`; v0.5.25 translation trial packages and tags remain available.
 

@@ -15,6 +15,14 @@
 #include <dwmapi.h>
 
 namespace {
+bool supportsCaptureExclusion() {
+  // Before 2004 WDA_EXCLUDEFROMCAPTURE behaves like WDA_MONITOR (black),
+  // even if Set/GetWindowDisplayAffinity accepts the flag value.
+  using VersionFunction=LONG(WINAPI *)(OSVERSIONINFOW *);
+  auto version=reinterpret_cast<VersionFunction>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"RtlGetVersion"));
+  OSVERSIONINFOW info{}; info.dwOSVersionInfoSize=sizeof(info);
+  return version && version(&info)==0 && (info.dwMajorVersion>10 || (info.dwMajorVersion==10 && info.dwBuildNumber>=19041));
+}
 ScrollCapture *inputSession = nullptr;
 LRESULT CALLBACK scrollMouseHook(int code, WPARAM kind, LPARAM raw) {
   if (code == HC_ACTION && kind == WM_MOUSEWHEEL && inputSession) {
@@ -48,6 +56,11 @@ protected:
     QPainter painter(this);
     painter.fillRect(rect(), Qt::white);
     stitcher->paint(painter, rect().adjusted(1, 1, -1, -1));
+    if(stitcher->viewportY>=0 && stitcher->size.height()>0) {
+      const double scale=double(height()-2)/stitcher->size.height();
+      painter.setPen(QPen(QColor("#f59b23"),2));
+      painter.drawRect(QRectF(1,1+stitcher->viewportY*scale,width()-2,stitcher->viewportHeight*scale));
+    }
     painter.setPen(QColor("#2080f0")); painter.drawRect(rect().adjusted(0,0,-1,-1));
   }
 private:
@@ -85,6 +98,7 @@ ScrollCapture::ScrollCapture(Store *value, QRect source, quintptr window, QWidge
   };
   automatic = button("automatic", "play", "自动向下滚动 / 暂停");
   automatic->setCheckable(true);
+  automatic->hide(); // The V2 trial validates manual capture first.
   connect(automatic, &QToolButton::clicked, this, &ScrollCapture::setAutomatic);
   connect(button("edit", "pen", "完成并标注"), &QToolButton::clicked,
           this, [this] { finish("edit"); });
@@ -94,7 +108,7 @@ ScrollCapture::ScrollCapture(Store *value, QRect source, quintptr window, QWidge
           &QToolButton::clicked, this, [this] { finish("cancel"); });
   connect(button("done", "done", "完成并复制 · Enter", QColor("#00b981")),
           &QToolButton::clicked, this, [this] { finish("copy"); });
-  status = new QLabel("滚动页面截取更多内容，也可点击 ▶ 自动滚动",this);
+  status = new QLabel("手动纵向滚动正文 · 避开固定栏和滚动条",this);
   status->setObjectName("scrollStatus");
   status->setWordWrap(true);
   status->setStyleSheet("background:rgba(28,28,28,210);color:white;padding:5px 8px;border-radius:3px;");
@@ -119,7 +133,7 @@ void ScrollCapture::begin(bool enableLive) {
   live = enableLive && QGuiApplication::platformName() == "windows";
   show();
   if (live && QGuiApplication::platformName() == "windows") {
-    excluded = excludeCapture(this);
+    excluded = supportsCaptureExclusion() && excludeCapture(this);
     if (!excluded) SetWindowDisplayAffinity(reinterpret_cast<HWND>(winId()), WDA_NONE);
     for (const auto binding : {QPair<int,UINT>{2201,VK_ESCAPE}, {2202,VK_RETURN}})
       if (RegisterHotKey(reinterpret_cast<HWND>(winId()), binding.first, MOD_NOREPEAT, binding.second))
@@ -135,10 +149,17 @@ void ScrollCapture::begin(bool enableLive) {
       // hide/restore and per-screen capture path instead.
       const QRect global=region.translated(pos());
       const auto screen=QGuiApplication::screenAt(global.center());
+      if(!screen || !screen->geometry().contains(global)) {
+        status->setText("试验版请在同一显示器内框选滚动正文；可完成或重新框选"); place(); return;
+      }
       framePump=std::make_unique<ScrollFramePump>(physicalRect(global));
       framePump->noteDirection(scrollDirection());
       backgroundAcquisition=screen && screen->geometry().contains(global) && excluded;
       if(backgroundAcquisition) framePump->start();
+      else {
+        framePump->setExternalBackend("GDI UI fallback (capture exclusion unavailable)");
+        qInfo()<<"Scroll capture backend:"<<framePump->backendName();
+      }
       matchSerial=0;
       matchPump=std::make_unique<ScrollMatchPump>(framePump.get(),&stitcher); matchPump->start();
       timer.start(backgroundAcquisition ? 8 : 16);
@@ -220,6 +241,9 @@ void ScrollCapture::sample() {
   capturing = true;
   auto guard = qScopeGuard([this] { capturing = false; });
   if(matchPump) {
+    if(!framePump->captureError().isEmpty()) {
+      status->setText(framePump->captureError()+"；已截内容保留"); place(); return;
+    }
     if(!backgroundAcquisition) framePump->enqueue(takeFrame());
     if(auto update=matchPump->takeUpdate(matchSerial)) {
       matchSerial=update->serial;
@@ -279,8 +303,8 @@ void ScrollCapture::reportAlignmentFailure(ScrollStitcher::Result result) {
   failureReported=true;
   setAutomatic(false);
   status->setText(result==ScrollStitcher::BoundaryMismatch
-      ? "滚动内容未到达框选的上下边缘，请重新框选实际滚动内容"
-      : "暂未找到可靠重叠，请回滚少许后继续；已截内容保留");
+      ? "画面内容不一致，请回滚重试，或避开固定栏重新框选；已截内容保留"
+      : "暂未找到连续重叠，请向回滚动到已截内容后继续；完成只导出已确认部分");
   place();
 }
 ScrollStitcher::Result ScrollCapture::acceptFrame(const QImage &image, int direction) {

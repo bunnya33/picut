@@ -27,6 +27,7 @@ public:
     struct Part { QImage thumbnail; int y,height,sourceY,sourceHeight; };
     QSize size;
     quint64 revision=0;
+    int viewportY=-1,viewportHeight=0;
     QList<Part> parts;
     void paint(QPainter &painter,QRectF target) const;
   };
@@ -53,6 +54,23 @@ private:
   QImage referenceMask() const;
   void rememberRepaints(const QList<QRect> &areas, int at, int matchingWidth);
   bool refreshVisible(const QImage &frame, int at);
+};
+
+// Independent static-document engine. Every accepted frame is located against
+// immutable document rows; rejected frames never become matching references.
+class ScrollStitcherV2 {
+public:
+  ScrollStitcherV2();
+  ~ScrollStitcherV2();
+  ScrollStitcher::Result accept(const QImage &image, int direction=0);
+  QImage image() const;
+  QSize size() const;
+  quint64 contentRevision() const;
+  ScrollStitcher::Preview preview() const;
+  int viewportPosition() const;
+private:
+  struct State;
+  std::unique_ptr<State> state;
 };
 
 class ScrollCapture : public QWidget {
@@ -84,7 +102,7 @@ private:
   Store *store;
   QRect region, available;
   quintptr sourceWindow;
-  ScrollStitcher stitcher;
+  ScrollStitcherV2 stitcher;
   ScrollStitcher::Preview displayed;
   QWidget *preview;
   QFrame *bar;

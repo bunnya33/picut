@@ -7,6 +7,15 @@
 #endif
 
 [Setup]
+#ifdef ScrollTrial
+AppId={{D3863EF9-0C7D-44B4-AC72-07805DEB96AF}
+AppName=picut 长截图试验版
+AppVerName=picut {#AppVersion} 长截图试验版
+DefaultDirName={localappdata}\Programs\picut-scroll-trial
+DefaultGroupName=picut 长截图试验版
+UninstallDisplayName=picut 长截图试验版
+OutputBaseFilename=picut-{#AppVersion}-scroll-trial-setup-x64
+#else
 #ifdef TranslationTrial
 AppId={{82C4C15B-955B-4D88-9A55-1772D08997A8}
 AppName=picut 图片翻译试用版
@@ -23,6 +32,7 @@ DefaultDirName={localappdata}\Programs\picut
 DefaultGroupName=picut
 UninstallDisplayName=picut
 OutputBaseFilename=picut-{#AppVersion}-setup-x64
+#endif
 #endif
 AppVersion={#AppVersion}
 AppPublisher=picut
@@ -72,6 +82,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
+#ifdef ScrollTrial
+Name: "{group}\picut 长截图试验版"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.ScrollTrial"
+Name: "{group}\{cm:ReadmeShortcut}"; Filename: "{app}\使用说明.txt"
+Name: "{autodesktop}\picut 长截图试验版"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.ScrollTrial"; Tasks: desktopicon
+#else
 #ifdef TranslationTrial
 Name: "{group}\picut 图片翻译试用版"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.TranslationTrial"
 Name: "{group}\{cm:ReadmeShortcut}"; Filename: "{app}\使用说明.txt"
@@ -80,6 +95,7 @@ Name: "{autodesktop}\picut 图片翻译试用版"; Filename: "{app}\picut.exe"; 
 Name: "{group}\picut"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.Desktop"
 Name: "{group}\{cm:ReadmeShortcut}"; Filename: "{app}\使用说明.txt"
 Name: "{autodesktop}\picut"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.Desktop"; Tasks: desktopicon
+#endif
 #endif
 
 [Run]
