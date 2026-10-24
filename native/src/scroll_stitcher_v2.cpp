@@ -145,7 +145,7 @@ struct ScrollStitcherV2::State {
   QImage recent;
   cv::Mat recentGray;
   std::vector<cv::Point2f> recentFeatures;
-  bool lost=false;
+  bool lost=false,motionTrusted=false;
 
   bool append(const QImage &pixels,int y,double phase=0) {
     if(!cache.isValid()) return false;
@@ -365,28 +365,29 @@ struct ScrollStitcherV2::State {
   }
 
   struct Candidate { int at=0; double phase=0; int votes=0; double weight=0; };
-  // A perfect integer match can bypass historical searches only when both
-  // possible overlap ends contain a unique coordinate or a novel row. Any
-  // competing contiguous overlap must contain one of these two witnesses.
-  bool uniqueEdges(const QImage &gray,int at) const {
-    const int overlap=qMin(bottom,at+viewportHeight)-qMax(top,at);
-    if(overlap<qMin(96,qMax(24,viewportHeight/5))) return false;
-    auto part=parts.upper_bound(qMax(top,at)); if(part!=parts.begin()) --part;
-    for(;part!=parts.end() && part->first<qMin(bottom,at+viewportHeight);++part)
-      for(int y=qMax(qMax(top,at),part->second.y);y<qMin(qMin(bottom,at+viewportHeight),part->second.y+part->second.height);++y)
+  // Only rows already verified at this coordinate are location evidence.
+  // Novel pixels outside the overlap cannot prove that a short repeated sticker
+  // is new content. Require several rare rows spread through the known overlap.
+  bool anchored(const QImage &gray,int at) const {
+    const int begin=qMax(top,at),end=qMin(bottom,at+viewportHeight);
+    if(end-begin<qMin(96,qMax(24,viewportHeight/5))) return false;
+    auto part=parts.upper_bound(begin); if(part!=parts.begin()) --part;
+    for(;part!=parts.end() && part->first<end;++part)
+      for(int y=qMax(begin,part->second.y);y<qMin(end,part->second.y+part->second.height);++y)
         if(std::abs(part->second.phase[size_t(y-part->second.y)])>0.00000001) return false;
-    const int edge=qMin(96,qMax(24,viewportHeight/5));
-    auto witness=[&](int first,int last) {
-      for(int y=first;y<last;++y) for(int lane=0;lane<3;++lane) {
+    int first=-1,last=-1,count=0;
+    for(int y=begin-at;y<end-at;++y) {
+      for(int lane=0;lane<3;++lane) {
         const auto key=rowKey(gray.constScanLine(y),gray.width(),lane);
         if(!key) continue;
         const auto found=rows.constFind(key);
-        if(found==rows.cend() || found->isEmpty()) return true;
-        if(found->size()==1 && found->front()-y==at) return true;
+        if(found==rows.cend() || found->size()!=1 || found->front()-y!=at) continue;
+        if(first<0) first=y;
+        last=y; ++count; break;
       }
-      return false;
-    };
-    return witness(0,edge) && witness(gray.height()-edge,gray.height());
+      if(count>=4 && last-first>=qMin(64,qMax(24,(end-begin)/4))) return true;
+    }
+    return false;
   }
   std::vector<Candidate> indexed(const QImage &gray) const {
     QHash<qint64,Candidate> votes;
@@ -463,9 +464,17 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
     const int center=qRound(s.coordinate+motion.dy*double(frame.height())/gray.rows);
     const auto result=s.validate(frame,center,0);
     if(result.cacheError) return Engine::CacheError;
-    if(result.perfect && s.uniqueEdges(signature,center)) {
+    const int overlap=qMin(s.bottom,center+frame.height())-qMax(s.top,center);
+    const bool continuous=s.motionTrusted && !s.lost && center>=s.top && overlap>=frame.height()*2/3;
+    if(result.perfect && center>=s.top && (s.anchored(signature,center) || continuous)) {
       direct=true; directCandidate={center,0,0}; candidates={directCandidate};
     }
+  }
+  if(!direct && motion.reliable) {
+    const int center=qRound(s.coordinate+motion.dy*double(frame.height())/gray.rows);
+    // Try the exact integer phase before interpolated optical-flow estimates.
+    // A fractional estimate must not taint a perfectly integer desktop image.
+    candidates.insert(candidates.begin(),{center,0,0});
   }
   const auto indexed=direct?std::vector<State::Candidate>{}:s.indexed(signature);
   const auto indexNs=timing.nsecsElapsed();
@@ -473,7 +482,7 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
   if(debug) qInfo()<<"motion"<<s.position<<motion.dy<<motion.reliable<<"index"<<indexed.size();
   if(candidates.empty()) candidates=indexed;
   if(candidates.empty()) { s.lost=true; return Engine::NoOverlap; }
-  struct Valid { State::Candidate candidate; double error; };
+  struct Valid { State::Candidate candidate; double error; bool anchored,perfect,proven; };
   std::vector<Valid> valid;
   bool boundary=false,unambiguous=direct;
   auto check=[&](State::Candidate candidate) {
@@ -483,8 +492,10 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
     if(result.cacheError) return false;
     boundary|=result.boundary;
     if(result.valid) {
-      valid.push_back({candidate,result.error});
-      if(result.perfect && candidate.phase==0 && s.uniqueEdges(signature,candidate.at)) unambiguous=true;
+      const bool anchored=candidate.phase==0 && s.anchored(signature,candidate.at);
+      const bool proven=result.perfect && anchored && candidate.at>=s.top;
+      valid.push_back({candidate,result.error,anchored,result.perfect,proven});
+      if(proven) unambiguous=true;
     }
     return true;
   };
@@ -509,13 +520,24 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
     if(!check(candidate)) return Engine::CacheError;
     ++alternatives;
   }
+  // A proposed new prefix must also be checked against the original viewport.
+  // Its full historical match may contain a small repaint while a repeated
+  // sticker gives the prefix a superficially perfect, much shorter overlap.
+  if(!unambiguous && std::any_of(valid.begin(),valid.end(),[&](const auto &v) { return v.candidate.at<s.top; }) &&
+     std::none_of(valid.begin(),valid.end(),[](const auto &v) { return v.candidate.at==0 && v.candidate.phase==0; }))
+    if(!check({0,0,0})) return Engine::CacheError;
   if(valid.empty()) { s.lost=true; return boundary?Engine::BoundaryMismatch:Engine::NoOverlap; }
-  std::sort(valid.begin(),valid.end(),[](auto a,auto b){return a.error<b.error;});
+  std::sort(valid.begin(),valid.end(),[](auto a,auto b){
+    if(a.proven!=b.proven) return a.proven>b.proven;
+    if(a.anchored!=b.anchored) return a.anchored>b.anchored;
+    if(a.perfect!=b.perfect) return a.perfect>b.perfect;
+    return a.error<b.error;
+  });
   const auto chosen=valid.front().candidate;
   const int at=chosen.at;
   for(size_t i=1;!unambiguous && i<valid.size();++i)
     if(std::abs(valid[i].candidate.at+valid[i].candidate.phase-at-chosen.phase)>2 &&
-       (valid.front().error>0.0000000001 || valid[i].error<=0.0000000001)) {
+       (!valid.front().anchored || valid[i].anchored)) {
       s.lost=true; return Engine::NoOverlap;
     }
   const auto validationNs=timing.nsecsElapsed();
@@ -533,7 +555,8 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
   }
   const auto storageNs=timing.nsecsElapsed();
   const bool moved=at!=s.position;
-  s.position=at; s.coordinate=at+chosen.phase; s.remember(frame,std::move(gray));
+  s.position=at; s.coordinate=at+chosen.phase; s.motionTrusted=direct || valid.front().anchored;
+  s.remember(frame,std::move(gray));
   if(qEnvironmentVariableIsSet("PICUT_SCROLL_PROFILE"))
     qInfo()<<"SCROLL_PHASE_NS"<<motionNs<<indexNs-motionNs<<validationNs-indexNs
            <<storageNs-validationNs<<timing.nsecsElapsed()-storageNs;

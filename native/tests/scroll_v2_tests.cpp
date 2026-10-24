@@ -358,6 +358,63 @@ private slots:
     }
     QCOMPARE(engine.image(),doc.copy(0,0,720,2520));
   }
+  void repeatedChatReturnMustNotPrepend() {
+    QImage doc(720,2600,QImage::Format_RGB32); doc.fill("#fafafa");
+    QPainter p(&doc); p.setFont(QFont("Consolas",12));
+    for(int group=0;group*300<doc.height();++group) {
+      const int y=group*300;
+      p.fillRect(22,y+18,52,52,QColor("#446688"));
+      p.setPen(Qt::white); p.drawText(27,y+49,"same");
+      p.fillRect(92,y+24,400,35,QColor("#d3edce"));
+      p.setPen(Qt::black); p.drawText(104,y+48,"Repeated sticker and message");
+      p.drawText(310,y+149,QString("Conversation section %1, sequence %2").arg(group).arg(group*127));
+      p.drawText(310,y+209,QString("2026-10-24 13:%1, event %2").arg(group,2,10,QChar('0')).arg(group*731));
+    }
+    p.end(); ScrollStitcherV2 engine;
+    for(int at:{0,180,360,540,720}) {
+      const auto r=engine.accept(doc.copy(0,at,720,720),1);
+      QVERIFY2(good(r),qPrintable(QString("initial position %1: %2").arg(at).arg(int(r))));
+      QCOMPARE(engine.viewportPosition(),at);
+    }
+    const auto before=engine.image(); const auto revision=engine.contentRevision();
+    auto returned=doc.copy(0,0,720,720);
+    QPainter patch(&returned); patch.fillRect(530,240,12,12,QColor("#6688aa")); patch.end();
+    const auto r=engine.accept(returned,-1);
+    QVERIFY2(good(r),qPrintable(QString("return to captured origin: %1").arg(int(r))));
+    QCOMPARE(engine.viewportPosition(),0);
+    QCOMPARE(engine.size(),before.size());
+    QCOMPARE(engine.contentRevision(),revision);
+    QCOMPARE(engine.image(),before);
+  }
+  void userRepeatedChatReturn_data() {
+    QTest::addColumn<int>("viewport");
+    for(int height:{480,720,960}) QTest::newRow(qPrintable(QString::number(height)))<<height;
+  }
+  void userRepeatedChatReturn() {
+    const auto path=qEnvironmentVariable("PICUT_SCROLL_RETURN_FIXTURE");
+    if(path.isEmpty()) QSKIP("Set PICUT_SCROLL_RETURN_FIXTURE to the user's repeated chat image");
+    QFETCH(int,viewport); QImage doc(path); QVERIFY(!doc.isNull());
+    doc=doc.convertToFormat(QImage::Format_RGB32); ScrollStitcherV2 engine;
+    int last=0;
+    for(int at=0;at<doc.height()-viewport;at+=53) {
+      const auto r=engine.accept(doc.copy(0,at,doc.width(),viewport),1);
+      if(good(r)) {
+        QCOMPARE(engine.viewportPosition(),at); last=at;
+        QCOMPARE(engine.image(),doc.copy(0,0,doc.width(),last+viewport));
+      }
+    }
+    QVERIFY(last>viewport*2);
+    const auto before=engine.image(); const auto revision=engine.contentRevision();
+    for(int at=last;at>=0;at=qMax(0,at-71)) {
+      const auto r=engine.accept(doc.copy(0,at,doc.width(),viewport),-1);
+      if(good(r)) QCOMPARE(engine.viewportPosition(),at);
+      QCOMPARE(engine.contentRevision(),revision); QCOMPARE(engine.image(),before);
+      if(!at) break;
+    }
+    const auto r=engine.accept(doc.copy(0,0,doc.width(),viewport),-1);
+    QVERIFY(good(r)); QCOMPARE(engine.viewportPosition(),0);
+    QCOMPARE(engine.image(),before);
+  }
   void fractionalScrollPositions() {
     const auto doc=document("code",720,3500);
     auto frame=[&](double at) {
