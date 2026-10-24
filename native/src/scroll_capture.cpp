@@ -12,9 +12,14 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QToolButton>
+#include <chrono>
+#include <utility>
 #include <dwmapi.h>
 
 namespace {
+qint64 monotonicNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 bool supportsCaptureExclusion() {
   // Before 2004 WDA_EXCLUDEFROMCAPTURE behaves like WDA_MONITOR (black),
   // even if Set/GetWindowDisplayAffinity accepts the flag value.
@@ -51,8 +56,10 @@ class LongPreview : public QWidget {
 public:
   explicit LongPreview(ScrollStitcher::Preview *value, QWidget *parent)
       : QWidget(parent), stitcher(value) { setObjectName("scrollPreview"); }
+  std::function<void(qint64)> painted;
 protected:
   void paintEvent(QPaintEvent *) override {
+    const auto started=monotonicNs();
     QPainter painter(this);
     painter.fillRect(rect(), Qt::white);
     stitcher->paint(painter, rect().adjusted(1, 1, -1, -1));
@@ -62,6 +69,7 @@ protected:
       painter.drawRect(QRectF(1,1+stitcher->viewportY*scale,width()-2,stitcher->viewportHeight*scale));
     }
     painter.setPen(QColor("#2080f0")); painter.drawRect(rect().adjusted(0,0,-1,-1));
+    if(painted) painted(monotonicNs()-started);
   }
 private:
   ScrollStitcher::Preview *stitcher;
@@ -84,6 +92,13 @@ ScrollCapture::ScrollCapture(Store *value, QRect source, quintptr window, QWidge
                   .translated(-pos()).adjusted(8,8,-8,-8);
   region.translate(-pos());
   preview = new LongPreview(&displayed, this);
+  static_cast<LongPreview *>(preview)->painted=[this](qint64 duration) {
+    if(!paintSerial || paintSerial==measuredPaintSerial) return;
+    measuredPaintSerial=paintSerial; ++paintedUpdates;
+    paintTotalNs+=duration; paintMaximumNs=qMax(paintMaximumNs,duration);
+    if(paintCapturedAtNs) displayMaximumNs=qMax(displayMaximumNs,monotonicNs()-paintCapturedAtNs);
+    if(paintPublishedAtNs) uiWaitMaximumNs=qMax(uiWaitMaximumNs,monotonicNs()-paintPublishedAtNs);
+  };
   bar = new QFrame(this); bar->setObjectName("scrollToolbar");
   bar->setStyleSheet("QFrame#scrollToolbar{background:#f8f8f8;border:1px solid #d4d4d4;"
                     "border-radius:7px;}QToolButton{border:0;background:transparent;}"
@@ -117,7 +132,14 @@ ScrollCapture::ScrollCapture(Store *value, QRect source, quintptr window, QWidge
   connect(&timer, &QTimer::timeout, this, &ScrollCapture::sample);
   place();
 }
-ScrollCapture::~ScrollCapture() { stopPumps(false); releaseHotkeys(); releaseInputHooks(); }
+ScrollCapture::~ScrollCapture() {
+  stopPumps(false); releaseHotkeys(); releaseInputHooks();
+  qInfo()<<"Scroll preview UI: painted_updates"<<paintedUpdates
+         <<"paint_mean_ms"<<(paintedUpdates?paintTotalNs/paintedUpdates/1000000.:0.)
+         <<"paint_max_ms"<<paintMaximumNs/1000000.
+         <<"capture_to_paint_max_ms"<<displayMaximumNs/1000000.
+         <<"ui_wait_max_ms"<<uiWaitMaximumNs/1000000.;
+}
 void ScrollCapture::stopPumps(bool drain) {
   if(framePump) framePump->stop();
   if(matchPump) {
@@ -135,6 +157,7 @@ void ScrollCapture::begin(bool enableLive) {
   if (live && QGuiApplication::platformName() == "windows") {
     excluded = supportsCaptureExclusion() && excludeCapture(this);
     if (!excluded) SetWindowDisplayAffinity(reinterpret_cast<HWND>(winId()), WDA_NONE);
+    place();
     for (const auto binding : {QPair<int,UINT>{2201,VK_ESCAPE}, {2202,VK_RETURN}})
       if (RegisterHotKey(reinterpret_cast<HWND>(winId()), binding.first, MOD_NOREPEAT, binding.second))
         hotkeys.append(binding.first);
@@ -144,9 +167,8 @@ void ScrollCapture::begin(bool enableLive) {
       if (sourceWindow && IsWindow(reinterpret_cast<HWND>(sourceWindow)))
         SetForegroundWindow(reinterpret_cast<HWND>(sourceWindow));
       DwmFlush(); sample();
-      // A single-monitor hole has a stable physical pixel mapping. Old Win10
-      // without capture exclusion and mixed-monitor selections use the existing
-      // hide/restore and per-screen capture path instead.
+      // A single-monitor hole has a stable physical pixel mapping. On older
+      // Windows, outside controls never enter the capture image.
       const QRect global=region.translated(pos());
       const auto screen=QGuiApplication::screenAt(global.center());
       if(!screen || !screen->geometry().contains(global)) {
@@ -154,10 +176,12 @@ void ScrollCapture::begin(bool enableLive) {
       }
       framePump=std::make_unique<ScrollFramePump>(physicalRect(global));
       framePump->noteDirection(scrollDirection());
-      backgroundAcquisition=screen && screen->geometry().contains(global) && excluded;
+      const bool outside=(!preview->isVisible() || !preview->geometry().intersects(region)) &&
+                         !bar->geometry().intersects(region) && !status->geometry().intersects(region);
+      backgroundAcquisition=excluded || outside;
       if(backgroundAcquisition) framePump->start();
       else {
-        framePump->setExternalBackend("GDI UI fallback (capture exclusion unavailable)");
+        framePump->setExternalBackend("GDI UI fallback (controls overlap selection)");
         qInfo()<<"Scroll capture backend:"<<framePump->backendName();
       }
       matchSerial=0;
@@ -221,9 +245,9 @@ void ScrollCapture::setAutomatic(bool enabled) {
 QImage ScrollCapture::takeFrame() {
   // On older Win10, only temporarily remove UI that actually overlaps the
   // capture hole. The exterior border and all outside controls remain visible.
-  const bool hidePreview = !excluded && preview->geometry().intersects(region);
-  const bool hideBar = !excluded && bar->geometry().intersects(region);
-  const bool hideStatus = !excluded && status->geometry().intersects(region);
+  const bool hidePreview = !excluded && preview->isVisible() && preview->geometry().intersects(region);
+  const bool hideBar = !excluded && bar->isVisible() && bar->geometry().intersects(region);
+  const bool hideStatus = !excluded && status->isVisible() && status->geometry().intersects(region);
   if (hidePreview) preview->hide();
   if (hideBar) bar->hide();
   if (hideStatus) status->hide();
@@ -241,15 +265,20 @@ void ScrollCapture::sample() {
   capturing = true;
   auto guard = qScopeGuard([this] { capturing = false; });
   if(matchPump) {
-    if(!framePump->captureError().isEmpty()) {
-      status->setText(framePump->captureError()+"；已截内容保留"); place(); return;
-    }
-    if(!backgroundAcquisition) framePump->enqueue(takeFrame());
+    const auto acquisitionError=framePump->captureError();
+    if(acquisitionError.isEmpty() && !backgroundAcquisition) framePump->enqueue(takeFrame());
     if(auto update=matchPump->takeUpdate(matchSerial)) {
       matchSerial=update->serial;
+      paintSerial=update->serial;
+      paintCapturedAtNs=update->capturedAtNs;
+      paintPublishedAtNs=update->publishedAtNs;
       displayResult(update->result,std::move(update->preview));
       if(update->result!=ScrollStitcher::Unchanged) idleTime.restart();
     } else if(pendingFailure!=ScrollStitcher::Unchanged) reportAlignmentFailure(pendingFailure);
+    if(!acquisitionError.isEmpty() &&
+       (status->text()!=acquisitionError || (!framePump->isRunning() && !status->isVisible()))) {
+      setAutomatic(false); status->setText(acquisitionError); place();
+    }
   } else {
     const QImage frame = takeFrame();
     if (frame.isNull()) {
@@ -316,6 +345,7 @@ ScrollStitcher::Result ScrollCapture::acceptFrame(const QImage &image, int direc
 void ScrollCapture::displayResult(ScrollStitcher::Result result,ScrollStitcher::Preview next) {
   const bool recovering=pendingFailure!=ScrollStitcher::Unchanged;
   const auto revision=displayed.revision;
+  const auto previousSize=displayed.size;
   displayed=std::move(next);
   if (result==ScrollStitcher::Started || result==ScrollStitcher::Appended ||
       result==ScrollStitcher::Revisited || result==ScrollStitcher::Unchanged) {
@@ -331,14 +361,15 @@ void ScrollCapture::displayResult(ScrollStitcher::Result result,ScrollStitcher::
     reportAlignmentFailure(result);
   } else if (result != ScrollStitcher::Unchanged) {
     pendingFailure=ScrollStitcher::Unchanged; failureTime.invalidate(); failureReported=false;
-    setAutomatic(false);
+    setAutomatic(false); timer.stop();
     status->setText(result == ScrollStitcher::BoundaryMismatch
         ? "滚动内容未到达框选的上下边缘，请重新框选实际滚动内容"
         : result == ScrollStitcher::LimitReached ? "已达到长图长度上限，请保存当前结果"
-        : result == ScrollStitcher::CacheError ? "临时图片保存失败，请检查磁盘空间"
+        : result == ScrollStitcher::CacheError ? "临时缓存无法继续写入，请完成当前结果并检查磁盘空间"
         : "画面无法可靠拼接，请缓慢滚动或返回上一处；已截内容保留");
   }
-  if(result!=ScrollStitcher::Unchanged || recovering) place();
+  if(displayed.size!=previousSize || recovering ||
+     (result!=ScrollStitcher::Unchanged && result!=ScrollStitcher::Revisited && result!=ScrollStitcher::Appended)) place();
   if(displayed.revision!=revision || result!=ScrollStitcher::Unchanged || recovering) preview->update();
 }
 void ScrollCapture::place() {
@@ -361,14 +392,17 @@ void ScrollCapture::place() {
   int controlsY = region.bottom()+9;
   if (controlsY+bar->height()>available.bottom()) controlsY=region.top()-bar->height()-9;
   controlsY=qBound(available.top(),controlsY,qMax(available.top(),available.bottom()-bar->height()+1));
-  if (QRect(QPoint(controlsX,controlsY),bar->size()).intersects(preview->geometry()))
+  if (preview->isVisible() && QRect(QPoint(controlsX,controlsY),bar->size()).intersects(preview->geometry()))
     controlsX=qBound(available.left(),preview->x()-bar->width()-8,
                      qMax(available.left(),available.right()-bar->width()+1));
   bar->move(controlsX,controlsY);
   int statusY = region.top()-status->height()-6;
   if (statusY<available.top()) statusY=region.top()+6;
   status->move(qBound(available.left(),region.left(),qMax(available.left(),available.right()-status->width()+1)),statusY);
-  preview->show(); bar->show(); status->show();
+  const bool acquiring=backgroundAcquisition && framePump && framePump->isRunning();
+  preview->setVisible(!live || excluded || !preview->geometry().intersects(region));
+  bar->setVisible(excluded || !acquiring || !bar->geometry().intersects(region));
+  status->setVisible(excluded || !acquiring || !status->geometry().intersects(region));
   updateMask(); update();
 }
 void ScrollCapture::updateMask() {
@@ -385,10 +419,18 @@ void ScrollCapture::paintEvent(QPaintEvent *) {
 }
 void ScrollCapture::finish(const QString &action) {
   if (closing || finishing) return;
-  if (action == "cancel") { close(); return; }
+  if (action == "cancel" && !matchPump) { close(); return; }
   finishing = true; timer.stop(); setAutomatic(false);
-  // Complete queued matches on the worker before exporting the original pixels.
-  stopPumps(true);
+  if(matchPump) {
+    pendingAction=action;
+    releaseHotkeys(); releaseInputHooks();
+    if(action=="cancel") hide();
+    else { status->setText("正在完成长截图…"); place(); }
+    framePump->requestStop();
+    matchPump->requestStop(action!="cancel",action!="cancel");
+    QTimer::singleShot(0,this,&ScrollCapture::finishStopped);
+    return;
+  }
   // Include the latest stable screen if completion was clicked immediately
   // after a manual scroll; a bad alignment never replaces captured strips.
   if (live) {
@@ -407,7 +449,37 @@ void ScrollCapture::finish(const QString &action) {
   }
   closing = true; close(); emit finished(true);
 }
+void ScrollCapture::finishStopped() {
+  if((framePump && framePump->isRunning()) || (matchPump && matchPump->isRunning())) {
+    QTimer::singleShot(16,this,&ScrollCapture::finishStopped);
+    return;
+  }
+  const auto action=std::exchange(pendingAction,QString());
+  QImage image;
+  if(matchPump) image=matchPump->finalImage();
+  stopPumps(false);
+  if(action=="cancel") { close(); return; }
+  if(image.isNull()) {
+    finishing=false; status->setText("没有可用的截图，请重新框选区域");
+    begin(live); return;
+  }
+  hide();
+  if(output && !output(image,action)) {
+    finishing=false; begin(live); return;
+  }
+  closing=true; close(); emit finished(true);
+}
 void ScrollCapture::closeEvent(QCloseEvent *event) {
+  if((matchPump && matchPump->isRunning()) || (framePump && framePump->isRunning())) {
+    if(!finishing) finish("cancel");
+    else {
+      pendingAction="cancel";
+      if(framePump) framePump->requestStop();
+      if(matchPump) matchPump->requestStop(false,false);
+      hide();
+    }
+    event->ignore(); return;
+  }
   timer.stop(); stopPumps(false); releaseHotkeys(); releaseInputHooks();
   if (!closing) { closing = true; emit finished(false); }
   event->accept();

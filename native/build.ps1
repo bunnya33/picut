@@ -6,6 +6,9 @@ if (-not $QtDir) { $QtDir = Join-Path $floatshotRoot 'build/native-sdk/qt' }
 if (-not $BuildDir) { $BuildDir = Join-Path $floatshotRoot 'build/native' }
 $QtDir = [IO.Path]::GetFullPath($QtDir)
 $BuildDir = [IO.Path]::GetFullPath($BuildDir)
+if (-not (Test-Path -LiteralPath (Join-Path $floatshotRoot 'build/native-sdk/opencv-scroll/x64/vc17/staticlib/opencv_video4110.lib'))) {
+    & (Join-Path $PSScriptRoot 'setup-scroll-sdk.ps1')
+}
 if (-not (Test-Path -LiteralPath (Join-Path $QtDir 'lib/cmake/Qt6/Qt6Config.cmake'))) {
     throw 'Qt SDK missing. Install Qt 6.8 MSVC x64 or run native/setup-sdk.ps1.'
 }

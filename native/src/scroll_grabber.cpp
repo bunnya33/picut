@@ -3,6 +3,7 @@
 #include <chrono>
 #include <memory>
 #include <algorithm>
+#include <vector>
 #include <QtCore/QDebug>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -87,13 +88,54 @@ public:
   }
   bool ready() const { return duplication && staging; }
   bool hasFrame() const { return !last.isNull(); }
+  bool desktopUpdated() const { return updated; }
+  qint64 readbackDurationNs() const { return readbackNs; }
+  qint64 presentedAtNs() const { return presentationNs; }
   QString error() const { return failure; }
   QImage grab() {
+    updated=false; readbackNs=0; presentationNs=0;
     if(!ready()) return {};
     DXGI_OUTDUPL_FRAME_INFO info{}; ComPtr<IDXGIResource> resource;
     auto hr=duplication->AcquireNextFrame(16,&info,&resource);
     if(hr==DXGI_ERROR_WAIT_TIMEOUT) return last;
     if(FAILED(hr)) { failure=QString("AcquireNextFrame 0x%1").arg(quint32(hr),8,16,QChar('0')); duplication.Reset(); return {}; }
+    if(last.isNull()) qInfo()<<"Scroll initial DXGI frame:"<<"desktop_present"<<bool(info.LastPresentTime.QuadPart)
+                            <<"accumulated_frames"<<info.AccumulatedFrames<<"metadata_bytes"<<info.TotalMetadataBufferSize;
+    // Pointer-only notifications on a newly duplicated output may contain
+    // an uninitialized black texture. Wait for a real desktop presentation.
+    if(!info.LastPresentTime.QuadPart) { duplication->ReleaseFrame(); return last; }
+    updated=true;
+    LARGE_INTEGER frequency{};
+    if(QueryPerformanceFrequency(&frequency) && frequency.QuadPart>0) {
+      const auto ticks=info.LastPresentTime.QuadPart;
+      presentationNs=(ticks/frequency.QuadPart)*1000000000LL+
+                     (ticks%frequency.QuadPart)*1000000000LL/frequency.QuadPart;
+    }
+    if(!last.isNull() && info.TotalMetadataBufferSize && info.TotalMetadataBufferSize<=1024*1024) {
+      const QRect local=region.translated(-origin);
+      const auto touches=[&](const RECT &r) {
+        return QRect(r.left,r.top,r.right-r.left,r.bottom-r.top).intersects(local);
+      };
+      const UINT bytes=info.TotalMetadataBufferSize;
+      std::vector<DXGI_OUTDUPL_MOVE_RECT> moves((bytes+sizeof(DXGI_OUTDUPL_MOVE_RECT)-1)/sizeof(DXGI_OUTDUPL_MOVE_RECT));
+      UINT moveBytes=bytes;
+      bool relevant=true;
+      if(SUCCEEDED(duplication->GetFrameMoveRects(bytes,moves.data(),&moveBytes))) {
+        relevant=false;
+        for(UINT i=0;i<moveBytes/sizeof(DXGI_OUTDUPL_MOVE_RECT);++i)
+          if(touches(moves[i].DestinationRect)) { relevant=true; break; }
+        std::vector<RECT> dirty((bytes+sizeof(RECT)-1)/sizeof(RECT));
+        UINT dirtyBytes=bytes;
+        if(FAILED(duplication->GetFrameDirtyRects(bytes,dirty.data(),&dirtyBytes))) relevant=true;
+        else {
+          if(!moveBytes && !dirtyBytes) relevant=true; // Empty metadata is not proof of no change.
+          for(UINT i=0;i<dirtyBytes/sizeof(RECT) && !relevant;++i)
+            relevant=touches(dirty[i]);
+        }
+      }
+      if(!relevant) { duplication->ReleaseFrame(); return last; }
+    }
+    const auto readbackStarted=monotonicNs();
     ComPtr<ID3D11Texture2D> texture; hr=resource.As(&texture);
     if(SUCCEEDED(hr)) {
       const auto offset=region.topLeft()-origin;
@@ -112,11 +154,14 @@ public:
       }
     }
     duplication->ReleaseFrame();
+    readbackNs=monotonicNs()-readbackStarted;
     if(FAILED(hr)) { failure="DXGI texture read failed"; duplication.Reset(); return {}; }
     return last;
   }
 private:
   QRect region; QPoint origin; QString failure; QImage last;
+  bool updated=false;
+  qint64 readbackNs=0,presentationNs=0;
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   ComPtr<IDXGIOutputDuplication> duplication;
@@ -129,10 +174,11 @@ ScrollFramePump::~ScrollFramePump() { stop(); }
 QString ScrollFramePump::backendName() const { std::lock_guard lock(mutex); return backend; }
 QString ScrollFramePump::captureError() const { std::lock_guard lock(mutex); return error; }
 void ScrollFramePump::setExternalBackend(const QString &name) { std::lock_guard lock(mutex); backend=name; }
-void ScrollFramePump::stop() {
+void ScrollFramePump::requestStop() {
   { std::lock_guard lock(mutex); stopping=true; }
-  wake.notify_all(); wait();
+  wake.notify_all();
 }
+void ScrollFramePump::stop() { requestStop(); wait(); }
 QImage ScrollFramePump::take() {
   std::lock_guard lock(mutex);
   if(frames.empty()) return latest;
@@ -147,27 +193,28 @@ ScrollFramePump::Sample ScrollFramePump::waitNext() {
 void ScrollFramePump::noteDirection(int value) {
   direction=value; directionAt=monotonicNs();
 }
-void ScrollFramePump::enqueue(const QImage &frame) {
+void ScrollFramePump::enqueue(const QImage &frame,qint64 presentedAtNs) {
   if(frame.isNull()) return;
   const auto now=monotonicNs();
   std::lock_guard lock(mutex);
   if(stopping) return;
+  const size_t capacity=size_t(std::clamp<qint64>(24*1024*1024/qMax<qint64>(1,frame.sizeInBytes()),1,8));
+  if(latest!=frame && (frames.size()>=capacity ||
+      (!frames.empty() && now-frames.front().sample.capturedAtNs>250000000))) {
+    // A frame may be the only bridge across a scroll. Keep the entire queued
+    // interval and pause acquisition instead of silently breaking continuity.
+    error=QStringLiteral("采集处理积压，已暂停扩展；可完成并保留已确认内容");
+    stopping=true; ++dropped; wake.notify_all(); return;
+  }
   if(!captured) firstCapture=now;
   else maximumCaptureInterval=qMax(maximumCaptureInterval.load(),now-lastCapture.load());
   lastCapture=now; ++captured;
-  const size_t capacity=size_t(std::clamp<qint64>(96*1024*1024/qMax<qint64>(1,frame.sizeInBytes()),3,32));
   if(latest==frame) return;
   ++changed;
   const int hint=now-directionAt.load()<600000000?direction.load():0;
-  frames.push_back({quint64(captured.load()),{frame,hint,now}}); latest=frame;
-  // Spread retained samples across the pending interval, keeping both ends.
-  if(frames.size()>capacity) {
-    size_t remove=1;
-    for(size_t n=2;n+1<frames.size();++n)
-      if(frames[n+1].sequence-frames[n-1].sequence <
-         frames[remove+1].sequence-frames[remove-1].sequence) remove=n;
-    frames.erase(frames.begin()+remove); ++dropped;
-  }
+  const auto eventNs=presentedAtNs>0 && presentedAtNs<=now && now-presentedAtNs<5000000000LL?presentedAtNs:now;
+  frames.push_back({quint64(captured.load()),{frame,hint,eventNs}}); latest=frame;
+  queuedBytesMaximum=qMax(queuedBytesMaximum.load(),qint64(frames.size())*frame.sizeInBytes());
   wake.notify_all();
 }
 void ScrollFramePump::run() {
@@ -187,6 +234,10 @@ void ScrollFramePump::run() {
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(12);
     { std::lock_guard lock(mutex); if(stopping) break; }
     auto frame=provider?provider():duplication?duplication->grab():grabber->grab();
+    if(duplication && duplication->desktopUpdated()) {
+      ++desktopUpdates;
+      maximumReadback=qMax(maximumReadback.load(),duplication->readbackDurationNs());
+    }
     if(duplication && !duplication->hasFrame() && monotonicNs()-acquisitionStarted>1000000000) {
       qWarning()<<"Scroll acquisition fallback: DXGI supplied no initial desktop frame";
       setExternalBackend("GDI fallback (DXGI supplied no initial desktop frame)");
@@ -198,7 +249,7 @@ void ScrollFramePump::run() {
       duplication.reset(); grabber=std::make_unique<RegionGrabber>(region); frame=grabber->grab();
     }
     { std::lock_guard lock(mutex); error=frame.isNull() && !duplication?QStringLiteral("未能读取画面，请检查窗口或结束当前截图"):QString(); }
-    enqueue(frame);
+    enqueue(frame,duplication?duplication->presentedAtNs():0);
     std::unique_lock lock(mutex);
     if(wake.wait_until(lock,deadline,[&] { return stopping; })) break;
   }
@@ -207,50 +258,99 @@ ScrollMatchPump::ScrollMatchPump(ScrollFramePump *value,ScrollStitcher *stitcher
   engineName="legacy comparison";
   accept=[stitcher](const QImage &image,int direction) { return stitcher->accept(image,direction); };
   getPreview=[stitcher] { return stitcher->preview(); }; getRevision=[stitcher] { return stitcher->contentRevision(); };
+  getImage=[stitcher] { return stitcher->image(); };
 }
 ScrollMatchPump::ScrollMatchPump(ScrollFramePump *value,ScrollStitcherV2 *stitcher):source(value) {
   engineName="V2 document-coordinate matcher";
   accept=[stitcher](const QImage &image,int direction) { return stitcher->accept(image,direction); };
   getPreview=[stitcher] { return stitcher->preview(); }; getRevision=[stitcher] { return stitcher->contentRevision(); };
+  getImage=[stitcher] { return stitcher->image(); };
+  getViewport=[stitcher] { return stitcher->viewportPosition(); };
+  finishCache=[stitcher] { stitcher->finishPendingWrites(); };
 }
 ScrollMatchPump::~ScrollMatchPump() { stop(); }
+void ScrollMatchPump::requestStop(bool drain,bool prepareImage) {
+  assembling=prepareImage; draining=drain; stopping=true;
+}
 void ScrollMatchPump::stop(bool drain) {
-  draining=drain; stopping=true; wait();
+  requestStop(drain); wait();
 }
 std::optional<ScrollMatchPump::Update> ScrollMatchPump::takeUpdate(quint64 after) {
   std::lock_guard lock(mutex);
   if(update.serial<=after) return {};
   return update;
 }
+QImage ScrollMatchPump::finalImage() const {
+  std::lock_guard lock(mutex);
+  return finishedImage;
+}
 void ScrollMatchPump::run() {
   QImage previous;
-  qint64 processed=0,totalNs=0,maximumNs=0,maximumAge=0;
+  qint64 processed=0,totalNs=0,maximumNs=0,maximumAge=0,totalAge=0;
+  qint64 lastPublished=0,previewTotal=0,previewMaximum=0;
+  ScrollStitcher::Preview snapshot;
+  std::optional<Update> pending;
+  const auto publish=[&] {
+    if(!pending) return;
+    const auto before=monotonicNs();
+    if(snapshot.revision!=getRevision() ||
+       (pending->result==ScrollStitcher::Revisited && !getViewport)) snapshot=getPreview();
+    else if(getViewport) snapshot.viewportY=getViewport();
+    pending->preview=snapshot;
+    pending->publishedAtNs=monotonicNs();
+    previewTotal+=pending->publishedAtNs-before;
+    previewMaximum=qMax(previewMaximum,pending->publishedAtNs-before);
+    lastPublished=pending->publishedAtNs;
+    {
+      std::lock_guard lock(mutex);
+      pending->serial=update.serial+1;
+      update=std::move(*pending);
+    }
+    pending.reset();
+  };
   int failures=0;
+  bool terminal=false;
   const auto started=monotonicNs();
   for(;;) {
     if(stopping && !draining) break;
     const auto sample=source->waitNext();
-    if(sample.image.isNull()) { if(stopping) break; continue; }
-    if(sample.image==previous) continue;
+    if(sample.image.isNull()) {
+      if(stopping) break;
+      if(pending && monotonicNs()-lastPublished>=33000000) publish();
+      continue;
+    }
+    if(terminal || sample.image==previous) continue;
     previous=sample.image;
     const auto before=monotonicNs();
-    maximumAge=qMax(maximumAge,before-sample.capturedAtNs);
+    const auto age=before-sample.capturedAtNs;
+    maximumAge=qMax(maximumAge,age); totalAge+=age;
     const auto result=accept(sample.image,sample.direction);
     const auto elapsed=monotonicNs()-before;
     ++processed; totalNs+=elapsed; maximumNs=qMax(maximumNs,elapsed);
     if(result==ScrollStitcher::NoOverlap || result==ScrollStitcher::BoundaryMismatch) ++failures;
-    {
-      std::lock_guard lock(mutex);
-      update.result=result; ++update.serial;
-      if(update.preview.revision!=getRevision() || result==ScrollStitcher::Revisited) update.preview=getPreview();
+    pending=Update{result,{},0,sample.capturedAtNs,before+elapsed,0};
+    if(!lastPublished || monotonicNs()-lastPublished>=33000000 ||
+       result==ScrollStitcher::CacheError || result==ScrollStitcher::LimitReached) publish();
+    if(result==ScrollStitcher::CacheError || result==ScrollStitcher::LimitReached) {
+      terminal=true; source->requestStop();
     }
-    if(result==ScrollStitcher::CacheError || result==ScrollStitcher::LimitReached) break;
   }
+  publish();
+  if(assembling) {
+    auto image=getImage();
+    std::lock_guard lock(mutex);
+    finishedImage=std::move(image);
+  }
+  if(finishCache) finishCache();
   qInfo()<<"Scroll session: elapsed_ms"<<(monotonicNs()-started)/1000000
          <<"engine"<<engineName<<"backend"<<source->backendName()
          <<"sample_polls"<<source->frameCount()<<"sample_poll_hz"<<source->captureRate()<<"changed_frames"<<source->changedFrameCount()
+         <<"desktop_updates"<<source->desktopUpdateCount()<<"readback_max_ms"<<source->maximumReadbackMs()
          <<"capture_interval_max_ms"<<source->maximumCaptureIntervalMs()
-         <<"coalesced"<<source->droppedCount()<<"matched"<<processed
+         <<"unprocessed_overflow"<<source->droppedCount()<<"matched"<<processed
+         <<"queue_peak_mib"<<source->maximumQueuedBytes()/1048576.
          <<"alignment_failures"<<failures<<"match_mean_ms"<<(processed?totalNs/processed/1000000.:0.)
-         <<"match_max_ms"<<maximumNs/1000000.<<"queue_age_max_ms"<<maximumAge/1000000.;
+         <<"match_max_ms"<<maximumNs/1000000.<<"queue_age_mean_ms"<<(processed?totalAge/processed/1000000.:0.)
+         <<"queue_age_max_ms"<<maximumAge/1000000.<<"preview_build_total_ms"<<previewTotal/1000000.
+         <<"preview_build_max_ms"<<previewMaximum/1000000.;
 }

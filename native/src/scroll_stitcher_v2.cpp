@@ -1,17 +1,111 @@
 #include "scroll_capture.h"
 #include <QtCore/QFile>
-#include <QtCore/QSaveFile>
+#include <QtCore/QDebug>
 #include <QtCore/QHash>
 #include <QtCore/QCache>
 #include <QtGui/QPainter>
+#include "scroll_motion.h"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <map>
 #include <vector>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 
 namespace {
+// Disk latency must not delay motion tracking. Pending pixels remain readable
+// until their immutable file has been committed, including an IO failure.
+class RawWriter {
+  struct Job { QString key; QImage image; quint64 serial; qint64 offset; };
+  struct Pending { QImage image; quint64 serial; };
+  QString storagePath;
+  mutable std::mutex mutex;
+  std::condition_variable ready,idle;
+  std::deque<Job> jobs;
+  QHash<QString,Pending> pending;
+  QHash<QString,qint64> locations;
+  std::thread worker;
+  qint64 queuedBytes=0,nextOffset=0;
+  quint64 serial=0;
+  bool active=false,stopping=false,failed=false;
+public:
+  explicit RawWriter(QString path):storagePath(std::move(path)) {}
+  ~RawWriter() {
+    { std::lock_guard lock(mutex); stopping=true; }
+    ready.notify_all();
+    if(worker.joinable()) worker.join();
+  }
+  bool enqueue(const QString &key,const QImage &image) {
+    std::lock_guard lock(mutex);
+    const auto limit=qMax<qint64>(12*1024*1024,image.sizeInBytes());
+    if(failed || stopping || queuedBytes+image.sizeInBytes()>limit) {
+      qWarning()<<"Scroll cache writer unavailable or over budget"<<queuedBytes;
+      return false;
+    }
+    if(!locations.contains(key)) { locations.insert(key,nextOffset); nextOffset+=image.sizeInBytes(); }
+    const auto version=++serial;
+    pending.insert(key,{image,version}); jobs.push_back({key,image,version,locations.value(key)});
+    queuedBytes+=image.sizeInBytes();
+    if(!worker.joinable()) worker=std::thread([this] { run(); });
+    ready.notify_one(); return true;
+  }
+  QImage pixels(const QString &key) const {
+    std::lock_guard lock(mutex);
+    const auto found=pending.constFind(key);
+    return found==pending.cend()?QImage():found->image;
+  }
+  bool load(const QString &key,QImage &image) const {
+    qint64 offset;
+    {
+      std::lock_guard lock(mutex);
+      const auto live=pending.constFind(key);
+      if(live!=pending.cend()) { image=live->image; return true; }
+      if(!locations.contains(key)) return false;
+      offset=locations.value(key);
+    }
+    QFile file(storagePath);
+    return file.open(QIODevice::ReadOnly) && file.seek(offset) &&
+      file.read(reinterpret_cast<char *>(image.bits()),image.sizeInBytes())==image.sizeInBytes();
+  }
+  void waitIdle() {
+    std::unique_lock lock(mutex);
+    idle.wait(lock,[&] { return jobs.empty() && !active; });
+  }
+private:
+  void run() {
+    // Temporary cache data need visibility to readers, not a forced disk sync
+    // or an atomic rename for every frame. Each immutable part owns a range;
+    // seam updates reuse that range while pending pixels protect all readers.
+    QFile file(storagePath);
+    const bool opened=file.open(QIODevice::WriteOnly|QIODevice::Unbuffered);
+    for(;;) {
+      Job job;
+      {
+        std::unique_lock lock(mutex);
+        ready.wait(lock,[&] { return stopping || !jobs.empty(); });
+        if(jobs.empty()) return;
+        job=std::move(jobs.front()); jobs.pop_front(); active=true;
+      }
+      const bool written=opened && file.seek(job.offset) &&
+        file.write(reinterpret_cast<const char *>(job.image.constBits()),job.image.sizeInBytes())==job.image.sizeInBytes();
+      {
+        std::lock_guard lock(mutex);
+        active=false; queuedBytes-=job.image.sizeInBytes();
+        auto found=pending.find(job.key);
+        if(written && found!=pending.end() && found->serial==job.serial) pending.erase(found);
+        if(!written) { failed=true; qWarning()<<"Scroll cache write failed:"<<file.errorString(); }
+      }
+      idle.notify_all();
+    }
+  }
+};
+
+constexpr int kCell=32;
 // Preserve every original row: vertical resampling would change displacement.
 QImage descriptorImage(const QImage &image) {
   return image.convertToFormat(QImage::Format_Grayscale8)
@@ -24,11 +118,14 @@ quint64 rowKey(const uchar *row,int width,int lane) {
   for(int x=begin;x<end;++x) {
     const int v=row[x]; lo=qMin(lo,v); hi=qMax(hi,v);
     if(x>begin && std::abs(v-int(row[x-1]))>8) ++edges;
-    // Gradient polarity survives a small brightness shift and antialiasing
-    // changes. It proposes positions only; original RGB overlap is validated.
+    // Coarse gradient sign and magnitude survive small brightness shifts.
+    // The extra magnitude bins retain discriminating digits in repeated text.
+    // Signatures only propose positions; original RGB overlap is validated.
     if(x>begin) {
       const int delta=v-int(row[x-1]);
-      hash=(hash^quint64(delta>10?2:delta<-10?1:0))*1099511628211ULL;
+      const int magnitude=std::abs(delta);
+      const int quantized=magnitude>100?3:magnitude>40?2:magnitude>10?1:0;
+      hash=(hash^quint64(quantized?(delta<0?quantized+4:quantized):0))*1099511628211ULL;
     }
   }
   return hi-lo>=20 && edges>=3 ? hash : 0;
@@ -36,105 +133,293 @@ quint64 rowKey(const uchar *row,int width,int lane) {
 }
 
 struct ScrollStitcherV2::State {
-  struct Part { QString path; QImage gray,thumb; int y,height; };
+  struct Part { QString path; QImage thumb; int y,height; std::vector<float> phase; };
   QTemporaryDir cache;
+  RawWriter writer{cache.filePath("pixels.rgb")};
   std::map<int,Part> parts;
   QHash<quint64,QList<int>> rows;
-  mutable QCache<int,QImage> pixelCache{32768};
-  int width=0,viewportHeight=0,top=0,bottom=0,position=0;
+  mutable QCache<int,QImage> pixelCache{16384};
+  int width=0,viewportHeight=0,top=0,bottom=0,position=0,thumbWidth=280;
+  double coordinate=0;
   quint64 revision=0,nextFile=0;
-  QImage lastAccepted;
+  QImage recent;
+  cv::Mat recentGray;
+  std::vector<cv::Point2f> recentFeatures;
   bool lost=false;
 
-  bool append(const QImage &pixels,int y) {
+  bool append(const QImage &pixels,int y,double phase=0) {
     if(!cache.isValid()) return false;
     const auto path=cache.filePath(QString::number(nextFile++)+".rgb");
-    QSaveFile file(path);
-    if(!file.open(QIODevice::WriteOnly) ||
-       file.write(reinterpret_cast<const char *>(pixels.constBits()),pixels.sizeInBytes())!=pixels.sizeInBytes() ||
-       !file.commit()) return false;
+    if(!writer.enqueue(path,pixels)) return false;
     auto gray=descriptorImage(pixels);
-    const int tw=qMin(280,pixels.width());
+    const int tw=qMin(thumbWidth,pixels.width());
     auto thumb=pixels.scaled(tw,qMax(1,qRound(double(pixels.height())*tw/pixels.width())),
                             Qt::IgnoreAspectRatio,Qt::SmoothTransformation);
-    parts.emplace(y,Part{path,gray,thumb,y,pixels.height()});
+    parts.emplace(y,Part{path,thumb,y,pixels.height(),
+                         std::vector<float>(size_t(pixels.height()),float(phase))});
     pixelCache.insert(y,new QImage(pixels),qMax(1,int(pixels.sizeInBytes()/1024)));
     for(int r=0;r<gray.height();++r) for(int lane=0;lane<3;++lane) {
       auto key=rowKey(gray.constScanLine(r),gray.width(),lane);
-      if(key) rows[key].append(y+r);
+      if(key && rows[key].size()<=96) rows[key].append(y+r);
     }
     if(!width) { width=pixels.width(); top=y; bottom=y+pixels.height(); }
     else { top=qMin(top,y); bottom=qMax(bottom,y+pixels.height()); }
+    while(thumbWidth>16 && qint64(bottom-top)*thumbWidth>qint64(width)*4096) {
+      thumbWidth=qMax(16,thumbWidth/2);
+      for(auto &[partY,part]:parts) {
+        Q_UNUSED(partY);
+        const int w=qMin(thumbWidth,width);
+        part.thumb=part.thumb.scaled(w,qMax(1,qRound(double(part.height)*w/width)),
+                                    Qt::IgnoreAspectRatio,Qt::SmoothTransformation);
+      }
+    }
     ++revision;
     return true;
   }
-  QImage read(int start,int count,bool gray=false) const {
+  QImage read(int start,int count) const {
     if(count<1 || start<top || start+count>bottom) return {};
-    QImage image(gray?qMin(256,width):width,count,gray?QImage::Format_Grayscale8:QImage::Format_RGB32);
+    QImage image(width,count,QImage::Format_RGB32);
     if(image.isNull()) return {};
     auto it=parts.upper_bound(start); if(it!=parts.begin()) --it;
     for(;it!=parts.end() && it->first<start+count;++it) {
       const auto &p=it->second;
       const int first=qMax(start,p.y),last=qMin(start+count,p.y+p.height);
       if(first>=last) continue;
-      if(gray) {
-        for(int y=first;y<last;++y)
-          std::memcpy(image.scanLine(y-start),p.gray.constScanLine(y-p.y),size_t(image.width()));
-      } else {
-        auto pixels=pixelCache.object(p.y);
-        if(!pixels) {
-          QImage value(width,p.height,QImage::Format_RGB32); QFile file(p.path);
-          if(value.isNull() || !file.open(QIODevice::ReadOnly) ||
-             file.read(reinterpret_cast<char *>(value.bits()),value.sizeInBytes())!=value.sizeInBytes()) return {};
-          if(value.sizeInBytes()/1024>pixelCache.maxCost()) {
-            std::memcpy(image.scanLine(first-start),value.constScanLine(first-p.y),size_t(last-first)*width*4); continue;
-          }
-          pixelCache.insert(p.y,new QImage(value),qMax(1,int(value.sizeInBytes()/1024))); pixels=pixelCache.object(p.y);
-        }
-        std::memcpy(image.scanLine(first-start),pixels->constScanLine(first-p.y),size_t(last-first)*width*4);
+      const auto pending=writer.pixels(p.path);
+      if(!pending.isNull()) {
+        std::memcpy(image.scanLine(first-start),pending.constScanLine(first-p.y),size_t(last-first)*width*4); continue;
       }
+      auto pixels=pixelCache.object(p.y);
+      if(!pixels) {
+        QImage value(width,p.height,QImage::Format_RGB32);
+        if(value.isNull() || !writer.load(p.path,value)) return {};
+        if(value.sizeInBytes()/1024>pixelCache.maxCost()) {
+          std::memcpy(image.scanLine(first-start),value.constScanLine(first-p.y),size_t(last-first)*width*4); continue;
+        }
+        pixelCache.insert(p.y,new QImage(value),qMax(1,int(value.sizeInBytes()/1024))); pixels=pixelCache.object(p.y);
+      }
+      std::memcpy(image.scanLine(first-start),pixels->constScanLine(first-p.y),size_t(last-first)*width*4);
     }
     return image;
   }
-  struct Validation { bool valid=false,boundary=false,cacheError=false; double error=1e10; };
-  Validation validate(const QImage &frame,int at) const {
+  enum class Seam { Unchanged, Rebased, Insufficient, Error };
+  Seam rebaseSeam(const QImage &frame,int at,double phase,bool prepend) {
+    const int probeBegin=prepend?top:qMax(at,bottom-32);
+    const int probeEnd=prepend?qMin(top+32,at+frame.height()):bottom;
+    if(probeEnd<=probeBegin) return Seam::Unchanged;
+    const auto original=read(probeBegin,probeEnd-probeBegin);
+    if(original.isNull()) return Seam::Error;
+    int differences=0;
+    for(int y=probeBegin;y<probeEnd;y+=2) {
+      const auto a=reinterpret_cast<const QRgb *>(original.constScanLine(y-probeBegin));
+      const auto b=reinterpret_cast<const QRgb *>(frame.constScanLine(y-at));
+      for(int x=0;x<width;x+=2) {
+        const int delta=qMax(std::abs(qRed(a[x])-qRed(b[x])),qMax(std::abs(qGreen(a[x])-qGreen(b[x])),std::abs(qBlue(a[x])-qBlue(b[x]))));
+        if(delta>7) ++differences;
+      }
+    }
+    if(differences<4) return Seam::Unchanged;
+    // The current source must cover the whole bounded seam tail. Otherwise
+    // an animated object could be assembled from two incompatible phases.
+    const int begin=prepend?top:qMax(top,bottom-144);
+    const int end=prepend?qMin(bottom,top+144):bottom;
+    if(at>begin || at+frame.height()<end) return Seam::Insufficient;
+    auto it=parts.upper_bound(begin); if(it!=parts.begin()) --it;
+    for(;it!=parts.end() && it->first<end;++it) {
+      auto &p=it->second;
+      const int first=qMax(begin,p.y),last=qMin(end,p.y+p.height);
+      if(first>=last) continue;
+      const auto previous=read(p.y,p.height);
+      if(previous.isNull()) return Seam::Error;
+      auto updated=previous;
+      updated.detach();
+      for(int y=first;y<last;++y)
+        std::memcpy(updated.scanLine(y-p.y),frame.constScanLine(y-at),size_t(width)*4);
+      if(!writer.enqueue(p.path,updated)) return Seam::Error;
+      const auto oldGray=descriptorImage(previous);
+      for(int y=first;y<last;++y) for(int lane=0;lane<3;++lane) {
+        const auto key=rowKey(oldGray.constScanLine(y-p.y),oldGray.width(),lane);
+        if(key && rows[key].size()<=96) rows[key].removeAll(y);
+      }
+      const auto gray=descriptorImage(updated);
+      for(int y=first;y<last;++y) p.phase[size_t(y-p.y)]=float(phase);
+      const int tw=qMin(thumbWidth,width);
+      p.thumb=updated.scaled(tw,qMax(1,qRound(double(p.height)*tw/width)),
+                             Qt::IgnoreAspectRatio,Qt::SmoothTransformation);
+      for(int y=first;y<last;++y) for(int lane=0;lane<3;++lane) {
+        const auto key=rowKey(gray.constScanLine(y-p.y),gray.width(),lane);
+        if(key && rows[key].size()<=96) rows[key].append(y);
+      }
+      pixelCache.insert(p.y,new QImage(updated),qMax(1,int(updated.sizeInBytes()/1024)));
+    }
+    ++revision;
+    return Seam::Rebased;
+  }
+  void remember(const QImage &frame,cv::Mat gray) {
+    recent=frame;
+    recentGray=std::move(gray);
+    recentFeatures=ScrollMotion::features(recentGray);
+    lost=false;
+  }
+
+  struct Validation { bool valid=false,boundary=false,cacheError=false; double error=1e10; bool perfect=false; };
+  Validation validate(const QImage &frame,int at,double phase=0) const {
     const int begin=qMax(top,at),end=qMin(bottom,at+frame.height()),overlap=end-begin;
     if(overlap<qMin(96,qMax(24,viewportHeight/5))) return {};
     const auto reference=read(begin,overlap);
     if(reference.isNull()) return {false,false,true};
-    qint64 changed=0,total=qint64(overlap)*width;
-    int left=width,right=-1,first=overlap,last=-1,textRows=0;
-    qint64 error=0;
-    for(int y=0;y<overlap;++y) {
-      const auto a=reinterpret_cast<const QRgb *>(reference.constScanLine(y));
-      const auto b=reinterpret_cast<const QRgb *>(frame.constScanLine(begin-at+y));
-      int rowEdges=0;
-      for(int x=0;x<width;++x) {
-        const int delta=qMax(std::abs(qRed(a[x])-qRed(b[x])),qMax(std::abs(qGreen(a[x])-qGreen(b[x])),std::abs(qBlue(a[x])-qBlue(b[x]))));
-        error+=delta;
-        if(delta>6) { ++changed; left=qMin(left,x); right=qMax(right,x); first=qMin(first,y); last=y; }
-        if(x && std::abs(qGray(a[x])-qGray(a[x-1]))>12) ++rowEdges;
-        if(changed>8 && (right-left+1>qMin(96,width/5) || last-first+1>qMin(96,overlap/4)))
-          return {false,first<8 || last>=overlap-8 || last-first>overlap*3/4};
-      }
-      if(rowEdges>=6) ++textRows;
+    std::vector<float> phases(static_cast<size_t>(overlap),0.0f);
+    auto part=parts.upper_bound(begin); if(part!=parts.begin()) --part;
+    for(;part!=parts.end() && part->first<end;++part) {
+      const auto &p=part->second;
+      for(int y=qMax(begin,p.y);y<qMin(end,p.y+p.height);++y)
+        phases[size_t(y-begin)]=p.phase[size_t(y-p.y)];
     }
-    // Blank overlap is not evidence of displacement, even when pixel-identical.
-    if(textRows<qMin(16,qMax(5,overlap/12))) return {};
-    if(!changed) return {true,false,false,0};
-    const QRect change(QPoint(left,first),QPoint(right,last));
-    // Only one compact interior repaint may be ignored. In particular, scattered
-    // line-number changes, fixed headers and sidebars cannot be masked away.
-    const bool compact=change.width()<=qMin(96,width/5) && change.height()<=qMin(96,overlap/4) &&
-        qint64(change.width())*change.height()<=total/40 && first>=8 && last<overlap-8 && left>=8 && right<width-8;
-    if(compact) return {true,false,false,double(error)/double(total)};
-    const bool boundary=first<8 || last>=overlap-8 || change.height()>overlap*3/4;
-    return {false,boundary,false,double(error)/double(total)};
+    bool exact=std::abs(phase)<0.00000001 &&
+      std::all_of(phases.begin(),phases.end(),[](float value) { return std::abs(value)<0.00000001; });
+    if(exact) for(int y=0;y<overlap;++y)
+      if(std::memcmp(reference.constScanLine(y),frame.constScanLine(begin-at+y),size_t(width)*4)) { exact=false; break; }
+    if(exact) {
+      int evidence=0;
+      for(int y=0;y<overlap;y+=2) {
+        const auto pixels=reinterpret_cast<const QRgb *>(reference.constScanLine(y));
+        for(int x=2;x<width;x+=2) if(std::abs(qGray(pixels[x])-qGray(pixels[x-2]))>16) ++evidence;
+      }
+      return evidence>=qMax(100,overlap*width/500)?Validation{true,false,false,0,true}:Validation{};
+    }
+    const int nx=(width+kCell-1)/kCell,ny=(overlap+kCell-1)/kCell;
+    struct Cell { int samples=0,changed=0,texture=0; quint64 residual=0; };
+    std::vector<Cell> cells(size_t(nx)*ny);
+    int changes=0,texture=0;
+    for(int y=0;y<overlap;y+=2) {
+      const double delta=phase-phases[size_t(y)];
+      const int shift=int(std::floor(delta));
+      const double fraction=delta-shift;
+      const int first=y+shift,second=first+1;
+      if(first<0 || first>=overlap || (fraction>0.02 && second>=overlap) ||
+         std::abs(phases[size_t(first)]-phases[size_t(y)])>0.03 ||
+         (fraction>0.02 && std::abs(phases[size_t(second)]-phases[size_t(y)])>0.03)) continue;
+      const auto a=reinterpret_cast<const QRgb *>(reference.constScanLine(first));
+      const auto next=fraction>0.02?reinterpret_cast<const QRgb *>(reference.constScanLine(second)):a;
+      const auto b=reinterpret_cast<const QRgb *>(frame.constScanLine(begin-at+y));
+      for(int x=0;x<width;x+=2) {
+        auto &cell=cells[size_t(y/kCell)*nx+x/kCell]; ++cell.samples;
+        int difference;
+        if(fraction<=0.02) {
+          difference=qMax(std::abs(qRed(a[x])-qRed(b[x])),qMax(std::abs(qGreen(a[x])-qGreen(b[x])),std::abs(qBlue(a[x])-qBlue(b[x]))));
+        } else {
+          const int r=qRound(qRed(a[x])*(1-fraction)+qRed(next[x])*fraction);
+          const int g=qRound(qGreen(a[x])*(1-fraction)+qGreen(next[x])*fraction);
+          const int blue=qRound(qBlue(a[x])*(1-fraction)+qBlue(next[x])*fraction);
+          difference=qMax(std::abs(r-qRed(b[x])),qMax(std::abs(g-qGreen(b[x])),std::abs(blue-qBlue(b[x]))));
+        }
+        cell.residual+=quint64(difference);
+        if(difference>7) { ++cell.changed; ++changes; }
+        if(x>=2 && std::abs(qGray(a[x])-qGray(a[x-2]))>16) { ++cell.texture; ++texture; }
+      }
+    }
+    // Identical blank pixels provide no document-coordinate evidence.
+    if(texture<qMax(100,overlap*width/500)) return {};
+    std::vector<uchar> bad(cells.size());
+    int badCount=0,badChanges=0,goodTexture=0;
+    quint64 residual=0,totalResidual=0;
+    int residualSamples=0,totalSamples=0;
+    for(size_t i=0;i<cells.size();++i) {
+      const auto &cell=cells[i];
+      totalResidual+=cell.residual; totalSamples+=cell.samples;
+      bad[i]=cell.changed>qMax(6,cell.samples/30);
+      if(bad[i]) { ++badCount; badChanges+=cell.changed; }
+      else { goodTexture+=cell.texture; residual+=cell.residual; residualSamples+=cell.samples; }
+    }
+    if(goodTexture<texture*2/3 || changes-badChanges>qMax(24,overlap*width/800)) return {};
+    const double score=residualSamples?double(residual)/(255.*residualSamples)+
+        (totalSamples?0.01*double(totalResidual)/(255.*totalSamples):0.):1.;
+    if(!badCount) return {true,false,false,score};
+    if(badCount>int(cells.size())/8) return {false,true,false};
+    std::vector<uchar> visited(cells.size());
+    int islands=0; bool boundary=false;
+    for(int y=0;y<ny;++y) for(int x=0;x<nx;++x) {
+      const int seed=y*nx+x;
+      if(!bad[seed] || visited[seed]) continue;
+      int left=x,right=x,first=y,last=y,area=0;
+      std::vector<int> queue{seed}; visited[seed]=1;
+      for(size_t i=0;i<queue.size();++i) {
+        const int index=queue[i],cy=index/nx,cx=index%nx;
+        left=qMin(left,cx); right=qMax(right,cx); first=qMin(first,cy); last=qMax(last,cy); ++area;
+        for(const auto [dx,dy]:{std::pair{-1,0},{1,0},{0,-1},{0,1}}) {
+          const int xx=cx+dx,yy=cy+dy;
+          if(xx<0 || yy<0 || xx>=nx || yy>=ny) continue;
+          const int neighbor=yy*nx+xx;
+          if(bad[neighbor] && !visited[neighbor]) { visited[neighbor]=1; queue.push_back(neighbor); }
+        }
+      }
+      ++islands;
+      // A compact animated object may enter the overlap at its edge. A fixed
+      // header or scrollbar spans a whole axis and fails these extent limits.
+      if(((left==0 || right==nx-1) && right-left<=1 && last-first>=2) ||
+         (right-left+1)*kCell>qMin(192,width/3) ||
+         (last-first+1)*kCell>qMin(128,overlap/3) || area>24) boundary=true;
+    }
+    if(boundary || islands>8) return {false,boundary,false,double(changes)/(overlap*width/4)};
+    return {true,false,false,score};
+  }
+
+  struct Candidate { int at=0; double phase=0; int votes=0; double weight=0; };
+  // A perfect integer match can bypass historical searches only when both
+  // possible overlap ends contain a unique coordinate or a novel row. Any
+  // competing contiguous overlap must contain one of these two witnesses.
+  bool uniqueEdges(const QImage &gray,int at) const {
+    const int overlap=qMin(bottom,at+viewportHeight)-qMax(top,at);
+    if(overlap<qMin(96,qMax(24,viewportHeight/5))) return false;
+    auto part=parts.upper_bound(qMax(top,at)); if(part!=parts.begin()) --part;
+    for(;part!=parts.end() && part->first<qMin(bottom,at+viewportHeight);++part)
+      for(int y=qMax(qMax(top,at),part->second.y);y<qMin(qMin(bottom,at+viewportHeight),part->second.y+part->second.height);++y)
+        if(std::abs(part->second.phase[size_t(y-part->second.y)])>0.00000001) return false;
+    const int edge=qMin(96,qMax(24,viewportHeight/5));
+    auto witness=[&](int first,int last) {
+      for(int y=first;y<last;++y) for(int lane=0;lane<3;++lane) {
+        const auto key=rowKey(gray.constScanLine(y),gray.width(),lane);
+        if(!key) continue;
+        const auto found=rows.constFind(key);
+        if(found==rows.cend() || found->isEmpty()) return true;
+        if(found->size()==1 && found->front()-y==at) return true;
+      }
+      return false;
+    };
+    return witness(0,edge) && witness(gray.height()-edge,gray.height());
+  }
+  std::vector<Candidate> indexed(const QImage &gray) const {
+    QHash<qint64,Candidate> votes;
+    for(int y=2;y<gray.height()-2;y+=3) for(int lane=0;lane<3;++lane) {
+      const auto key=rowKey(gray.constScanLine(y),gray.width(),lane);
+      if(!key) continue;
+      const auto found=rows.constFind(key);
+      if(found==rows.cend() || found->size()>96) continue;
+      for(int documentY:*found) {
+        const int at=documentY-y;
+        if(qMin(bottom,at+gray.height())-qMax(top,at)<qMin(96,qMax(24,viewportHeight/5))) continue;
+        auto part=parts.upper_bound(documentY); if(part!=parts.begin()) --part;
+        if(part==parts.end() || documentY<part->second.y || documentY>=part->second.y+part->second.height) continue;
+        const auto phase=part->second.phase[size_t(documentY-part->second.y)];
+        const qint64 voteKey=qint64(at)*64+qRound(phase*16)+16;
+        auto &vote=votes[voteKey]; vote.at=at; vote.phase=phase; ++vote.votes;
+        vote.weight+=1./found->size();
+      }
+    }
+    std::vector<Candidate> result;
+    for(auto it=votes.cbegin();it!=votes.cend();++it)
+      if(it.value().votes>=3) result.push_back(it.value());
+    std::sort(result.begin(),result.end(),[](auto a,auto b) {
+      return a.weight!=b.weight?a.weight>b.weight:a.votes>b.votes;
+    });
+    if(result.size()>12) result.resize(12);
+    return result;
   }
 };
 
 ScrollStitcherV2::ScrollStitcherV2():state(std::make_unique<State>()) {}
 ScrollStitcherV2::~ScrollStitcherV2()=default;
+void ScrollStitcherV2::finishPendingWrites() { state->writer.waitIdle(); }
 QSize ScrollStitcherV2::size() const { return {state->width,state->bottom-state->top}; }
 quint64 ScrollStitcherV2::contentRevision() const { return state->revision; }
 int ScrollStitcherV2::viewportPosition() const { return state->position-state->top; }
@@ -154,51 +439,103 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
   if(!s.width) {
     if(qint64(frame.width())*frame.height()>64000000) return Engine::LimitReached;
     if(!s.append(frame,0)) return Engine::CacheError;
-    s.viewportHeight=frame.height(); s.lastAccepted=frame; return Engine::Started;
+    s.viewportHeight=frame.height(); s.remember(frame,ScrollMotion::frame(frame));
+    return Engine::Started;
   }
   if(frame.size()!=QSize(s.width,s.viewportHeight)) { s.lost=true; return Engine::BoundaryMismatch; }
-  if(!s.lost && frame==s.lastAccepted) return Engine::Unchanged;
-  const auto gray=descriptorImage(frame);
-  QHash<int,int> votes;
-  for(int y=0;y<gray.height();++y) for(int lane=0;lane<3;++lane) {
-    const auto key=rowKey(gray.constScanLine(y),gray.width(),lane);
-    if(!key) continue;
-    auto found=s.rows.constFind(key);
-    // Ubiquitous rows do not help identify a location and must not explode work.
-    if(found==s.rows.cend() || found->size()>96) continue;
-    for(int documentY:*found) {
-      const int at=documentY-y;
-      if(qMin(s.bottom,at+frame.height())-qMax(s.top,at)>=qMin(96,qMax(24,frame.height()/5))) ++votes[at];
+  if(frame==s.recent) return Engine::Unchanged;
+  QElapsedTimer timing; timing.start();
+  auto gray=ScrollMotion::frame(frame);
+  const auto motion=ScrollMotion::track(s.recentGray,gray,s.recentFeatures);
+  std::vector<State::Candidate> candidates;
+  if(motion.reliable) {
+    // Retain the fractional displacement through tracking, then snap only
+    // the confirmed original-pixel output position to an integer row.
+    const double coordinate=s.coordinate+motion.dy*double(frame.height())/gray.rows;
+    const int center=qRound(coordinate);
+    candidates.push_back({center,coordinate-center,0});
+  }
+  const auto motionNs=timing.nsecsElapsed();
+  const auto signature=descriptorImage(frame);
+  bool direct=false;
+  State::Candidate directCandidate;
+  if(motion.reliable) {
+    const int center=qRound(s.coordinate+motion.dy*double(frame.height())/gray.rows);
+    const auto result=s.validate(frame,center,0);
+    if(result.cacheError) return Engine::CacheError;
+    if(result.perfect && s.uniqueEdges(signature,center)) {
+      direct=true; directCandidate={center,0,0}; candidates={directCandidate};
     }
   }
-  std::vector<std::pair<int,int>> candidates;
-  for(auto it=votes.cbegin();it!=votes.cend();++it) if(it.value()>=8) candidates.emplace_back(it.value(),it.key());
-  std::sort(candidates.begin(),candidates.end(),[](auto a,auto b) { return a.first>b.first; });
+  const auto indexed=direct?std::vector<State::Candidate>{}:s.indexed(signature);
+  const auto indexNs=timing.nsecsElapsed();
+  const bool debug=qEnvironmentVariableIsSet("PICUT_SCROLL_DEBUG");
+  if(debug) qInfo()<<"motion"<<s.position<<motion.dy<<motion.reliable<<"index"<<indexed.size();
+  if(candidates.empty()) candidates=indexed;
   if(candidates.empty()) { s.lost=true; return Engine::NoOverlap; }
-  std::vector<std::pair<int,double>> valid;
-  bool boundary=false;
-  int considered=0;
-  for(const auto &[count,at]:candidates) {
-    if(count<qMax(8,candidates.front().first/8)) break;
-    if(++considered>512) { s.lost=true; return Engine::NoOverlap; }
-    const auto result=s.validate(frame,at);
-    if(result.cacheError) return Engine::CacheError;
+  struct Valid { State::Candidate candidate; double error; };
+  std::vector<Valid> valid;
+  bool boundary=false,unambiguous=direct;
+  auto check=[&](State::Candidate candidate) {
+    const auto result=direct && candidate.at==directCandidate.at && candidate.phase==0?
+      State::Validation{true,false,false,0,true}:s.validate(frame,candidate.at,candidate.phase);
+    if(debug) qInfo()<<"candidate"<<candidate.at<<candidate.phase<<candidate.votes<<"valid"<<result.valid<<"error"<<result.error<<"boundary"<<result.boundary;
+    if(result.cacheError) return false;
     boundary|=result.boundary;
-    if(result.valid) valid.emplace_back(at,result.error);
-    if(valid.size()>1) { s.lost=true; return Engine::NoOverlap; }
+    if(result.valid) {
+      valid.push_back({candidate,result.error});
+      if(result.perfect && candidate.phase==0 && s.uniqueEdges(signature,candidate.at)) unambiguous=true;
+    }
+    return true;
+  };
+  for(auto candidate:candidates) {
+    if(!check(candidate)) return Engine::CacheError;
+    if(unambiguous) break;
   }
-  if(valid.size()!=1) { s.lost=true; return boundary?Engine::BoundaryMismatch:Engine::NoOverlap; }
-  const int at=valid.front().first;
+  if(motion.reliable && valid.empty()) {
+    const auto center=candidates.front();
+    for(int offset:{-1,1,-2,2})
+      if(!check({center.at+offset,center.phase-offset,0})) return Engine::CacheError;
+  }
+  // An exact row-signature match is useful for ambiguous repeated rows. Limit
+  // independent original-pixel checks to the strongest historical positions.
+  int alternatives=0;
+  for(const auto &candidate:indexed) {
+    if(unambiguous || alternatives>=12) break;
+    if(candidate.weight<indexed.front().weight*0.20) break;
+    if(std::any_of(candidates.begin(),candidates.end(),[&](auto item) {
+      return item.at==candidate.at && std::abs(item.phase-candidate.phase)<0.00001;
+    })) continue;
+    if(!check(candidate)) return Engine::CacheError;
+    ++alternatives;
+  }
+  if(valid.empty()) { s.lost=true; return boundary?Engine::BoundaryMismatch:Engine::NoOverlap; }
+  std::sort(valid.begin(),valid.end(),[](auto a,auto b){return a.error<b.error;});
+  const auto chosen=valid.front().candidate;
+  const int at=chosen.at;
+  for(size_t i=1;!unambiguous && i<valid.size();++i)
+    if(std::abs(valid[i].candidate.at+valid[i].candidate.phase-at-chosen.phase)>2 &&
+       (valid.front().error>0.0000000001 || valid[i].error<=0.0000000001)) {
+      s.lost=true; return Engine::NoOverlap;
+    }
+  const auto validationNs=timing.nsecsElapsed();
   const int leading=qMax(0,s.top-at),trailing=qMax(0,at+frame.height()-s.bottom);
   if(leading || trailing) {
     if(qint64(s.width)*(s.bottom-s.top+leading+trailing)>64000000 ||
        s.bottom-s.top+leading+trailing>100000 || s.parts.size()>=8192) return Engine::LimitReached;
-    // Equal viewport sizes imply only one end can grow at a time. No committed
-    // row is replaced, including when the user returns to an animated region.
-    if(leading && !s.append(frame.copy(0,0,s.width,leading),at)) return Engine::CacheError;
-    if(trailing && !s.append(frame.copy(0,frame.height()-trailing,s.width,trailing),s.bottom)) return Engine::CacheError;
+    // Only a bounded, unfrozen seam tail can change source on extension.
+    // The rest of the confirmed document remains untouched.
+    const auto seam=s.rebaseSeam(frame,at,chosen.phase,leading>0);
+    if(seam==State::Seam::Error) return Engine::CacheError;
+    if(seam==State::Seam::Insufficient) { s.lost=true; return Engine::NoOverlap; }
+    if(leading && !s.append(frame.copy(0,0,s.width,leading),at,chosen.phase)) return Engine::CacheError;
+    if(trailing && !s.append(frame.copy(0,frame.height()-trailing,s.width,trailing),s.bottom,chosen.phase)) return Engine::CacheError;
   }
+  const auto storageNs=timing.nsecsElapsed();
   const bool moved=at!=s.position;
-  s.position=at; s.lastAccepted=frame; s.lost=false;
+  s.position=at; s.coordinate=at+chosen.phase; s.remember(frame,std::move(gray));
+  if(qEnvironmentVariableIsSet("PICUT_SCROLL_PROFILE"))
+    qInfo()<<"SCROLL_PHASE_NS"<<motionNs<<indexNs-motionNs<<validationNs-indexNs
+           <<storageNs-validationNs<<timing.nsecsElapsed()-storageNs;
   return leading || trailing?Engine::Appended:moved?Engine::Revisited:Engine::Unchanged;
 }

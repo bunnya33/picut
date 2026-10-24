@@ -56,12 +56,13 @@ private:
   bool refreshVisible(const QImage &frame, int at);
 };
 
-// Independent static-document engine. Every accepted frame is located against
-// immutable document rows; rejected frames never become matching references.
+// Continuous document-coordinate engine with an independently validated seam.
+// Original pixels are frozen except for a bounded tail when a new strip joins.
 class ScrollStitcherV2 {
 public:
   ScrollStitcherV2();
   ~ScrollStitcherV2();
+  void finishPendingWrites();
   ScrollStitcher::Result accept(const QImage &image, int direction=0);
   QImage image() const;
   QSize size() const;
@@ -122,12 +123,18 @@ private:
   bool live = false, autoScrolling = false, closing = false, finishing = false;
   bool excluded = false, capturing = false;
   bool backgroundAcquisition=false;
+  QString pendingAction;
+  qint64 paintCapturedAtNs=0, paintPublishedAtNs=0;
+  quint64 paintSerial=0, measuredPaintSerial=0;
+  qint64 paintTotalNs=0, paintMaximumNs=0, displayMaximumNs=0, uiWaitMaximumNs=0;
+  int paintedUpdates=0;
   QList<int> hotkeys;
   void installInputHooks();
   void releaseInputHooks();
   void reportAlignmentFailure(ScrollStitcher::Result result);
   void displayResult(ScrollStitcher::Result result,ScrollStitcher::Preview next);
   void stopPumps(bool drain);
+  void finishStopped();
   QImage takeFrame();
   void place();
   void updateMask();

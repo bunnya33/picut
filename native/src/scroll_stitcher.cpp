@@ -672,6 +672,7 @@ void ScrollStitcher::Preview::paint(QPainter &painter,QRectF target) const {
   for (const auto &strip : parts) {
     const double top=std::round(target.y()+target.height()*strip.y/size.height());
     const double bottom=std::round(target.y()+target.height()*(strip.y+strip.height)/size.height());
+    if(bottom<=top) continue;
     painter.drawImage(QRectF(target.x(),top,target.width(),bottom-top),
                        strip.thumbnail,QRectF(0,double(strip.sourceY)*strip.thumbnail.height()/strip.sourceHeight,
                            strip.thumbnail.width(),double(strip.height)*strip.thumbnail.height()/strip.sourceHeight));

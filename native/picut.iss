@@ -1,4 +1,4 @@
-﻿; Built by build-installer.ps1 from an already deployed, validated runtime.
+; Built by build-installer.ps1 from an already deployed, validated runtime.
 #ifndef AppVersion
   #error AppVersion must be supplied by build-installer.ps1
 #endif
@@ -8,12 +8,12 @@
 
 [Setup]
 #ifdef ScrollTrial
-AppId={{D3863EF9-0C7D-44B4-AC72-07805DEB96AF}
-AppName=picut 长截图试验版
-AppVerName=picut {#AppVersion} 长截图试验版
-DefaultDirName={localappdata}\Programs\picut-scroll-trial
-DefaultGroupName=picut 长截图试验版
-UninstallDisplayName=picut 长截图试验版
+AppId={{0F67C0EE-D7EA-461F-ACAC-B45F9B5F4A0C}
+AppName=picut 长截图流畅性试验版
+AppVerName=picut {#AppVersion} 长截图流畅性试验版
+DefaultDirName={localappdata}\Programs\picut-scroll-performance-trial
+DefaultGroupName=picut 长截图流畅性试验版
+UninstallDisplayName=picut 长截图流畅性试验版
 OutputBaseFilename=picut-{#AppVersion}-scroll-trial-setup-x64
 #else
 #ifdef TranslationTrial
@@ -83,9 +83,9 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 #ifdef ScrollTrial
-Name: "{group}\picut 长截图试验版"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.ScrollTrial"
+Name: "{group}\picut 长截图流畅性试验版"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.ScrollPerformanceTrial"
 Name: "{group}\{cm:ReadmeShortcut}"; Filename: "{app}\使用说明.txt"
-Name: "{autodesktop}\picut 长截图试验版"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.ScrollTrial"; Tasks: desktopicon
+Name: "{autodesktop}\picut 长截图流畅性试验版"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.ScrollPerformanceTrial"; Tasks: desktopicon
 #else
 #ifdef TranslationTrial
 Name: "{group}\picut 图片翻译试用版"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; AppUserModelID: "picut.TranslationTrial"

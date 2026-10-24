@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.24)
-project(FloatShotNative VERSION 0.5.27 LANGUAGES CXX RC)
+project(FloatShotNative VERSION 0.5.29 LANGUAGES CXX RC)
 # CMake can misdecode the Chinese MSVC /showIncludes prefix on UTF-8 consoles.
 if(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX MATCHES "娉ㄦ剰")
     set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件: ")
@@ -21,6 +21,22 @@ foreach(component IN ITEMS opencv_imgproc4110 opencv_core4110 zlib)
     set_target_properties(${component} PROPERTIES IMPORTED_LOCATION
         "${OCR_SDK}/opencv-min/x64/vc17/staticlib/${component}.lib")
 endforeach()
+set(SCROLL_CV_SDK "${OCR_SDK}/opencv-scroll")
+if(NOT EXISTS "${SCROLL_CV_SDK}/x64/vc17/staticlib/opencv_video4110.lib")
+    message(FATAL_ERROR "Scroll SDK missing: run native/setup-scroll-sdk.ps1 first")
+endif()
+foreach(component IN ITEMS core imgproc video)
+    add_library(PicutScrollCv_${component} STATIC IMPORTED)
+    set_target_properties(PicutScrollCv_${component} PROPERTIES IMPORTED_LOCATION
+        "${SCROLL_CV_SDK}/x64/vc17/staticlib/opencv_${component}4110.lib")
+endforeach()
+add_library(PicutScrollCv_zlib STATIC IMPORTED)
+set_target_properties(PicutScrollCv_zlib PROPERTIES IMPORTED_LOCATION
+    "${SCROLL_CV_SDK}/x64/vc17/staticlib/zlib.lib")
+add_library(PicutScrollVision INTERFACE)
+target_include_directories(PicutScrollVision INTERFACE "${SCROLL_CV_SDK}/include")
+target_link_libraries(PicutScrollVision INTERFACE PicutScrollCv_video PicutScrollCv_imgproc
+    PicutScrollCv_core PicutScrollCv_zlib)
 add_library(OnnxRuntime SHARED IMPORTED)
 set_target_properties(OnnxRuntime PROPERTIES
     IMPORTED_IMPLIB "${OCR_SDK}/onnxruntime-win-x64-1.22.0/lib/onnxruntime.lib"
@@ -93,7 +109,7 @@ if(BUILD_TESTING)
     target_include_directories(FloatShotScrollV2Tests PRIVATE src)
     target_link_libraries(FloatShotScrollV2Tests PRIVATE Qt6::Test Qt6::Widgets user32 gdi32 d3d11 dxgi dwmapi)
     add_test(NAME scroll-v2 COMMAND FloatShotScrollV2Tests)
-    set_tests_properties(scroll-v2 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PICUT_SCROLL_V2_TEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../.test-artifacts/native-v0.5.27-scroll-v2" TIMEOUT 180)
+    set_tests_properties(scroll-v2 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PICUT_SCROLL_V2_TEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../.test-artifacts/native-v0.5.29-scroll-v2" TIMEOUT 180)
     qt_add_executable(FloatShotTranslationTests tests/translation_tests.cpp
         src/translation_terms.cpp src/translation_terms.h
         src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h
@@ -142,3 +158,9 @@ if(BUILD_TESTING)
     add_test(NAME scroll-ui-windows COMMAND FloatShotNativeTests scrollDesktopIndependentProducer scrollDesktopManualAndAutomatic)
     set_tests_properties(scroll-ui-windows PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 60)
 endif()
+foreach(scroll_target IN ITEMS FloatShotNative FloatShotNativeTests FloatShotScrollV2Tests)
+    if(TARGET ${scroll_target})
+        target_sources(${scroll_target} PRIVATE src/scroll_motion.cpp src/scroll_motion.h)
+        target_link_libraries(${scroll_target} PRIVATE PicutScrollVision)
+    endif()
+endforeach()

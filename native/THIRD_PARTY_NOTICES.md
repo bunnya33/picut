@@ -1,4 +1,4 @@
-# picut Native v0.5.24 translation trial third-party notices
+# picut Native v0.5.29 scroll performance trial third-party notices
 
 This release uses native C++ and dynamically linked Qt. Python, PySide6, Shiboken, NumPy, and PyInstaller are not part of this release.
 
@@ -24,11 +24,15 @@ CTranslate2 4.6.0 is locally modified by `native/translation-sdk/windows-thread-
 | ONNX Runtime CPU, dynamically linked in OCR worker only | 1.22.0 | MIT and bundled notices. https://github.com/microsoft/onnxruntime/tree/v1.22.0 |
 | ONNX Runtime DirectML, separate GPU OCR worker runtime | 1.22.0 | MIT and bundled notices. https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime.DirectML/1.22.0 |
 | DirectML, loaded by GPU OCR worker only | 1.15.4 | Microsoft DirectML runtime license; LICENSE-CODE applies to accompanying code. https://www.nuget.org/packages/Microsoft.AI.DirectML/1.15.4 |
-| OpenCV core / imgproc, statically linked in OCR worker only | 4.11.0 | Apache-2.0. https://github.com/opencv/opencv/tree/4.11.0 |
+| OpenCV core / imgproc in OCR worker; core / imgproc / video in the scrolling capture application, statically linked | 4.11.0 | Apache-2.0. https://github.com/opencv/opencv/tree/4.11.0 |
+| zlib, OpenCV's static dependency | 1.3.1 | zlib license. Copyright Jean-loup Gailly and Mark Adler. https://zlib.net/ |
+| SoftFloat routines in OpenCV core | Bundled in OpenCV 4.11.0 | BSD-3-Clause. John R. Hauser / The Regents of the University of California. License text: licenses/OpenCV-SoftFloat-BSD.txt |
 | PP-OCRv6 small detector / recognizer and PP-LCNet x1.0 text-line orientation | PaddleOCR models converted by RapidAI/RapidOCR v3.10.0 | Apache-2.0. https://github.com/PaddlePaddle/PaddleOCR and https://www.modelscope.cn/models/RapidAI/RapidOCR/files |
 
 License texts, Qt bundled-component notices, and recording FFmpeg build configuration are in `licenses/`. Qt DLLs and plugins remain separate and can be replaced with compatible builds. Application C++ sources and CMake/PowerShell build scripts are in `native/` in the accompanying workspace. Qt source archives contain the corresponding module sources and additional third-party notices. System fonts are not redistributed.
 
 Qt Multimedia is loaded only when opening a video preview. The recording FFmpeg executable runs only during recording and final audio muxing; it is not an idle background process.
 
-PaddleOCR runs locally in the separate C++ executable `FloatShotPaddleOcr.exe`. No server connection or Python interpreter is required. The optional GPU path uses the runtimes under `gpu/`; CPU inference remains available without a compatible GPU. DirectML runtime/code licenses and third-party notices, plus ONNX Runtime DirectML notices, are included under `licenses/`. All original-precision model files are bundled under `ocr/`; their fixed source paths and SHA-256 checksums are recorded in `ocr/models.json` and `native/setup-ocr-sdk.ps1`. This release uses PP-OCRv6 small detection/recognition with the PP-LCNet x1.0 server orientation classifier. Weights are not quantized or edited. Medium/tiny/v5 experiment weights are not bundled. The official Small main model supports 50 languages, not every writing system. ONNX Runtime telemetry events are disabled by the worker. OpenCV codec/video/GUI modules are not linked; Qt decodes input images.
+PaddleOCR runs locally in the separate C++ executable `FloatShotPaddleOcr.exe`. No server connection or Python interpreter is required. The optional GPU path uses the runtimes under `gpu/`; CPU inference remains available without a compatible GPU. DirectML runtime/code licenses and third-party notices, plus ONNX Runtime DirectML notices, are included under `licenses/`. All original-precision model files are bundled under `ocr/`; their fixed source paths and SHA-256 checksums are recorded in `ocr/models.json` and `native/setup-ocr-sdk.ps1`. This release uses PP-OCRv6 small detection/recognition with the PP-LCNet x1.0 server orientation classifier. Weights are not quantized or edited. Medium/tiny/v5 experiment weights are not bundled. The official Small main model supports 50 languages, not every writing system. ONNX Runtime telemetry events are disabled by the worker. The OCR worker does not link OpenCV video, codecs or GUI modules; Qt decodes input images.
+
+Scrolling capture uses OpenCV's sparse pyramidal Lucas–Kanade optical flow locally on CPU. The application links only core, imgproc and video, without opencv_world, DNN models, OpenCL, IPP or a Python runtime. Tracking resources are created when a scrolling capture session starts. OpenCV's video module supplies motion tracking, not recording or video decoding. Recording continues to use the separate FFmpeg process.

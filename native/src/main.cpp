@@ -15,14 +15,14 @@ static int runApplication(int argc, char **argv) {
   enableDpi();
   QApplication app(argc, argv);
   app.setApplicationName("picut");
-  app.setApplicationDisplayName("picut 长截图试验版");
+  app.setApplicationDisplayName("picut 长截图流畅性试验版");
   app.setOrganizationName("picut");
-  app.setApplicationVersion("0.5.27");
+  app.setApplicationVersion("0.5.29");
   // Keep experimental captures and settings separate from the accepted release.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(
                 QStandardPaths::GenericDataLocation) +
-                "/FloatShot/FloatShotNative-ScrollV2Trial").toUtf8());
+                "/FloatShot/FloatShotNative-ScrollPerformanceTrial").toUtf8());
   app.setQuitOnLastWindowClosed(false);
   app.setStyle("Fusion");
   QCommandLineParser parser;

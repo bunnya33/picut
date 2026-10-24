@@ -1,5 +1,7 @@
 #include <future>
 #include <thread>
+#include <chrono>
+#include <mutex>
 #include "annotation.h"
 #include "application.h"
 #include "capture.h"
@@ -24,6 +26,7 @@
 #include <QtCore/QScopeGuard>
 #include <QtCore/QTimer>
 #include <QtCore/QJsonArray>
+#include <QtCore/QJsonDocument>
 #include <QtCore/QMimeData>
 #include <QtGui/QClipboard>
 #include <QtGui/QFontDatabase>
@@ -241,11 +244,14 @@ class NativeTests : public QObject {
 private slots:
   void scrollDesktopIndependentProducer_data() {
     QTest::addColumn<bool>("code");
-    QTest::newRow("paragraphs")<<false;
-    QTest::newRow("code-editor-scrollbar")<<true;
+    QTest::addColumn<bool>("blockGui");
+    QTest::newRow("paragraphs")<<false<<true;
+    QTest::newRow("code-editor-scrollbar")<<true<<true;
+    QTest::newRow("paragraphs-smooth")<<false<<false;
   }
   void scrollDesktopIndependentProducer() {
     QFETCH(bool,code);
+    QFETCH(bool,blockGui);
     if(QGuiApplication::platformName()!="windows") QSKIP("Requires the Windows desktop");
     wchar_t desktopClass[256]{}; GetClassNameW(WindowFromPoint({300,270}),desktopClass,256);
     if(QString::fromWCharArray(desktopClass).startsWith("LockScreen")) QSKIP("Windows desktop is locked");
@@ -255,6 +261,8 @@ private slots:
       QImage document;
       std::atomic<HWND> window{nullptr};
       std::atomic<int> offset{0};
+      std::mutex eventMutex;
+      QHash<int,qint64> eventTimes;
       int height=0;
       bool code=false;
     } context;
@@ -281,6 +289,11 @@ private slots:
         if(message==WM_APP+1) { SetTimer(hwnd,1,20,nullptr); return 0; }
         if(message==WM_TIMER && c) {
           c->offset=qMin(1880,c->offset.load()+47);
+          {
+            std::lock_guard lock(c->eventMutex);
+            c->eventTimes.insert(c->offset.load(),std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+          }
           InvalidateRect(hwnd,nullptr,FALSE); UpdateWindow(hwnd);
           if(c->offset>=1880) KillTimer(hwnd,1);
           return 0;
@@ -322,20 +335,82 @@ private slots:
     QTemporaryDir dir; Store store(dir.path());
     const auto selected=logical.adjusted(0,0,code?-qCeil(12.*logical.width()/area.width()):0,0);
     const auto capturedArea=physicalRect(selected);
+    const double baselineWorkingSet=memoryUsage().value("working_set_mib").toDouble();
+    double peakWorkingSet=baselineWorkingSet;
     auto session=std::make_unique<ScrollCapture>(&store,selected,reinterpret_cast<quintptr>(context.window.load()));
     session->setAttribute(Qt::WA_DeleteOnClose,false); session->begin();
     QTRY_COMPARE_WITH_TIMEOUT(session->imageSize(),capturedArea.size(),3000);
+    struct PaintObserver : QObject {
+      std::function<void()> painted;
+      bool eventFilter(QObject *,QEvent *event) override {
+        if(event->type()==QEvent::Paint && painted) painted();
+        return false;
+      }
+    } observer;
+    QList<qint64> paintLatencyUs;
+    int lastPaintedAt=0;
+    observer.painted=[&] {
+      peakWorkingSet=qMax(peakWorkingSet,memoryUsage().value("working_set_mib").toDouble());
+      const int at=session->imageSize().height()-capturedArea.height();
+      if(at<=lastPaintedAt) return;
+      qint64 occurred=0;
+      {
+        std::lock_guard lock(context.eventMutex);
+        occurred=context.eventTimes.value(at);
+      }
+      if(!occurred) return;
+      lastPaintedAt=at;
+      const auto now=std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+      paintLatencyUs.append((now-occurred)/1000);
+    };
+    auto previewWidget=session->findChild<QWidget *>("scrollPreview");
+    QVERIFY(previewWidget); previewWidget->installEventFilter(&observer);
+    auto processCpuNs=[] {
+      FILETIME created{},exited{},kernel{},user{};
+      if(!GetProcessTimes(GetCurrentProcess(),&created,&exited,&kernel,&user)) return qint64(0);
+      ULARGE_INTEGER k{},u{}; k.LowPart=kernel.dwLowDateTime; k.HighPart=kernel.dwHighDateTime;
+      u.LowPart=user.dwLowDateTime; u.HighPart=user.dwHighDateTime;
+      return qint64(k.QuadPart+u.QuadPart)*100;
+    };
+    const auto baselineCpuNs=processCpuNs();
+    QElapsedTimer producerDuration; producerDuration.start();
     PostMessageW(context.window.load(),WM_APP+1,0,0);
     // The source continues rendering on its own thread during GUI stalls.
-    for(int n=0;n<9;++n) { QThread::msleep(90); QTest::qWait(45); }
+    if(blockGui) for(int n=0;n<9;++n) { QThread::msleep(90); QTest::qWait(45); }
+    else QTest::qWait(1200);
     QTRY_COMPARE_WITH_TIMEOUT(context.offset.load(),1880,3000);
     QTRY_COMPARE_WITH_TIMEOUT(session->imageSize().height(),area.height()+1880,4000);
     QImage captured;
     session->output=[&](const QImage &image,const QString &) { captured=image; return true; };
     session->finish("copy");
+    QTRY_VERIFY_WITH_TIMEOUT(!captured.isNull(),5000);
     QCOMPARE(captured,
              context.document.copy(0,0,capturedArea.width(),area.height()+1880));
-    qInfo()<<"Independent black/white page: 40 scroll steps, GUI blocked 90ms at a time, exact original pixels";
+    std::sort(paintLatencyUs.begin(),paintLatencyUs.end());
+    const auto percentile=[&](int p) {
+      return paintLatencyUs.isEmpty()?0.:paintLatencyUs[qMin(paintLatencyUs.size()-1,
+          qMax(qsizetype(0),(paintLatencyUs.size()*p+99)/100-1))]/1000.;
+    };
+    const double wallMs=producerDuration.nsecsElapsed()/1000000.;
+    const double cpuMs=(processCpuNs()-baselineCpuNs)/1000000.;
+    const QJsonObject report{{"scenario",QString::fromLatin1(QTest::currentDataTag())},
+      {"wallMs",wallMs},{"processCpuMs",cpuMs},{"processCpuOverWall",wallMs>0?cpuMs/wallMs:0.},
+      {"workingSetIncreaseMiB",qMax(0.,peakWorkingSet-baselineWorkingSet)},
+      {"resourceMeasurementIncludesWin32Fixture",true},
+      {"producerChanges",40},{"paintedExtendedPositions",paintLatencyUs.size()},
+      {"previewPaintStartP95Ms",percentile(95)},{"previewPaintStartP99Ms",percentile(99)},
+      {"guiDeliberatelyBlocked90Ms",blockGui},{"exactOutput",true},
+      {"measurement","independent Win32 repaint request to actual preview paint event; compositor presentation not measured"}};
+    const auto artifactDir=qEnvironmentVariable("PICUT_SCROLL_UI_TEST_DIR");
+    if(!artifactDir.isEmpty()) {
+      QDir().mkpath(artifactDir);
+      QFile reportFile(artifactDir+"/"+QString::fromLatin1(QTest::currentDataTag())+".json");
+      QVERIFY(reportFile.open(QIODevice::WriteOnly));
+      reportFile.write(QJsonDocument(report).toJson());
+    }
+    qInfo()<<"SCROLL_UI_LATENCY"<<QJsonDocument(report).toJson(QJsonDocument::Compact);
+    QVERIFY(!paintLatencyUs.isEmpty());
   }
   void scrollDesktopManualAndAutomatic() {
     if (QGuiApplication::platformName() != "windows") QSKIP("Requires the Windows desktop");
@@ -412,8 +487,9 @@ private slots:
       QTest::qWait(30);
     }
     QTRY_COMPARE_WITH_TIMEOUT(page.offset,443,2000);
-    QTRY_COMPARE_WITH_TIMEOUT(session->imageSize().height(),qRound(803.*physical.height()/page.height()),2000);
+    // Direction is a short-lived input hint (600 ms), independent of image work.
     QCOMPARE(session->scrollDirection(),1);
+    QTRY_COMPARE_WITH_TIMEOUT(session->imageSize().height(),qRound(803.*physical.height()/page.height()),2000);
     page.activateWindow(); page.setFocus();
     // Windows may deny SetForegroundWindow to a background test process.
     // A real click on our own unobstructed fixture models the user's focus.
@@ -442,8 +518,8 @@ private slots:
     QTest::qWait(60);
     QCOMPARE(key(VK_NEXT),UINT(2));
     QTRY_COMPARE_WITH_TIMEOUT(page.offset,640,2000);
-    QTRY_COMPARE_WITH_TIMEOUT(session->imageSize().height(),qRound(1000.*physical.height()/page.height()),2000);
     QCOMPARE(session->scrollDirection(),1);
+    QTRY_COMPARE_WITH_TIMEOUT(session->imageSize().height(),qRound(1000.*physical.height()/page.height()),2000);
     auto automatic=session->findChild<QToolButton *>("scroll_automatic");
     QVERIFY(automatic && automatic->isHidden());
     QCOMPARE(page.offset,page.document.height()-page.height());
@@ -458,7 +534,7 @@ private slots:
     };
     session->setAttribute(Qt::WA_DeleteOnClose,false);
     session->finish("copy");
-    QVERIFY(completed);
+    QTRY_VERIFY_WITH_TIMEOUT(completed,5000);
     if (physical.width()==460)
       QCOMPARE(captured,page.document.copy(0,0,460,captured.height()));
   }
@@ -501,7 +577,7 @@ private slots:
     animation.stop();
     QImage captured; session->output=[&](const QImage &image,const QString &) { captured=image; return true; };
     session->finish("copy");
-    QCOMPARE(captured.size(),area.size());
+    QTRY_COMPARE_WITH_TIMEOUT(captured.size(),area.size(),5000);
     qInfo()<<"V2 correctly pauses on large animated patches and keeps initial content";
   }
   void scrollContinuousFramesWithoutSettling() {
