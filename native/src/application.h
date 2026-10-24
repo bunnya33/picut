@@ -27,7 +27,8 @@ public:
   void beginCapture(bool recording = false);
   void pinClipboard();
   void openSettings();
-  void prepareRecord(QRect region, bool showSettings = true);
+  void prepareRecord(QRect region, bool showSettings = true,
+                     RecordingPainter painter = {}, CaptureOverlay *source = nullptr);
   void refreshHistory();
   quint64 historyThumbnailReads = 0;
   void previewVideo(const QString &file);
@@ -43,6 +44,7 @@ private:
   QMenu *trayMenu = nullptr;
   QPointer<QListWidget> historyList;
   QPointer<QWidget> recordCountdown;
+  QPointer<CaptureOverlay> recordSource;
   bool testing = false, pending = false, recordSetup = false, hotkeysSuspended = false;
   bool historyDirty = true;
   QCache<QString, QPixmap> historyThumbnails{128};
@@ -52,6 +54,7 @@ private:
   void registerHotkeys();
   void updateTrayMenu();
   void makeRecorder();
+  void restoreRecordSource();
   void quit();
 };
 bool verifyOcrMemory(ApplicationController &controller, const QString &folder);

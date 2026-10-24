@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.24)
-project(FloatShotNative VERSION 0.5.33 LANGUAGES CXX RC)
+project(FloatShotNative VERSION 0.5.34 LANGUAGES CXX RC)
 # CMake can misdecode the Chinese MSVC /showIncludes prefix on UTF-8 consoles.
 if(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX MATCHES "娉ㄦ剰")
     set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件: ")
@@ -79,7 +79,7 @@ else()
 endif()
 qt_add_executable(FloatShotNative WIN32
     src/main.cpp src/store.cpp src/annotation.cpp src/toolbar.cpp src/text_editor.cpp src/text_editor.h src/image_text.cpp src/image_text.h src/recording_settings.cpp src/recording_settings.h src/scroll_capture.cpp src/scroll_capture.h src/scroll_stitcher.cpp src/scroll_grabber.cpp src/scroll_grabber.h
-    src/editing.cpp src/element_detector.cpp src/element_detector.h src/capture.cpp src/pin.cpp src/recorder.cpp src/recognition.cpp src/application.cpp src/recording_overlay.cpp src/recording_overlay.h
+    src/editing.cpp src/element_detector.cpp src/element_detector.h src/capture.cpp src/pin.cpp src/recorder.cpp src/recording_markup.cpp src/recording_markup.h src/recognition.cpp src/application.cpp src/recording_overlay.cpp src/recording_overlay.h
     src/store.h src/annotation.h src/toolbar.h src/capture.h src/pin.h
     src/editing.h src/recorder.h src/application.h src/native_windows.h app.rc)
 target_compile_definitions(FloatShotNative PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -109,7 +109,7 @@ if(BUILD_TESTING)
     target_include_directories(FloatShotScrollV2Tests PRIVATE src)
     target_link_libraries(FloatShotScrollV2Tests PRIVATE Qt6::Test Qt6::Widgets user32 gdi32 d3d11 dxgi dwmapi)
     add_test(NAME scroll-v2 COMMAND FloatShotScrollV2Tests)
-    set_tests_properties(scroll-v2 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PICUT_SCROLL_V2_TEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../.test-artifacts/native-v0.5.33-scroll-v2" TIMEOUT 180)
+    set_tests_properties(scroll-v2 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PICUT_SCROLL_V2_TEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../.test-artifacts/native-v0.5.34-scroll-v2" TIMEOUT 180)
     qt_add_executable(FloatShotTranslationTests tests/translation_tests.cpp
         src/translation_terms.cpp src/translation_terms.h
         src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h
@@ -141,7 +141,7 @@ if(BUILD_TESTING)
     set_tests_properties(recording-ui-windows PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 90)
     qt_add_executable(FloatShotNativeTests tests/tests.cpp src/store.cpp src/annotation.cpp src/editing.cpp
         src/toolbar.cpp src/text_editor.cpp src/text_editor.h src/image_text.cpp src/image_text.h src/element_detector.cpp src/element_detector.h src/capture.cpp src/pin.cpp src/recorder.cpp src/recognition.cpp src/scroll_capture.cpp src/scroll_capture.h src/scroll_stitcher.cpp src/scroll_grabber.cpp src/scroll_grabber.h
-        src/application.cpp src/application.h src/recording_overlay.cpp src/recording_overlay.h src/recording_settings.cpp src/recording_settings.h
+        src/application.cpp src/application.h src/recording_overlay.cpp src/recording_overlay.h src/recording_markup.cpp src/recording_markup.h src/recording_settings.cpp src/recording_settings.h
         src/store.h src/annotation.h src/editing.h src/toolbar.h src/capture.h src/pin.h src/recorder.h src/menu.h)
     target_compile_definitions(FloatShotNativeTests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_sources(FloatShotNativeTests PRIVATE src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h src/scroll_stitcher_v2.cpp)

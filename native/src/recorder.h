@@ -13,11 +13,13 @@ struct AudioDevice {
   QString id, name;
 };
 QList<AudioDevice> audioDevices(bool capture);
+using RecordingPainter = std::function<void(QImage &)>;
 struct RecordOptions {
   QRect region;
   QString output, speakerId, micId;
   int fps = 30, quality = 22;
   bool cursor = true, systemAudio = false, microphone = false;
+  RecordingPainter painter;
 };
 class ActiveClock {
 public:

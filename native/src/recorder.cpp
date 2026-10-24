@@ -377,9 +377,11 @@ void Recorder::run(const RecordOptions &options,
       grabber = std::make_unique<ScreenGrabber>(options.region);
     QStorageInfo disk(QFileInfo(options.output).absolutePath());
     auto frame = [&] {
-      return source ? source() : grabber->grab(options.cursor);
+      auto image=(source ? source() : grabber->grab(options.cursor)).convertToFormat(QImage::Format_RGB32);
+      if (options.painter) options.painter(image);
+      return image;
     };
-    auto first = frame().convertToFormat(QImage::Format_RGB32);
+    auto first = frame();
     int w = first.width(), h = first.height();
     if (w < 2 || h < 2)
       throw std::runtime_error("录制区域无效。");
@@ -445,7 +447,7 @@ void Recorder::run(const RecordOptions &options,
       auto elapsed = clock.elapsed();
       auto target = qint64(elapsed * options.fps) + 1;
       if (target > frames) {
-        auto image = frame().convertToFormat(QImage::Format_RGB32);
+        auto image = frame();
         if (image.size() != last.size())
           throw std::runtime_error("显示器尺寸改变，录制已停止。");
         if (target - frames > 120)

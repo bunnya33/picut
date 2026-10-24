@@ -36,6 +36,7 @@ public:
   QRect globalSelection() const { return selection.translated(pos()); }
   bool complete(const QString &action) override;
   void selectRegion(QRect region);
+  void setRecordingMode(bool enabled);
 signals:
   void finished();
   void recordRegion(QRect region);

@@ -76,33 +76,35 @@ public:
     setObjectName("recordingControls");
     setAttribute(Qt::WA_ShowWithoutActivating);
     setStyleSheet(compactToolbarStyle()+
-        "QLabel{color:#333;border:0;background:transparent;font-family:'Microsoft YaHei UI';font-size:12px;}"
-        "QPushButton{background:transparent;border:0;padding:0;}"
-        "QPushButton:hover{background:#dedede;}");
+        "QLabel{color:#333;border:0;background:transparent;font-family:'Microsoft YaHei UI';font-size:12px;}");
     auto layout = new QHBoxLayout(this);
-    layout->setContentsMargins(6, 0, 0, 0);
-    layout->setSpacing(4);
-    auto grip = new QLabel("⋮⋮");
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    auto grip = new QLabel;
+    grip->setPixmap(recordingIcon("grip").pixmap(16,16));
+    grip->setAlignment(Qt::AlignCenter); grip->setFixedSize(24,32);
     grip->setObjectName("recordingGrip");
     grip->setCursor(Qt::SizeAllCursor);
     grip->setToolTip("拖动控制条");
     layout->addWidget(grip);
     state = new QLabel("准备录制");
     state->setObjectName("recordingState");
-    state->setMinimumWidth(48);
+    state->setContentsMargins(0,0,8,0); state->setMinimumWidth(64);
     layout->addWidget(state);
     time = new QLabel("00:00:00");
     time->setObjectName("recordingTime");
     time->setStyleSheet("font-family:Consolas;font-size:14px;color:#333;");
-    time->setMinimumWidth(77);
+    time->setContentsMargins(4,0,8,0); time->setMinimumWidth(88);
     layout->addWidget(time);
-    pause = new QPushButton;
+    auto separator=new QFrame; separator->setFixedSize(1,14);
+    separator->setStyleSheet("background:#858585;border:0;"); layout->addWidget(separator);
+    pause = new QToolButton;
     pause->setObjectName("pauseRecording");
     pause->setIcon(recordingIcon("pause")); pause->setIconSize({16,16}); pause->setFixedSize(32,32);
     pause->setToolTip("暂停录屏 · Ctrl+Alt+P");
     pause->setEnabled(false);
     layout->addWidget(pause);
-    stop = new QPushButton;
+    stop = new QToolButton;
     stop->setObjectName("stopRecording");
     stop->setIcon(recordingIcon("stop")); stop->setIconSize({16,16}); stop->setFixedSize(32,32);
     stop->setToolTip("结束录屏 · Ctrl+Alt+S");
@@ -137,7 +139,7 @@ public:
       label->installEventFilter(this);
   }
   QLabel *state, *time;
-  QPushButton *pause, *stop;
+  QToolButton *pause, *stop;
   bool placeOutside(QRect capture) {
     QRect best;
     int distance = std::numeric_limits<int>::max();
@@ -197,6 +199,23 @@ private:
   }
 };
 
+class RecordingArtwork : public QWidget {
+public:
+  RecordingArtwork(QRect region,QImage pixels)
+      : QWidget(nullptr,Qt::Tool|Qt::FramelessWindowHint|Qt::WindowStaysOnTopHint|
+                        Qt::WindowTransparentForInput|Qt::WindowDoesNotAcceptFocus),image(std::move(pixels)) {
+    setObjectName("recordingArtwork"); setAttribute(Qt::WA_TranslucentBackground);
+    setAttribute(Qt::WA_ShowWithoutActivating); setGeometry(region);
+  }
+protected:
+  void paintEvent(QPaintEvent *) override {
+    QPainter p(this); p.setCompositionMode(QPainter::CompositionMode_Source);
+    p.fillRect(rect(),Qt::transparent); p.drawImage(rect(),image);
+  }
+private:
+  QImage image;
+};
+
 RecordingOverlay::RecordingOverlay(Recorder *recorder, QRect region,
                                    bool systemAudio, bool microphone,
                                    QObject *parent, std::function<bool(QWidget *)> exclusion)
@@ -213,13 +232,13 @@ RecordingOverlay::RecordingOverlay(Recorder *recorder, QRect region,
   connect(recorder, &Recorder::finished, this, &RecordingOverlay::hide);
   connect(recorder, &Recorder::failed, this, &RecordingOverlay::hide);
   connect(recorder, &QObject::destroyed, this, &RecordingOverlay::hide);
-  connect(panel->pause, &QPushButton::clicked, this, [this] {
+  connect(panel->pause, &QToolButton::clicked, this, [this] {
     if (this->recorder) {
       this->recorder->pause();
       refresh();
     }
   });
-  connect(panel->stop, &QPushButton::clicked, this, [this] {
+  connect(panel->stop, &QToolButton::clicked, this, [this] {
     if (countdown>=0 && !begun) { emit countdownCanceled(); return; }
     if (this->recorder) {
       this->recorder->stop();
@@ -237,6 +256,10 @@ RecordingOverlay::RecordingOverlay(Recorder *recorder, QRect region,
 RecordingOverlay::~RecordingOverlay() { timer.stop(); }
 QWidget *RecordingOverlay::boundary() const { return frame.get(); }
 QWidget *RecordingOverlay::controls() const { return panel.get(); }
+void RecordingOverlay::setArtwork(const QImage &image) {
+  markLayer.reset(); artworkExcluded=false;
+  if (!image.isNull()) markLayer=std::make_unique<RecordingArtwork>(logicalRegion,image);
+}
 bool RecordingOverlay::show() {
   if (compatibility) {
     shown=true; frame->show(); refresh(); timer.start(); return true;
@@ -250,6 +273,17 @@ bool RecordingOverlay::show() {
   panel->raise();
   if (windows && !compatibility) {
     excluded = exclude(frame.get()) && exclude(panel.get());
+    if (markLayer) {
+      artworkExcluded=exclude(markLayer.get());
+      if (artworkExcluded) {
+        markLayer->show(); artworkExcluded=exclude(markLayer.get());
+        if (artworkExcluded) { markLayer->raise(); panel->raise(); }
+      }
+      if (!artworkExcluded) {
+        markLayer->hide();
+        SetWindowDisplayAffinity(reinterpret_cast<HWND>(markLayer->winId()),WDA_NONE);
+      }
+    }
     DwmFlush();
   }
   if ((windows || exclusion) && !excluded && !compatibility) {
@@ -271,6 +305,7 @@ void RecordingOverlay::hide() {
   timer.stop();
   frame->hide();
   panel->hide();
+  if (markLayer) markLayer->hide();
 }
 void RecordingOverlay::setCountdown(int seconds) { countdown=seconds; refresh(); }
 void RecordingOverlay::refresh() {
@@ -279,6 +314,7 @@ void RecordingOverlay::refresh() {
   const bool saving = recorder->finalizing();
   const bool paused = recorder->paused();
   const bool counting=countdown>=0 && !begun;
+  if (markLayer) markLayer->setVisible(shown && artworkExcluded && !compatibility && !saving);
   if (shown && compatibility) {
     frame->setExterior(!counting);
     panel->setVisible(counting || outsideControls);

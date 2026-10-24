@@ -9,6 +9,7 @@
 #include "recognition.h"
 #include "recorder.h"
 #include "recording_settings.h"
+#include "recording_markup.h"
 #include "scroll_capture.h"
 #include "scroll_grabber.h"
 #include "native_windows.h"
@@ -1256,25 +1257,17 @@ private slots:
     canceled.findChild<QSpinBox *>("recordCountdown")->setValue(1);
     canceled.reject(); QCOMPARE(reopened.config,saved);
   }
-  void recordingShortcutMigrationPreservesCustomBindings() {
-    QTemporaryDir dir;
-    Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"hotkeys",QJsonObject{{"record","Ctrl+Alt+R"}}}});
-    Store upgraded(dir.path()); QCOMPARE(upgraded.config["hotkeys"].toObject()["record"].toString(),QString("Shift+F1"));
-    upgraded.saveConfig(); Store reopened(dir.path());
-    QCOMPARE(reopened.config["hotkeys"].toObject()["record"].toString(),QString("Shift+F1"));
-    Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"record_shortcut_v2",true},{"hotkeys",QJsonObject{{"record","F2"}}}});
-    Store fromF2(dir.path()); QCOMPARE(fromF2.config["hotkeys"].toObject()["record"].toString(),QString("Shift+F1"));
-    Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"hotkeys",QJsonObject{{"record","Alt+F8"}}}});
-    Store custom(dir.path()); QCOMPARE(custom.config["hotkeys"].toObject()["record"].toString(),QString("Alt+F8"));
-    Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"hotkeys",QJsonObject{{"capture","F2"}}}});
-    Store conflict(dir.path()); QCOMPARE(conflict.config["hotkeys"].toObject()["capture"].toString(),QString("F2"));
-    QVERIFY(conflict.config["hotkeys"].toObject()["record"].toString()!="F2");
-    Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"hotkeys",QJsonObject{{"capture","shift+f1"},{"record","F2"}}}});
-    Store occupied(dir.path()); QCOMPARE(occupied.config["hotkeys"].toObject()["record"].toString(),QString("Ctrl+Alt+R"));
-    Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"hotkeys",QJsonObject{{"capture","Shift+F1"},{"pin","Ctrl+Alt+R"},{"record","F2"}}}});
-    Store both(dir.path()); QVERIFY(both.config["hotkeys"].toObject()["record"].toString().isEmpty());
-    Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"record_shortcut_v3",true},{"hotkeys",QJsonObject{{"record","F2"}}}});
-    Store explicitF2(dir.path()); QCOMPARE(explicitF2.config["hotkeys"].toObject()["record"].toString(),QString("F2"));
+  void retiredRecordingShortcutReleasesOldBindings() {
+    QTemporaryDir dir; Store defaults(dir.path());
+    QVERIFY(!defaults.config["hotkeys"].toObject().contains("record"));
+    for (auto old:{"Shift+F1","F2","Ctrl+Alt+R","Alt+F8"}) {
+      Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"record_shortcut_v3",true},
+        {"hotkeys",QJsonObject{{"capture","Ctrl+F1"},{"pin","Alt+F3"},{"record",old}}}});
+      Store upgraded(dir.path()); const auto keys=upgraded.config["hotkeys"].toObject();
+      QVERIFY(!keys.contains("record")); QCOMPARE(keys["capture"].toString(),QString("Ctrl+F1"));
+      QCOMPARE(keys["pin"].toString(),QString("Alt+F3"));
+      upgraded.saveConfig(); Store reopened(dir.path()); QCOMPARE(reopened.config["hotkeys"].toObject(),keys);
+    }
   }
   void hotkeyPressCaptureAndNativeMapping() {
     HotkeyEdit edit("F1"); edit.show(); edit.setFocus();
@@ -1301,7 +1294,8 @@ private slots:
     QTimer::singleShot(0,[&]{
       auto dialog=qobject_cast<QDialog *>(QApplication::activeModalWidget()); if(!dialog)return;
       auto capture=dialog->findChild<QKeySequenceEdit *>("hotkey_capture");
-      auto record=dialog->findChild<QKeySequenceEdit *>("hotkey_record");
+      QVERIFY(!dialog->findChild<QKeySequenceEdit *>("hotkey_record"));
+      auto record=dialog->findChild<QKeySequenceEdit *>("hotkey_stop");
       auto buttons=dialog->findChild<QDialogButtonBox *>();
       if (!capture || !record || !buttons) { dialog->reject(); return; }
       MSG message{}; message.message=WM_HOTKEY; message.wParam=1;
@@ -1318,10 +1312,10 @@ private slots:
       if(dialog->isVisible())dialog->reject();
     });
     controller.openSettings(); QVERIFY(accepted); QVERIFY(duplicateBlocked); QVERIFY(wasSuspended);
-    QCOMPARE(controller.store.config["hotkeys"].toObject()["record"].toString(),QString("Ctrl+Shift+F8"));
+    QCOMPARE(controller.store.config["hotkeys"].toObject()["stop"].toString(),QString("Ctrl+Shift+F8"));
     Store reopened(dir.path()); QCOMPARE(reopened.config["hotkeys"].toObject(),controller.store.config["hotkeys"].toObject());
     const auto before=controller.store.config;
-    QTimer::singleShot(0,[&]{auto dialog=qobject_cast<QDialog *>(QApplication::activeModalWidget());if(dialog){dialog->findChild<QKeySequenceEdit *>("hotkey_record")->setKeySequence(QKeySequence("Alt+F7"));dialog->reject();}});
+    QTimer::singleShot(0,[&]{auto dialog=qobject_cast<QDialog *>(QApplication::activeModalWidget());if(dialog){dialog->findChild<QKeySequenceEdit *>("hotkey_stop")->setKeySequence(QKeySequence("Alt+F7"));dialog->reject();}});
     controller.openSettings(); QCOMPARE(controller.store.config,before);
     controller.home->close(); QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
   }
@@ -1355,7 +1349,7 @@ private slots:
     auto summary=overlay->findChild<QLabel *>("recordSummary");
     QVERIFY(bar->isVisible()); QVERIFY(summary->isVisible());
     QVERIFY(summary->y()>overlay->selection.bottom());
-    for (auto name:{"record_settings","record_record","record_cancel"}) {
+    for (auto name:{"record_settings","record_record","record_back"}) {
       auto button=bar->findChild<QToolButton *>(name); QVERIFY(button); QVERIFY(!button->icon().isNull());
       QCOMPARE(button->size(),QSize(32,32));
     }
@@ -1382,7 +1376,7 @@ private slots:
     QVERIFY(controller.recordOverlay->boundary()->isVisible());
     QCOMPARE(controller.recordOverlay->region(),QRect(screen.topLeft()+QPoint(20,20),QSize(400,250)));
     QVERIFY(controller.recordOverlay->controls()->findChild<QLabel *>("recordingState")->text().contains("倒计时"));
-    QTest::mouseClick(controller.recordOverlay->controls()->findChild<QPushButton *>("stopRecording"),Qt::LeftButton);
+    QTest::mouseClick(controller.recordOverlay->controls()->findChild<QToolButton *>("stopRecording"),Qt::LeftButton);
     QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
     QVERIFY(!controller.recordOverlay); QVERIFY(!controller.recording());
     bool prompted=false;
@@ -1391,6 +1385,102 @@ private slots:
       if (dialog) { prompted=dialog->objectName()=="recordingSettings"; dialog->reject(); }
     });
     controller.prepareRecord(screen,true); QVERIFY(prompted); QVERIFY(!controller.recordOverlay);
+  }
+  void captureRecordingRoundTripKeepsArtworkAndSelection() {
+    QTemporaryDir dir; Store store(dir.path()); auto overlay=editingFixture(store,"pen");
+    auto cleanup=qScopeGuard([&]{delete overlay;}); overlay->setAttribute(Qt::WA_DeleteOnClose,false);
+    QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,{180,160});
+    dragMove(overlay,{230,185}); QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,{260,170});
+    QCOMPARE(overlay->annotation->marks.size(),1);
+    const auto mark=overlay->annotation->marks.first().json();
+    const auto region=overlay->selection;
+    auto record=overlay->toolbar->findChild<QToolButton *>("action_record");
+    QVERIFY(record->isVisible()); QVERIFY(!record->icon().isNull());
+    QTest::mouseClick(record,Qt::LeftButton);
+    QVERIFY(overlay->recording); QVERIFY(!overlay->toolbar->isVisible());
+    auto bar=overlay->findChild<QFrame *>("recordToolbar"); QVERIFY(bar->isVisible());
+    QTest::keyClick(overlay,Qt::Key_1,Qt::ControlModifier);
+    QCOMPARE(overlay->annotation->tool,QString("pen"));
+    QTest::keyClick(overlay,Qt::Key_Escape);
+    QVERIFY(overlay->isVisible()); QVERIFY(!overlay->recording); QVERIFY(overlay->toolbar->isVisible());
+    QCOMPARE(overlay->selection,region); QCOMPARE(overlay->annotation->marks.first().json(),mark);
+    QTest::mouseClick(record,Qt::LeftButton);
+    QTest::mouseClick(bar->findChild<QToolButton *>("record_back"),Qt::LeftButton);
+    QVERIFY(!overlay->recording); QCOMPARE(overlay->annotation->marks.first().json(),mark);
+    QVERIFY(savePreview(overlay,"capture-with-record-entry.png"));
+    QTest::mouseClick(record,Qt::LeftButton);
+    QVERIFY(savePreview(overlay,"record-from-capture.png"));
+  }
+  void recordingCountdownCancelRestoresCaptureArtwork() {
+    QTemporaryDir dir; const auto previous=qgetenv("FLOATSHOT_DATA_DIR");
+    auto restore=qScopeGuard([previous] { if(previous.isNull())qunsetenv("FLOATSHOT_DATA_DIR");else qputenv("FLOATSHOT_DATA_DIR",previous); });
+    qputenv("FLOATSHOT_DATA_DIR",dir.path().toUtf8()); ApplicationController controller(true);
+    controller.store.config["countdown"]=3; controller.beginCapture();
+    QTRY_VERIFY(controller.overlay); auto source=controller.overlay;
+    source->selectRegion(QRect(QPoint(30,40),QSize(400,250)));
+    Mark mark; mark.kind="rect"; mark.points={{30,50},{190,150}};
+    source->annotation->add(mark); source->showToolbar();
+    QTest::mouseClick(source->toolbar->findChild<QToolButton *>("action_record"),Qt::LeftButton);
+    QTest::mouseClick(source->findChild<QToolButton *>("record_record"),Qt::LeftButton);
+    QVERIFY(controller.recordOverlay); QVERIFY(!source->isVisible());
+    QVERIFY(controller.recordOverlay->artwork());
+    QTest::mouseClick(controller.recordOverlay->controls()->findChild<QToolButton *>("stopRecording"),Qt::LeftButton);
+    QTRY_VERIFY(!controller.recordOverlay);
+    QVERIFY(source); QVERIFY(source->isVisible()); QVERIFY(!source->recording);
+    QCOMPARE(source->annotation->marks.first().json(),mark.json());
+    QCOMPARE(source->selection,QRect(30,40,400,250)); QVERIFY(!controller.recording());
+    source->close(); QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+  }
+  void recordingArtworkUsesLivePixelsAndOriginalMarkOrder() {
+    QImage original(480,300,QImage::Format_ARGB32); original.fill(QColor("#d4e5f6"));
+    { QPainter p(&original); for(int x=0;x<480;x+=8) p.fillRect(x,0,4,300,QColor("#234567")); }
+    Annotation annotation(original);
+    Mark mark; mark.kind="arrow"; mark.points={{20,30},{130,70}}; annotation.add(mark);
+    mark.kind="marker"; mark.width=12; mark.points={{40,120},{190,120}}; annotation.add(mark);
+    mark.kind="text"; mark.text="截图标注 ABC 123"; mark.points={{25,165}}; annotation.add(mark);
+    mark.kind="number"; mark.text="说明"; mark.points={{280,55}}; annotation.add(mark);
+    mark.kind="mosaic"; mark.areaShape="rect"; mark.points={{100,80},{230,155}}; annotation.add(mark);
+    mark.kind="blur"; mark.points={{250,100},{420,165}}; annotation.add(mark);
+    mark.kind="eraser"; mark.points={{120,100},{180,140}}; annotation.add(mark);
+    mark.kind="ellipse"; mark.points={{140,115},{210,155}}; annotation.add(mark);
+    const auto paint=recordingPainter(annotation); QVERIFY(paint);
+    for(int phase=0;phase<2;++phase) {
+      if(phase) { QPainter p(&original); p.fillRect(0,0,480,300,QColor("#c8e59c"));
+        for(int x=0;x<480;x+=8) p.fillRect(x+3,0,4,300,QColor("#813046")); }
+      annotation.original=original; const auto expected=annotation.render(false);
+      auto future=std::async(std::launch::async,[paint,original] { auto frame=original; paint(frame); return frame; });
+      const auto actual=future.get();
+      int bad=0,maxDelta=0;
+      for(int y=0;y<300;++y) for(int x=0;x<480;++x) {
+        const auto a=actual.pixelColor(x,y),b=expected.pixelColor(x,y);
+        const int delta=qMax(qAbs(a.red()-b.red()),qMax(qAbs(a.green()-b.green()),qAbs(a.blue()-b.blue())));
+        if(delta>3) ++bad; maxDelta=qMax(maxDelta,delta);
+      }
+      QVERIFY2(!bad,qPrintable(QString("artwork differs in %1 pixels, max channel delta %2").arg(bad).arg(maxDelta)));
+      QCOMPARE(actual.pixelColor(470,290),original.pixelColor(470,290));
+    }
+  }
+  void recordingArtworkHandlesFractionalScreenRounding() {
+    DesktopSnapshot snapshot; snapshot.bounds={0,0,1707,960};
+    QImage screen(2560,1440,QImage::Format_RGB32); screen.fill(Qt::white);
+    snapshot.frames={{snapshot.bounds,screen}};
+    Annotation annotation(snapshot.crop({17,29,501,501}));
+    const QSize frameSize(qRound(501.*2560/1707),qRound(501.*1440/960));
+    QCOMPARE(annotation.original.size(),QSize(751,751)); QCOMPARE(frameSize,QSize(751,752));
+    Mark mark; mark.kind="rect"; mark.filled=true;
+    mark.points={{20,annotation.original.height()-40.},{annotation.original.width()-20.,annotation.original.height()-10.}};
+    annotation.add(mark); const auto saved=annotation.marks.first().json();
+    const auto paint=recordingPainter(annotation,frameSize); QVERIFY(paint);
+    for (auto color:{QColor("#2374a1"),QColor("#71ac43")}) {
+      QImage input(frameSize,QImage::Format_RGB32); input.fill(color);
+      auto future=std::async(std::launch::async,[paint,input]() mutable {paint(input); return input;});
+      const auto actual=future.get();
+      QCOMPARE(actual.size(),frameSize); QCOMPARE(actual.pixelColor(375,730),mark.color);
+      QCOMPARE(actual.pixelColor(375,400),color); QCOMPARE(actual.pixelColor(375,750),color);
+    }
+    QCOMPARE(annotation.marks.first().json(),saved);
+    QImage resized(frameSize+QSize(1,0),QImage::Format_RGB32);
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,paint(resized));
   }
   void numberedCalloutTabTextEmptyCommitAndExport() {
     QTemporaryDir dir; Store store(dir.path()); auto overlay=editingFixture(store,"number");
@@ -2872,7 +2962,9 @@ private slots:
     QCOMPARE(actions["capture"]->text(), QString("截图\tF1"));
     QCOMPARE(actions["pin"]->text(), QString("贴图\tF3"));
     QCOMPARE(actions["toggle_pins"]->text(), QString("显示 / 隐藏贴图\tShift+F3"));
-    QCOMPARE(actions["record"]->text(), QString("区域录屏\tShift+F1"));
+    QVERIFY(!actions.contains("record"));
+    bool recordMenu=false; for(auto action:menu->actions()) recordMenu|=action->text()=="区域录屏";
+    QVERIFY(recordMenu);
     QVERIFY(!actions["pause"]->isEnabled());
     auto keys = controller.store.config["hotkeys"].toObject();
     keys["capture"] = "Ctrl+Shift+C";

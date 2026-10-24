@@ -67,7 +67,6 @@ Store::Store(QString directory) {
                                     {"pin", "F3"},
                                     {"toggle_pins", "Shift+F3"},
                                     {"through", "Ctrl+Alt+T"},
-                                    {"record", "Shift+F1"},
                                     {"pause", "Ctrl+Alt+P"},
                                     {"stop", "Ctrl+Alt+S"}}}};
   auto loaded = readJson(path("settings.json"), QJsonObject()).toObject();
@@ -80,21 +79,9 @@ Store::Store(QString directory) {
       config["hotkeys"] = keys;
     } else
       config[i.key()] = i.value();
-  if (!loaded["record_shortcut_v3"].toBool()) {
-    auto keys=config["hotkeys"].toObject();
-    const auto old = hotkeySequence(keys["record"].toString());
-    if (!loaded["hotkeys"].toObject().contains("record") || old == QKeySequence(Qt::Key_F2) || old == hotkeySequence("Ctrl+Alt+R")) {
-      QString replacement;
-      for (const auto &candidate : {QString("Shift+F1"), QString("Ctrl+Alt+R")}) {
-        bool occupied = false;
-        for (auto key=keys.begin();key!=keys.end();++key)
-          if (key.key()!="record" && hotkeySequence(key.value().toString())==hotkeySequence(candidate)) occupied=true;
-        if (!occupied) { replacement=candidate; break; }
-      }
-      keys["record"]=replacement;
-    }
-    config["hotkeys"]=keys; config["record_shortcut_v3"]=true;
-  }
+  // Recording now starts from the F1 selection toolbar. Retired bindings must
+  // not reserve Shift+F1 (or a former custom combination) after an upgrade.
+  auto keys=config["hotkeys"].toObject(); keys.remove("record"); config["hotkeys"]=keys;
   history = readJson(path("history.json"), QJsonArray()).toArray();
 }
 bool Store::importLegacy(const QString &destination, const QString &source) {

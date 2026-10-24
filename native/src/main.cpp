@@ -15,10 +15,10 @@ static int runApplication(int argc, char **argv) {
   enableDpi();
   QApplication app(argc, argv);
   app.setApplicationName("picut");
-  app.setApplicationDisplayName("picut 长截图流畅性试验版");
+  app.setApplicationDisplayName("picut");
   app.setOrganizationName("picut");
-  app.setApplicationVersion("0.5.33");
-  // Keep experimental captures and settings separate from the accepted release.
+  app.setApplicationVersion("0.5.34");
+  // Retain the accepted scrolling profile so settings, history and pins carry forward.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(
                 QStandardPaths::GenericDataLocation) +

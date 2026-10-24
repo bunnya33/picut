@@ -20,6 +20,8 @@ public:
   void hide();
   void refresh();
   void setCountdown(int seconds);
+  void setArtwork(const QImage &image);
+  QWidget *artwork() const { return markLayer.get(); }
   QWidget *boundary() const;
   QWidget *controls() const;
   QRect region() const { return logicalRegion; }
@@ -33,9 +35,11 @@ private:
   QRect logicalRegion;
   std::unique_ptr<RecordingFrame> frame;
   std::unique_ptr<RecordingControls> panel;
+  std::unique_ptr<QWidget> markLayer;
   QTimer timer;
   bool begun = false, excluded = false;
   bool compatibility = false, outsideControls = false, shown = false;
+  bool artworkExcluded = false;
   std::function<bool(QWidget *)> exclusion;
   int countdown = -1;
 };

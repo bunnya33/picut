@@ -253,28 +253,29 @@ CaptureOverlay::CaptureOverlay(Store *s, bool record,
       desktop(snapshot ? std::move(*snapshot) : DesktopSnapshot::capture()),
       recording(record) {
   sourceWindow = desktop.foreground;
-  setProperty("supportsScrolling", !recording);
+  setProperty("supportsScrolling", true);
+  setProperty("supportsRecording", true);
   setAttribute(Qt::WA_DeleteOnClose);
   setGeometry(desktop.bounds);
   setCursor(Qt::CrossCursor);
   pointer = mapFromGlobal(QCursor::pos());
   includeCursor = store && store->config["capture_cursor"].toBool();
-  if (recording) {
+  {
     auto bar = new QFrame(this);
     bar->setStyleSheet(compactToolbarStyle());
     auto row = new QHBoxLayout(bar);
     row->setContentsMargins(0,0,0,0); row->setSpacing(0);
-    for (auto name:{QString("settings"),QString("record"),QString("cancel")}) {
+    for (auto name:{QString("back"),QString("settings"),QString("record")}) {
       auto button=new QToolButton; button->setObjectName("record_"+name);
       button->setFixedSize(32,32); button->setIconSize({16,16}); button->setFocusPolicy(Qt::NoFocus);
       button->setIcon(recordingIcon(name));
-      button->setToolTip(name=="settings"?"录屏设置":name=="record"?"开始录制 · Enter":"取消 · Esc");
+      button->setToolTip(name=="settings"?"录屏设置":name=="record"?"开始录制 · Enter":"返回截图 · Esc");
       row->addWidget(button);
       connect(button,&QToolButton::clicked,this,[this,name] {
         if (name=="settings") {
           RecordingSettingsDialog dialog(store,globalSelection(),false,this);
           dialog.exec(); updateSelectionToolbar(); activateWindow(); setFocus(); update();
-        } else complete(name=="record"?"record":"cancel");
+        } else complete(name=="record"?"record":"back");
       });
     }
     bar->setObjectName("recordToolbar");
@@ -285,6 +286,27 @@ CaptureOverlay::CaptureOverlay(Store *s, bool record,
                           "font-family:'Microsoft YaHei UI';font-size:12px;border:0;");
     summary->setWordWrap(true); summary->hide();
   }
+}
+void CaptureOverlay::setRecordingMode(bool enabled) {
+  if (recording==enabled) return;
+  commitText();
+  if (annotation) {
+    if (annotation->draft) {
+      auto mark=*annotation->draft; annotation->draft.reset(); annotation->add(mark);
+    }
+    annotation->confirm(); annotation->savePreferences(store);
+  }
+  dragOriginal.reset(); dragHandle.clear(); suppressDraw=false;
+  recording=enabled;
+  editing=!recording && annotation && annotation->tool!="select";
+  if (toolbar) toolbar->hide();
+  if (auto bar=findChild<QFrame *>("recordToolbar")) bar->hide();
+  if (auto summary=findChild<QLabel *>("recordSummary")) summary->hide();
+  if (imageText) imageText->hide();
+  if (imageTranslation) imageTranslation->hide();
+  updateSelectionToolbar(!selection.isEmpty());
+  setCursor(recording?Qt::CrossCursor:Qt::ArrowCursor);
+  activateWindow(); setFocus(); update();
 }
 void CaptureOverlay::selectRegion(QRect region) {
   selection = region.intersected(rect());
@@ -327,7 +349,7 @@ void CaptureOverlay::updateRecordingSummary() {
   summary->move(x,y); summary->show(); summary->raise();
 }
 void CaptureOverlay::rebuildAnnotation() {
-  if (selection.width() < 2 || selection.height() < 2 || recording)
+  if (selection.width() < 2 || selection.height() < 2)
     return;
   auto image = desktop.crop(globalSelection(), includeCursor);
   if (!annotation)
@@ -425,7 +447,7 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
                                        : r.height()));
   }
   const bool selectingText = imageText && imageText->isVisible();
-  if (!selectingText) paintEditing(p);
+  if (!selectingText && !recording) paintEditing(p);
   bool brush = annotation &&
                QStringList{"pen", "line", "arrow", "marker", "eraser"}.contains(
                    annotation->tool) &&
@@ -540,7 +562,7 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *e) {
   auto handle = selectionHandle(pointer);
   if (!handle.isEmpty() ||
       (!selection.isEmpty() && selection.contains(pointer) &&
-       (!annotation || annotation->tool == "select"))) {
+       (recording || !annotation || annotation->tool == "select"))) {
     commitText();
     dragging = true;
     selectionDrag = handle.isEmpty() ? "move" : handle;
@@ -556,7 +578,7 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *e) {
     update();
     return;
   }
-  if (annotationPress(e))
+  if (!recording && annotationPress(e))
     return;
   if (annotation)
     annotation->confirm();
@@ -605,7 +627,7 @@ void CaptureOverlay::mouseMoveEvent(QMouseEvent *e) {
     update();
     return;
   }
-  if (annotationMove(e))
+  if (!recording && annotationMove(e))
     return;
   if (selection.isEmpty()) {
     auto global = pointer + pos();
@@ -644,14 +666,14 @@ void CaptureOverlay::mouseReleaseEvent(QMouseEvent *e) {
     update();
     return;
   }
-  annotationRelease(e);
+  if (!recording) annotationRelease(e);
 }
 void CaptureOverlay::mouseDoubleClickEvent(QMouseEvent *e) {
   if (selection.contains(e->position().toPoint()) && !editing)
     complete(recording ? "record" : "copy");
 }
 void CaptureOverlay::wheelEvent(QWheelEvent *e) {
-  if (annotation && editing)
+  if (!recording && annotation && editing)
     annotationWheel(e);
 }
 void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
@@ -687,7 +709,7 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
     complete("pin");
     return;
   }
-  if (e->matches(QKeySequence::Save)) {
+  if (!recording && e->matches(QKeySequence::Save)) {
     complete(e->modifiers() & Qt::ShiftModifier ? "quick_save" : "save");
     return;
   }
@@ -728,7 +750,7 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
     update();
     return;
   }
-  if (annotationKey(e))
+  if (!recording && annotationKey(e))
     return;
   if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter ||
       e->matches(QKeySequence::Copy)) {
@@ -797,6 +819,13 @@ bool CaptureOverlay::confirmExit() {
 }
 bool CaptureOverlay::complete(const QString &action) {
   commitText();
+  if (action=="record" && !recording) {
+    if (selection.width()<2 || selection.height()<2) return false;
+    setRecordingMode(true); return true;
+  }
+  if (recording && (action=="cancel" || action=="back")) {
+    setRecordingMode(false); return true;
+  }
   if (action == "scroll") {
     if (recording || selection.width() < 12 || selection.height() < 64) return false;
     if (scrollCapture) { scrollCapture->raise(); return true; }
@@ -828,8 +857,10 @@ bool CaptureOverlay::complete(const QString &action) {
     return false;
   auto region = globalSelection();
   if (recording) {
+    rebuildAnnotation();
+    if (annotation) { annotation->confirm(); annotation->savePreferences(store); }
+    hide();
     emit recordRegion(region);
-    close();
     return true;
   }
   if (imageTranslation && imageTranslation->isVisible()) {

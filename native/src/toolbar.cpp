@@ -11,6 +11,7 @@
 #include <QtWidgets/QWidgetAction>
 
 QIcon toolIcon(const QString &name, QColor color) {
+  if (name=="record") return recordingIcon("video",color);
   static QMap<QString, QIcon> cache;
   const auto key = name + color.name(QColor::HexArgb);
   if (cache.contains(key))
@@ -242,7 +243,7 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
   };
   separator();
   for (const auto &action :
-       QStringList{"undo", "redo", "select_text", "translate", "scroll", "cancel", "pin", "save", "copy"}) {
+       QStringList{"undo", "redo", "select_text", "translate", "scroll", "record", "cancel", "pin", "save", "copy"}) {
     if (action == "cancel")
       separator();
     auto b = new QToolButton;
@@ -255,12 +256,13 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
                                          {"select_text", "文字识别 · F4"},
                                          {"translate", "图片翻译（本地）"},
                                          {"scroll", "滚动截屏"},
+                                         {"record", "录制此区域"},
                                          {"cancel", "取消 · Esc"},
                                          {"pin", "贴图 · F3"},
                                          {"save", "保存 · Ctrl+S"},
                                          {"copy", "复制 · Enter"}}[action]);
     row->addWidget(b);
-    if (action == "scroll") b->hide();
+    if (action == "scroll" || action=="record") b->hide();
     connect(b, &QToolButton::clicked, this,
             [this, action] { emit actionRequested(action); });
   }

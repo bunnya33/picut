@@ -14,26 +14,32 @@ inline QIcon recordingIcon(const QString &name, QColor color = QColor("#333333")
   static QMap<QString,QIcon> cache;
   const auto key=name+color.name();
   if (cache.contains(key)) return cache.value(key);
-  QPixmap image(32,32); image.fill(Qt::transparent);
+  QPixmap image(48,48); image.fill(Qt::transparent);
   QPainter p(&image); p.setRenderHint(QPainter::Antialiasing);
-  p.scale(32.0/24,32.0/24);
-  p.setPen(QPen(color,1.5,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));
+  p.scale(2,2);
+  p.setPen(QPen(color,1.8,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));
   p.setBrush(Qt::NoBrush);
   if (name=="settings") {
-    p.drawEllipse(QRectF(6,6,12,12)); p.drawEllipse(QRectF(9,9,6,6));
-    for (int n=0;n<8;++n) {
-      const double a=n*3.141592653589793/4;
-      p.drawLine(QPointF(12+6*std::cos(a),12+6*std::sin(a)),
-                 QPointF(12+9*std::cos(a),12+9*std::sin(a)));
-    }
+    p.drawLine(4,6,20,6); p.drawLine(4,12,20,12); p.drawLine(4,18,20,18);
+    p.setBrush(QColor("#f2f2f2"));
+    p.drawEllipse(QPointF(9,6),2,2); p.drawEllipse(QPointF(16,12),2,2); p.drawEllipse(QPointF(7,18),2,2);
+  } else if (name=="video") {
+    p.drawRoundedRect(QRectF(3,6,12,12),1,1);
+    p.drawPolygon(QPolygonF{{15,10},{21,6},{21,18},{15,14}});
+  } else if (name=="back") {
+    p.drawLine(4,12,20,12); p.drawPolyline(QPolygonF{{10,6},{4,12},{10,18}});
+  } else if (name=="grip") {
+    p.setPen(Qt::NoPen); p.setBrush(QColor("#858585"));
+    for (int x:{9,15}) for (int y:{6,12,18}) p.drawEllipse(QPointF(x,y),1,1);
   } else if (name=="record") {
-    p.setPen(Qt::NoPen); p.setBrush(QColor("#ff0004")); p.drawEllipse(QRectF(6,6,12,12));
+    p.setPen(QPen(QColor("#ff0004"),1.8)); p.drawEllipse(QRectF(4,4,16,16));
+    p.setPen(Qt::NoPen); p.setBrush(QColor("#ff0004")); p.drawEllipse(QRectF(8,8,8,8));
   } else if (name=="pause") {
-    p.fillRect(QRectF(6,5,4,14),color); p.fillRect(QRectF(14,5,4,14),color);
+    p.drawLine(8,5,8,19); p.drawLine(16,5,16,19);
   } else if (name=="play") {
-    p.setBrush(color); p.drawPolygon(QPolygonF{{7,4},{19,12},{7,20}});
+    p.drawPolygon(QPolygonF{{7,4},{19,12},{7,20}});
   } else if (name=="stop") {
-    p.fillRect(QRectF(6,6,12,12),QColor("#ff0004"));
+    p.setPen(QPen(QColor("#ff0004"),1.8)); p.drawRect(QRectF(6,6,12,12));
   } else if (name=="cancel") {
     p.drawLine(6,6,18,18); p.drawLine(6,18,18,6);
   } else if (name=="microphone") {

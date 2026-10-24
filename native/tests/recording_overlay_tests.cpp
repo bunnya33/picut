@@ -74,13 +74,14 @@ class RecordingOverlayTests : public QObject {
     preview.fill(canvasColor);
     QPainter painter(&preview);
     painter.drawPixmap(0, 0, overlay.boundary()->grab());
+    if (overlay.artwork() && overlay.artwork()->isVisible()) painter.drawPixmap(0,0,overlay.artwork()->grab());
     painter.drawPixmap(overlay.controls()->pos() - overlay.region().topLeft(),
                        overlay.controls()->grab());
     painter.end();
     preview.save(artifacts + "/" + name + ".png");
   }
   void recordAndCheck(QRect region, const QString &name, bool checkPause,
-                      bool liveCapture, bool compatibility = false) {
+                      bool liveCapture, bool compatibility = false,bool carryArtwork = false) {
     QTemporaryDir dir;
     QWidget canvas(nullptr, Qt::Tool | Qt::FramelessWindowHint |
                                 Qt::WindowStaysOnTopHint);
@@ -105,9 +106,27 @@ class RecordingOverlayTests : public QObject {
               "session; no desktop video was saved.");
     }
     Recorder recorder(dir.path() + "/recording");
+    RecordOptions options;
+    options.region = physicalRect(region);
+    options.output = dir.path() + "/" + name + ".mp4";
+    options.cursor = false;
+    options.fps = 15;
+    QImage expectedFrame(options.region.size(),QImage::Format_RGB32); expectedFrame.fill(canvasColor);
+    QImage artwork;
+    if (carryArtwork) {
+      const QRect mark(options.region.width()/3,options.region.height()/3,options.region.width()/3,options.region.height()/3);
+      options.painter=[mark](QImage &image) { QPainter p(&image); p.fillRect(mark,QColor(255,0,4,100)); };
+      artwork=QImage(options.region.size(),QImage::Format_ARGB32_Premultiplied); artwork.fill(Qt::transparent);
+      options.painter(artwork); options.painter(expectedFrame);
+    }
     RecordingOverlay overlay(&recorder, region, false, false, nullptr,
         compatibility ? std::function<bool(QWidget *)>([](QWidget *){return false;}) : std::function<bool(QWidget *)>());
+    overlay.setArtwork(artwork);
     QVERIFY(overlay.show());
+    if (carryArtwork) {
+      QVERIFY(overlay.artwork()); QCOMPARE(overlay.artwork()->isVisible(),!compatibility);
+      QVERIFY(GetWindowLongPtrW(reinterpret_cast<HWND>(overlay.artwork()->winId()),GWL_EXSTYLE)&WS_EX_TRANSPARENT);
+    }
     if (compatibility) {
       QVERIFY(overlay.compatibilityMode()); QVERIFY(!overlay.captureExcluded());
       if (overlay.controls()->isVisible()) QVERIFY(!region.intersects(overlay.controls()->geometry()));
@@ -125,17 +144,12 @@ class RecordingOverlayTests : public QObject {
     }
     auto time = overlay.controls()->findChild<QLabel *>("recordingTime");
     auto state = overlay.controls()->findChild<QLabel *>("recordingState");
-    auto pause = overlay.controls()->findChild<QPushButton *>("pauseRecording");
-    auto stop = overlay.controls()->findChild<QPushButton *>("stopRecording");
+    auto pause = overlay.controls()->findChild<QToolButton *>("pauseRecording");
+    auto stop = overlay.controls()->findChild<QToolButton *>("stopRecording");
     QVERIFY(time && state && pause && stop);
     QCOMPARE(time->text(), QString("00:00:00"));
     QVERIFY(!pause->isEnabled());
     QVERIFY(!stop->isEnabled());
-    RecordOptions options;
-    options.region = physicalRect(region);
-    options.output = dir.path() + "/" + name + ".mp4";
-    options.cursor = false;
-    options.fps = 15;
     QSignalSpy started(&recorder, &Recorder::started);
     QSignalSpy finished(&recorder, &Recorder::finished);
     QSignalSpy failed(&recorder, &Recorder::failed);
@@ -171,6 +185,7 @@ class RecordingOverlayTests : public QObject {
     }
     QTest::qWait(180);
     QList<QPoint> samplePoints;
+    if (carryArtwork) samplePoints.append({region.width()/2,region.height()/2});
     for (int x :
          {1, region.width() / 4, region.width() / 2, region.width() - 2})
       for (int y : {1, region.height() / 2, region.height() - 2})
@@ -212,9 +227,12 @@ class RecordingOverlayTests : public QObject {
                        height - 1);
         auto pixel = reinterpret_cast<const uchar *>(
             pixels.constData() + n * bytes + (qint64(y) * width + x) * 3);
-        QVERIFY2(qAbs(int(pixel[0]) - canvasColor.red()) <= 8 &&
-                     qAbs(int(pixel[1]) - canvasColor.green()) <= 8 &&
-                     qAbs(int(pixel[2]) - canvasColor.blue()) <= 8,
+        const auto expected=expectedFrame.pixelColor(
+            qBound(0,qRound(point.x()*double(expectedFrame.width())/region.width()),expectedFrame.width()-1),
+            qBound(0,qRound(point.y()*double(expectedFrame.height())/region.height()),expectedFrame.height()-1));
+        QVERIFY2(qAbs(int(pixel[0]) - expected.red()) <= 8 &&
+                     qAbs(int(pixel[1]) - expected.green()) <= 8 &&
+                     qAbs(int(pixel[2]) - expected.blue()) <= 8,
                  qPrintable(QString("%1 frame %2 pixel(%3,%4) was %5,%6,%7; "
                                     "unexpected video pixels")
                                 .arg(name)
@@ -272,9 +290,9 @@ private slots:
     QCOMPARE(overlay.boundary()->geometry(),standardRegion());
     QCOMPARE(overlay.controls()->findChild<QLabel *>("recordingState")->text(),QString("倒计时"));
     QCOMPARE(overlay.controls()->findChild<QLabel *>("recordingTime")->text(),QString("3 秒"));
-    auto stop=overlay.controls()->findChild<QPushButton *>("stopRecording");
+    auto stop=overlay.controls()->findChild<QToolButton *>("stopRecording");
     QVERIFY(stop->isEnabled()); QVERIFY(!stop->icon().isNull());
-    QVERIFY(!overlay.controls()->findChild<QPushButton *>("pauseRecording")->isVisible());
+    QVERIFY(!overlay.controls()->findChild<QToolButton *>("pauseRecording")->isVisible());
     savePreview(overlay,"countdown-controls");
     QTest::mouseClick(stop,Qt::LeftButton); QCOMPARE(canceled.size(),1); QVERIFY(!recorder.active());
     overlay.hide(); QVERIFY(!overlay.boundary()->isVisible());
@@ -285,6 +303,12 @@ private slots:
   }
   void liveRegionCaptureExclusion() {
     recordAndCheck(standardRegion(), "live-region", false, true);
+  }
+  void liveArtworkIsVisibleAndEncodedOnce() {
+    recordAndCheck(standardRegion(),"live-artwork",true,true,false,true);
+  }
+  void compatibilityArtworkStillEncodesWithoutDesktopLayer() {
+    recordAndCheck(standardRegion(),"compatibility-artwork",false,true,true,true);
   }
   void liveFullscreenCaptureExclusion() {
     recordAndCheck(QGuiApplication::primaryScreen()->geometry(),

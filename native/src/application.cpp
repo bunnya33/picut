@@ -1,6 +1,7 @@
 #include "application.h"
 #include "menu.h"
 #include "recording_settings.h"
+#include "recording_markup.h"
 #include "compact_ui.h"
 #include "hotkey.h"
 #include "panel_theme.h"
@@ -56,7 +57,7 @@ ApplicationController::ApplicationController(bool test)
     if (!testing && !quitting) QMessageBox::warning(home, "保存失败", message);
   });
   tray.setIcon(picutIcon()); QApplication::setWindowIcon(picutIcon());
-  tray.setToolTip("picut · 长截图流畅性试验版");
+  tray.setToolTip("picut");
   trayMenu = new QMenu;
   trayMenu->setObjectName("trayMenu");
   auto add = [this](const QString &label, const QString &hotkey,
@@ -68,7 +69,7 @@ ApplicationController::ApplicationController(bool test)
   add("打开工作台", {}, [this] { showHome(); });
   add("截图", "capture", [this] { beginCapture(); });
   add("贴图", "pin", [this] { pinClipboard(); });
-  add("区域录屏", "record", [this] { beginCapture(true); });
+  add("区域录屏", {}, [this] { beginCapture(true); });
   add("整屏录制", {}, [this] {
     auto screen = QGuiApplication::screenAt(QCursor::pos());
     prepareRecord((screen ? screen : QGuiApplication::primaryScreen())->geometry());
@@ -141,8 +142,8 @@ void ApplicationController::updateTrayMenu() {
       const auto shortcut = bindings[key].toString();
       button->setText(label + (shortcut.isEmpty() ? QString() : " · " + shortcut));
     }
-    home->statusBar()->showMessage(QString("%1 截图 · %2 区域录屏 · %3 贴图")
-        .arg(bindings["capture"].toString(), bindings["record"].toString(), bindings["pin"].toString()));
+    home->statusBar()->showMessage(QString("%1 截图 / 录屏选区 · %2 贴图")
+        .arg(bindings["capture"].toString(), bindings["pin"].toString()));
   }
 }
 void ApplicationController::registerHotkeys() {
@@ -152,7 +153,7 @@ void ApplicationController::registerHotkeys() {
   hotkeyIds.clear();
   auto bindings = store.config["hotkeys"].toObject();
   QStringList actions{"capture", "pin",   "toggle_pins", "through",
-                      "record",  "pause", "stop"};
+                      "",  "pause", "stop"};
   QStringList failures;
   for (int n = 0; n < actions.size(); ++n) {
     const auto value = bindings[actions[n]].toString();
@@ -175,7 +176,7 @@ bool ApplicationController::nativeEventFilter(const QByteArray &, void *raw,
                                               qintptr *) {
   auto message = static_cast<MSG *>(raw);
   if (message->message == WM_HOTKEY) {
-    if (message->wParam < 1 || message->wParam > 7) return false;
+    if (message->wParam < 1 || message->wParam > 7 || message->wParam==5) return false;
     if (hotkeysSuspended) return true;
     switch (message->wParam) {
     case 1:
@@ -190,9 +191,6 @@ bool ApplicationController::nativeEventFilter(const QByteArray &, void *raw,
       break;
     case 4:
       pins.toggleThrough();
-      break;
-    case 5:
-      beginCapture(true);
       break;
     case 6:
       if (recorder)
@@ -237,7 +235,7 @@ void ApplicationController::showHome() {
              {"区域录屏", [this] { beginCapture(true); }},
              {"设置", [this] { openSettings(); }}}) {
       auto b = new QPushButton(pair.first);
-      const auto key = QMap<QString, QString>{{"截图与标注", "capture"}, {"剪贴板贴图", "pin"}, {"区域录屏", "record"}}.value(pair.first);
+      const auto key = QMap<QString, QString>{{"截图与标注", "capture"}, {"剪贴板贴图", "pin"}}.value(pair.first);
       if (!key.isEmpty()) { b->setProperty("hotkey_action", key); b->setProperty("base_label", pair.first); }
       b->setMinimumHeight(60);
       row->addWidget(b);
@@ -366,8 +364,9 @@ void ApplicationController::beginCapture(bool recordingMode) {
       });
       connect(overlay, &CaptureOverlay::recordRegion, this,
               [this](QRect region) {
-                QTimer::singleShot(0, this,
-                                   [this, region] { prepareRecord(region, false); });
+                auto source=overlay;
+                auto painter=source && source->annotation?recordingPainter(*source->annotation,physicalRect(region).size()):RecordingPainter();
+                prepareRecord(region,false,std::move(painter),source);
               });
       overlay->show();
       overlay->activateWindow();
@@ -624,11 +623,10 @@ void ApplicationController::openSettings() {
   auto hotkeyForm = new QFormLayout(hotkeys);
   QMap<QString, HotkeyEdit *> bindings;
   for (const auto &pair :
-       QList<QPair<QString, QString>>{{"capture", "截图"},
+       QList<QPair<QString, QString>>{{"capture", "截图 / 录屏选区"},
                                       {"pin", "贴图"},
                                       {"toggle_pins", "隐藏 / 显示贴图"},
                                       {"through", "鼠标穿透"},
-                                      {"record", "区域录屏"},
                                       {"pause", "暂停 / 继续"},
                                       {"stop", "停止录屏"}}) {
     auto edit = new HotkeyEdit(
@@ -719,7 +717,13 @@ void ApplicationController::makeRecorder() {
           &ApplicationController::notify);
   connect(recorder.get(), &Recorder::failed, this, [this](QString text) {
     recordOverlay.reset();
-    QMessageBox::warning(home, "录屏未完成", text);
+    const auto source=recordSource;
+    restoreRecordSource();
+    QMessageBox::warning(source?static_cast<QWidget *>(source.data()):home.data(), "录屏未完成", text);
+  });
+  connect(recorder.get(), &Recorder::started, this, [this] {
+    const auto source=recordSource; recordSource=nullptr;
+    if (source) source->close();
   });
   connect(recorder.get(), &Recorder::finished, this, [this](QJsonObject item) {
     recordOverlay.reset();
@@ -730,19 +734,28 @@ void ApplicationController::makeRecorder() {
     previewVideo(item["path"].toString());
   });
 }
-void ApplicationController::prepareRecord(QRect region, bool showSettings) {
-  if (recording() || recordSetup || pending || overlay) return;
+void ApplicationController::restoreRecordSource() {
+  const auto source=recordSource; recordSource=nullptr;
+  if (!source || quitting) return;
+  source->setRecordingMode(false); source->show(); source->raise(); source->activateWindow(); source->setFocus();
+}
+void ApplicationController::prepareRecord(QRect region, bool showSettings,
+                                           RecordingPainter painter, CaptureOverlay *source) {
+  if (recording() || recordSetup || pending || (overlay && overlay!=source)) return;
+  recordSource=source;
   auto screen=QGuiApplication::screenAt(region.center());
   if (!screen || !screen->geometry().contains(region)) {
-    QMessageBox::warning(home,"录制区域","录屏区域需要位于一个显示器内。"); return;
+    restoreRecordSource();
+    QMessageBox::warning(source?static_cast<QWidget *>(source):home.data(),"录制区域","录屏区域需要位于一个显示器内。"); return;
   }
   recordSetup=true;
   if (showSettings) {
     RecordingSettingsDialog dialog(&store,region,true,home);
-    if (dialog.exec()!=QDialog::Accepted) { recordSetup=false; return; }
+    if (dialog.exec()!=QDialog::Accepted) { recordSetup=false; restoreRecordSource(); return; }
   }
-  const auto options=savedRecordingOptions(store.config,physicalRect(region),
+  auto options=savedRecordingOptions(store.config,physicalRect(region),
       store.outputPath(store.config["video_dir"].toString(),"录屏","mp4"));
+  options.painter=std::move(painter);
   makeRecorder();
   int seconds=qBound(0,store.config["countdown"].toInt(3),10);
   auto counter=new QLabel(nullptr,Qt::FramelessWindowHint|Qt::Tool|Qt::WindowStaysOnTopHint);
@@ -751,25 +764,31 @@ void ApplicationController::prepareRecord(QRect region, bool showSettings) {
   counter->setStyleSheet("background:rgba(0,0,0,170);color:white;font-size:60px;");
   counter->setGeometry(QRect(region.center()-QPoint(60,60),QSize(120,120)));
   connect(counter,&QObject::destroyed,this,[this] {
-    if (recordSetup) { recordOverlay.reset(); recordSetup=false; }
+    if (recordSetup) { recordOverlay.reset(); recordSetup=false; restoreRecordSource(); }
   });
   auto escape=new QShortcut(QKeySequence(Qt::Key_Escape),counter);
   escape->setContext(Qt::ApplicationShortcut);
   connect(escape,&QShortcut::activated,counter,&QWidget::close);
   try {
     recordOverlay=std::make_unique<RecordingOverlay>(recorder.get(),region,options.systemAudio,options.microphone);
+    if (source && source->annotation && options.painter) {
+      QImage artwork(options.region.size(),QImage::Format_ARGB32_Premultiplied);
+      artwork.fill(Qt::transparent); options.painter(artwork); recordOverlay->setArtwork(artwork);
+    }
     recordOverlay->setCountdown(seconds);
     connect(recordOverlay.get(),&RecordingOverlay::countdownCanceled,counter,&QWidget::close);
     if (!recordOverlay->show()) throw std::runtime_error("无法从录制画面排除控制条。请在 Windows 10 2004 或更新版本的本地桌面会话中录制。");
   } catch (const std::exception &e) {
     recordOverlay.reset(); recordSetup=false; counter->close();
-    QMessageBox::warning(home,"无法录屏",QString::fromUtf8(e.what())); return;
+    restoreRecordSource();
+    QMessageBox::warning(source?static_cast<QWidget *>(source):home.data(),"无法录屏",QString::fromUtf8(e.what())); return;
   }
   auto start=[this,counter,options] {
     recordSetup=false; counter->close();
     try { recordOverlay->setCountdown(-1); recorder->start(options); }
     catch (const std::exception &e) {
-      recordOverlay.reset(); QMessageBox::warning(home,"无法录屏",QString::fromUtf8(e.what()));
+      recordOverlay.reset(); restoreRecordSource();
+      QMessageBox::warning(overlay?static_cast<QWidget *>(overlay.data()):home.data(),"无法录屏",QString::fromUtf8(e.what()));
     }
   };
   if (!seconds) { start(); return; }
