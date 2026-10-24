@@ -17,7 +17,7 @@ static int runApplication(int argc, char **argv) {
   app.setApplicationName("picut");
   app.setApplicationDisplayName("picut 长截图流畅性试验版");
   app.setOrganizationName("picut");
-  app.setApplicationVersion("0.5.32");
+  app.setApplicationVersion("0.5.33");
   // Keep experimental captures and settings separate from the accepted release.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(

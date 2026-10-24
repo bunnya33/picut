@@ -1,6 +1,6 @@
-# picut · v0.5.32 长截图流畅性试验版
+# picut · v0.5.33 长截图流畅性试验版
 
-本分支 `codex/scroll-performance-trial` 在 Astra 首版上改进连续跟踪、局部动画处理和采集管线。运行 `run-scroll-performance-trial.ps1` 或 `dist/picut-0.5.32-scroll-trial/picut.exe`，安装包为 `dist/picut-0.5.32-scroll-trial-setup-x64.exe`。v0.5.32 修复边界空白内容后来绘制出来后无法继续拼接的问题，沿用 v0.5.29 的试验配置和数据，详见 [试用说明与实测](docs/试验版-v0.5.32-流畅滚动.md)。
+本分支 `codex/scroll-performance-trial` 在 Astra 首版上改进连续跟踪、局部动画处理和采集管线。运行 `run-scroll-performance-trial.ps1` 或 `dist/picut-0.5.33-scroll-trial/picut.exe`，安装包为 `dist/picut-0.5.33-scroll-trial-setup-x64.exe`。v0.5.33 修复加载卡片变化后无法继续拼接的问题，使用稳定文字确认位置并刷新边界局部内容，沿用 v0.5.29 的试验配置和数据，详见 [试用说明与实测](docs/试验版-v0.5.33-流畅滚动.md)。
 
 `run-scroll-trial.ps1` 继续启动 Astra 首版 v0.5.27，`run.ps1` 继续启动正式版 v0.5.26。旧程序、安装包、数据和 Git 标签保留；切换时先退出旧版托盘，释放全局热键。开发依据见 [长截图流畅性与性能设计](docs/长截图设计-流畅性与性能.md)，其中性能数字是目标，实际结果以本版试用说明为准。
 
@@ -66,7 +66,7 @@ v0.5.4 的文字检测和识别都改为 **PP-OCRv6 small**，仍覆盖官方声
 ./run.ps1
 ```
 
-`build.ps1` 编译当前分支、运行原生测试并打包到 v0.5.32 独立试验目录；首次构建会准备精简的原生 OpenCV 跟踪 SDK。录屏 UI 测试使用真实 Windows 平台，会短暂显示测试边框、控制条和纯色测试画面。启动脚本及 EXE 默认托盘启动，可传 `--show-home` 打开工作台或 `--verify-features` 等参数。详细构建、测试与 SDK 参数见 [native/README.md](native/README.md)。
+`build.ps1` 编译当前分支、运行原生测试并打包到 v0.5.33 独立试验目录；首次构建会准备精简的原生 OpenCV 跟踪 SDK。录屏 UI 测试使用真实 Windows 平台，会短暂显示测试边框、控制条和纯色测试画面。启动脚本及 EXE 默认托盘启动，可传 `--show-home` 打开工作台或 `--verify-features` 等参数。详细构建、测试与 SDK 参数见 [native/README.md](native/README.md)。
 
 | 目录/文件 | 内容 |
 | --- | --- |

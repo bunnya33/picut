@@ -309,8 +309,9 @@ struct ScrollStitcherV2::State {
     if(oldEvidence<64 || newEvidence<64) return {};
     return {true,false,false,0,false,blankRows};
   }
-  Validation validate(const QImage &frame,int at,double phase=0) const {
-    const int begin=qMax(top,at),end=qMin(bottom,at+frame.height()),overlap=end-begin;
+  Validation validate(const QImage &frame,int at,double phase=0,int excludedBoundaryRows=0) const {
+    const int begin=qMax(top,at)+(at<top?excludedBoundaryRows:0);
+    const int end=qMin(bottom,at+frame.height())-(at>=top?excludedBoundaryRows:0),overlap=end-begin;
     if(overlap<qMin(96,qMax(24,viewportHeight/5))) return {};
     const auto reference=read(begin,overlap);
     if(reference.isNull()) return {false,false,true};
@@ -334,7 +335,12 @@ struct ScrollStitcherV2::State {
       return evidence>=qMax(100,overlap*width/500)?Validation{true,false,false,0,true}:Validation{};
     }
     const int nx=(width+kCell-1)/kCell,ny=(overlap+kCell-1)/kCell;
-    struct Cell { int samples=0,changed=0,texture=0; quint64 residual=0; };
+    struct Cell {
+      int samples=0,changed=0,texture=0;
+      int left=std::numeric_limits<int>::max(),right=-1;
+      int first=std::numeric_limits<int>::max(),last=-1;
+      quint64 residual=0;
+    };
     std::vector<Cell> cells(size_t(nx)*ny);
     int changes=0,texture=0;
     for(int y=0;y<overlap;y+=2) {
@@ -360,7 +366,11 @@ struct ScrollStitcherV2::State {
           difference=qMax(std::abs(r-qRed(b[x])),qMax(std::abs(g-qGreen(b[x])),std::abs(blue-qBlue(b[x]))));
         }
         cell.residual+=quint64(difference);
-        if(difference>7) { ++cell.changed; ++changes; }
+        if(difference>7) {
+          ++cell.changed; ++changes;
+          cell.left=qMin(cell.left,x); cell.right=qMax(cell.right,x);
+          cell.first=qMin(cell.first,y); cell.last=qMax(cell.last,y);
+        }
         if(x>=2 && std::abs(qGray(a[x])-qGray(a[x-2]))>16) { ++cell.texture; ++texture; }
       }
     }
@@ -388,10 +398,13 @@ struct ScrollStitcherV2::State {
       const int seed=y*nx+x;
       if(!bad[seed] || visited[seed]) continue;
       int left=x,right=x,first=y,last=y,area=0;
+      int pixelLeft=width,pixelRight=-1,pixelFirst=overlap,pixelLast=-1;
       std::vector<int> queue{seed}; visited[seed]=1;
       for(size_t i=0;i<queue.size();++i) {
         const int index=queue[i],cy=index/nx,cx=index%nx;
         left=qMin(left,cx); right=qMax(right,cx); first=qMin(first,cy); last=qMax(last,cy); ++area;
+        pixelLeft=qMin(pixelLeft,cells[index].left); pixelRight=qMax(pixelRight,cells[index].right);
+        pixelFirst=qMin(pixelFirst,cells[index].first); pixelLast=qMax(pixelLast,cells[index].last);
         for(const auto [dx,dy]:{std::pair{-1,0},{1,0},{0,-1},{0,1}}) {
           const int xx=cx+dx,yy=cy+dy;
           if(xx<0 || yy<0 || xx>=nx || yy>=ny) continue;
@@ -403,19 +416,60 @@ struct ScrollStitcherV2::State {
       // A compact animated object may enter the overlap at its edge. A fixed
       // header or scrollbar spans a whole axis and fails these extent limits.
       if(((left==0 || right==nx-1) && right-left<=1 && last-first>=2) ||
-         (right-left+1)*kCell>qMin(192,width/3) ||
-         (last-first+1)*kCell>qMin(128,overlap/3) || area>24) boundary=true;
+         pixelRight-pixelLeft+2>qMin(192,width/3) ||
+         pixelLast-pixelFirst+2>qMin(128,overlap/3) || area>24) boundary=true;
     }
     if(boundary || islands>8) return {false,boundary,false,double(changes)/(overlap*width/4)};
     return {true,false,false,score};
+  }
+
+  Validation validateRepaintedBoundary(const QImage &frame,int at,const QImage &signature) const {
+    const bool prepend=at<top && at+frame.height()<=bottom;
+    const bool append=at>=top && at+frame.height()>bottom;
+    if(!prepend && !append) return {};
+    const int begin=qMax(top,at),end=qMin(bottom,at+frame.height()),overlap=end-begin;
+    if(overlap<192 || !anchored(signature,at)) return {};
+    const auto reference=read(begin,overlap);
+    if(reference.isNull()) return {false,false,true};
+    // Loading cards can change their contents AND height at the growing edge.
+    // Locate a continuous, textured, unchanged band beyond that edge before
+    // accepting any replacement. White margins alone never establish position.
+    int stableRows=0,stableTexture=0,refresh=0;
+    qint64 edgeChanges=0;
+    for(int n=0;n<overlap;++n) {
+      const int y=prepend?n:overlap-1-n;
+      const auto a=reinterpret_cast<const QRgb *>(reference.constScanLine(y));
+      const auto b=reinterpret_cast<const QRgb *>(frame.constScanLine(begin-at+y));
+      int changes=0,texture=0;
+      for(int x=0;x<width;++x) {
+        if(qMax(std::abs(qRed(a[x])-qRed(b[x])),qMax(std::abs(qGreen(a[x])-qGreen(b[x])),
+           std::abs(qBlue(a[x])-qBlue(b[x]))))>7) ++changes;
+        if(x>=2 && x%2==0 && std::abs(qGray(a[x])-qGray(a[x-2]))>16) ++texture;
+      }
+      edgeChanges+=changes;
+      if(changes) { stableRows=0; stableTexture=0; refresh=n+1; }
+      else { ++stableRows; stableTexture+=texture; }
+      if(refresh>qMin(512,viewportHeight/2)) return {};
+      if(stableRows<96 || stableTexture<qMax(100,96*width/500)) continue;
+      if(qEnvironmentVariableIsSet("PICUT_SCROLL_DEBUG"))
+        qInfo()<<"boundary repaint band"<<at<<refresh<<stableRows<<stableTexture<<edgeChanges;
+      if(refresh<8 || edgeChanges>qint64(refresh)*width/5) return {};
+      const int bandBegin=prepend?begin+refresh:end-refresh-stableRows;
+      if(!anchored(signature,at,bandBegin-at,stableRows)) continue;
+      auto result=validate(frame,at,0,refresh);
+      if(!result.valid) return result;
+      result.perfect=false; result.renderedRows=refresh;
+      return result;
+    }
+    return {};
   }
 
   struct Candidate { int at=0; double phase=0; int votes=0; double weight=0; };
   // Only rows already verified at this coordinate are location evidence.
   // Novel pixels outside the overlap cannot prove that a short repeated sticker
   // is new content. Require several rare rows spread through the known overlap.
-  bool anchored(const QImage &gray,int at) const {
-    const int begin=qMax(top,at),end=qMin(bottom,at+viewportHeight);
+  bool anchored(const QImage &gray,int at,int from=0,int length=-1) const {
+    const int begin=qMax(top,at+from),end=qMin(bottom,at+(length<0?viewportHeight:from+length));
     if(end-begin<qMin(96,qMax(24,viewportHeight/5))) return false;
     auto part=parts.upper_bound(begin); if(part!=parts.begin()) --part;
     for(;part!=parts.end() && part->first<end;++part)
@@ -539,6 +593,10 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
       const auto rendered=s.validateRenderedBoundary(frame,candidate.at);
       if(rendered.valid || rendered.cacheError) result=rendered;
     }
+    if(!result.valid && !result.cacheError && candidate.phase==0) {
+      const auto repainted=s.validateRepaintedBoundary(frame,candidate.at,signature);
+      if(repainted.valid || repainted.cacheError) result=repainted;
+    }
     if(debug) qInfo()<<"candidate"<<candidate.at<<candidate.phase<<candidate.votes<<"valid"<<result.valid<<"error"<<result.error<<"boundary"<<result.boundary;
     if(result.cacheError) return false;
     boundary|=result.boundary;
@@ -616,7 +674,7 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
     if(seam==State::Seam::Insufficient) { s.lost=true; return Engine::NoOverlap; }
     if(leading && !s.append(frame.copy(0,0,s.width,leading),at,chosen.phase)) return Engine::CacheError;
     if(trailing && !s.append(frame.copy(0,frame.height()-trailing,s.width,trailing),s.bottom,chosen.phase)) return Engine::CacheError;
-    if(valid.front().renderedRows) qInfo()<<"Scroll filled blank boundary: prepend"<<(leading>0)
+    if(valid.front().renderedRows) qInfo()<<"Scroll refreshed rendered boundary: prepend"<<(leading>0)
         <<"rows"<<valid.front().renderedRows<<"overlap"<<knownOverlap;
   }
   const auto storageNs=timing.nsecsElapsed();

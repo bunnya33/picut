@@ -330,6 +330,80 @@ private slots:
     QCOMPARE(engine.image(),expected);
     if(longHistory) QVERIFY(engine.image().save(artifacts+"/newly-rendered-boundary-long.png"));
   }
+  void repaintedBoundaryFromScreenshots_data() {
+    QTest::addColumn<bool>("longHistory");
+    QTest::newRow("edge-viewport")<<false;
+    QTest::newRow("full-history")<<true;
+  }
+  void repaintedBoundaryFromScreenshots() {
+    QFETCH(bool,longHistory);
+    const auto folder=qEnvironmentVariable("PICUT_SCROLL_REPAINT_FIXTURE_DIR");
+    if(folder.isEmpty()) QSKIP("Set PICUT_SCROLL_REPAINT_FIXTURE_DIR for the loading-card screenshots");
+    QImage old(folder+"/captured-long.png"),incoming(folder+"/next-viewport.png");
+    QVERIFY(!old.isNull()); QVERIFY(!incoming.isNull());
+    old=old.convertToFormat(QImage::Format_RGB32);
+    // This second manual selection starts 25px farther left. The unchanged
+    // message text establishes the original-pixel displacement of -230px.
+    const auto frame=incoming.copy(25,0,old.width(),incoming.height()).convertToFormat(QImage::Format_RGB32);
+    constexpr int prefix=230,refresh=230;
+    const auto first=old.copy(0,0,old.width(),frame.height());
+    ScrollStitcherV2 engine;
+    if(longHistory) {
+      for(int at=old.height()-frame.height();;at=qMax(0,at-97)) {
+        const auto r=engine.accept(old.copy(0,at,old.width(),frame.height()),-1);
+        QVERIFY2(good(r),qPrintable(QString("loading-card history at %1 returned %2").arg(at).arg(int(r))));
+        if(!at) break;
+      }
+      QCOMPARE(engine.image(),old);
+    } else QCOMPARE(engine.accept(first),ScrollStitcher::Started);
+    QImage expected(old.width(),(longHistory?old.height():first.height())+prefix,QImage::Format_RGB32);
+    { QPainter p(&expected); p.drawImage(0,prefix,longHistory?old:first);
+      p.drawImage(0,0,frame.copy(0,0,frame.width(),prefix+refresh)); }
+    const auto r=engine.accept(frame,-1);
+    QVERIFY2(good(r),qPrintable(QString("loading cards to failures returned %1").arg(int(r))));
+    QCOMPARE(engine.viewportPosition(),0);
+    QCOMPARE(engine.image(),expected);
+    QVERIFY(good(engine.accept(frame,-1)));
+    QVERIFY(good(engine.accept(expected.copy(0,73,expected.width(),frame.height()),1)));
+    QCOMPARE(engine.viewportPosition(),73);
+    QCOMPARE(engine.image(),expected);
+    if(longHistory) QVERIFY(engine.image().save(artifacts+"/repainted-boundary-long.png"));
+  }
+  void repaintedBoundaryGuards_data() {
+    QTest::addColumn<bool>("prepend"); QTest::addColumn<QString>("variant");
+    for(bool prepend:{true,false})
+      for(auto variant:{"sparse-cards","dense-mutation","interior-mutation","missing-anchor"})
+        QTest::newRow(qPrintable(QString("%1-%2").arg(prepend?"up":"down").arg(variant)))<<prepend<<QString(variant);
+  }
+  void repaintedBoundaryGuards() {
+    QFETCH(bool,prepend); QFETCH(QString,variant);
+    auto doc=document("paragraphs");
+    { QPainter p(&doc); for(int y=1100;y<1720;y+=8) {
+        const quint32 code=quint32(y)*2654435761u;
+        for(int bit=0;bit<16;++bit) if(code&(1u<<bit)) p.fillRect(620+bit*5,y,3,3,Qt::black);
+      } }
+    auto first=doc.copy(0,1000,720,720);
+    const int edge=prepend?0:560;
+    { QPainter p(&first); p.fillRect(0,edge,720,160,QColor("#fafafa"));
+      p.setPen(QPen(QColor("#555555"),1));
+      for(int x:{80,300,520}) { p.drawRect(x,edge+40,90,80); p.drawText(x+15,edge+85,"Loading"); }
+      if(variant=="dense-mutation")
+        for(int x=0;x<720;x+=8) p.fillRect(x,edge,8,160,(x/8)%2?Qt::red:Qt::blue);
+      if(variant=="missing-anchor") p.fillRect(0,prepend?160:0,720,560,QColor("#fafafa")); }
+    auto frame=doc.copy(0,prepend?800:1200,720,720);
+    if(variant=="interior-mutation") {
+      QPainter p(&frame); p.fillRect(0,prepend?600:60,720,60,Qt::red);
+    }
+    ScrollStitcherV2 engine;
+    QCOMPARE(engine.accept(first),ScrollStitcher::Started);
+    const auto r=engine.accept(frame,prepend?-1:1);
+    if(variant!="sparse-cards") { QVERIFY(!good(r)); QCOMPARE(engine.image(),first); return; }
+    QVERIFY2(good(r),qPrintable(QString("boundary repaint %1 returned %2").arg(prepend).arg(int(r))));
+    const auto output=engine.image();
+    QCOMPARE(output.size(),QSize(720,920));
+    const auto expected=doc.copy(0,prepend?800:1000,720,920);
+    QCOMPARE(output,expected);
+  }
   void renderedBlankBoundary_data() {
     QTest::addColumn<bool>("prepend");
     QTest::newRow("upwards")<<true;

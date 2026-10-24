@@ -8,7 +8,7 @@ if (-not $QtDir) { $QtDir = Join-Path $floatshotRoot 'build/native-sdk/qt' }
 if (-not $Ffmpeg) { $Ffmpeg = Join-Path $floatshotRoot 'build/native-sdk/ffmpeg.exe' }
 if (-not (Test-Path -LiteralPath $Ffmpeg)) { throw 'FFmpeg missing. Run native/setup-sdk.ps1 or pass -Ffmpeg.' }
 if (-not $SkipBuild) { & (Join-Path $PSScriptRoot 'build.ps1') -QtDir $QtDir -BuildDir $BuildDir }
-$floatshotPackage = if ($PackageDir) { [IO.Path]::GetFullPath($PackageDir) } else { Join-Path $floatshotRoot 'dist/picut-0.5.32-scroll-trial' }
+$floatshotPackage = if ($PackageDir) { [IO.Path]::GetFullPath($PackageDir) } else { Join-Path $floatshotRoot 'dist/picut-0.5.33-scroll-trial' }
 if ($floatshotPackage -notmatch 'scroll-trial') { throw 'Use a separate scroll-trial package directory.' }
 New-Item -ItemType Directory -Path $floatshotPackage -Force | Out-Null
 foreach ($floatshotBinary in @('picut.exe', 'NativeVideoPreview.dll', 'FloatShotPaddleOcr.exe', 'onnxruntime.dll', 'FloatShotTranslate.exe', 'ctranslate2.dll')) {
@@ -28,12 +28,13 @@ foreach ($picutDirection in $picutTranslationManifest.models.PSObject.Properties
         if ((Get-FileHash -LiteralPath (Join-Path $picutDirectionTarget $picutModelFile.Name)).Hash -ne $picutModelFile.Value) { throw 'Translation model checksum mismatch.' }
     }
 }
+Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/试验版-v0.5.33-流畅滚动.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/试验版-v0.5.32-流畅滚动.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/试验版-v0.5.31-流畅滚动.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/试验版-v0.5.30-流畅滚动.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/试验版-v0.5.29-流畅滚动.md') -Destination $floatshotPackage -Force
 Copy-Item -LiteralPath (Join-Path $floatshotRoot 'docs/更新记录-v0.5.26-正式翻译与Shift画笔.md') -Destination $floatshotPackage -Force
-foreach ($picutReport in @('native-v0.5.32-tests.txt','native-v0.5.32-scroll-v2-tests.txt','native-v0.5.32-translation-tests.txt','native-v0.5.32-ocr-tests.txt')) {
+foreach ($picutReport in @('native-v0.5.33-tests.txt','native-v0.5.33-scroll-v2-tests.txt','native-v0.5.33-translation-tests.txt','native-v0.5.33-ocr-tests.txt')) {
     $picutReportSource = Join-Path $floatshotRoot ('.test-artifacts/' + $picutReport)
     if (Test-Path -LiteralPath $picutReportSource) { Copy-Item -LiteralPath $picutReportSource -Destination $floatshotPackage -Force }
 }
