@@ -184,6 +184,108 @@ private slots:
     for(int at:{500,900,1300,1700,2100,2500}) QVERIFY(good(engine.accept(doc.copy(0,at,720,720),1)));
     QCOMPARE(engine.image(),doc.copy(0,0,720,3220));
   }
+  void irregularUpwardReversal_data() {
+    QTest::addColumn<QString>("kind");
+    for(auto kind:{"paragraphs","code","chat","user-chat"})
+      QTest::newRow(kind)<<QString(kind);
+  }
+  void irregularUpwardReversal() {
+    QFETCH(QString,kind);
+    QImage doc;
+    if(kind=="user-chat") {
+      const auto path=qEnvironmentVariable("PICUT_SCROLL_RETURN_FIXTURE");
+      if(path.isEmpty()) QSKIP("Set PICUT_SCROLL_RETURN_FIXTURE for the chat replay");
+      doc=QImage(path).convertToFormat(QImage::Format_RGB32);
+    } else doc=document(kind);
+    QVERIFY(!doc.isNull());
+    constexpr int start=2400,viewport=960;
+    ScrollStitcherV2 engine;
+    int top=start,bottom=start+viewport,last=start;
+    // Reverse before the old boundary, cross it at a different offset, and
+    // deliberately reject a repainted frame before trying more unequal steps.
+    const QList<int> positions={start,2300,2361,2254,2183,2288,2217,2119,2096,
+      2197,2033,1987,1876,2011,1924,1819,1736,1639,1794,1607,1478,1311,
+      1437,1202,1096,982,1119,917,803,697,811,620,511,403,548,321,208,97,0};
+    for(int at:positions) {
+      if(at==1819) {
+        auto obscured=doc.copy(0,at,doc.width(),viewport);
+        QPainter p(&obscured); p.fillRect(0,0,doc.width(),viewport/2,Qt::magenta); p.end();
+        const auto before=engine.image();
+        QVERIFY(!good(engine.accept(obscured,-1)));
+        QCOMPARE(engine.image(),before);
+      }
+      const auto r=engine.accept(doc.copy(0,at,doc.width(),viewport),at<last?-1:1);
+      QVERIFY2(good(r),qPrintable(QString("%1: %2 -> %3 returned %4; confirmed top %5")
+          .arg(kind).arg(last).arg(at).arg(int(r)).arg(top)));
+      top=qMin(top,at); bottom=qMax(bottom,at+viewport);
+      QCOMPARE(engine.viewportPosition(),at-top);
+      QCOMPARE(engine.image(),doc.copy(0,top,doc.width(),bottom-top));
+      last=at;
+    }
+  }
+  void shiftedWheelStops_data() {
+    QTest::addColumn<bool>("realChat");
+    QTest::addColumn<bool>("rejectFirstShift");
+    for(bool real:{false,true}) for(bool reject:{false,true})
+      QTest::newRow(qPrintable(QString("%1-%2").arg(real?"chat":"code",reject?"after-rejection":"clean")))
+          <<real<<reject;
+  }
+  void shiftedWheelStops() {
+    QFETCH(bool,realChat); QFETCH(bool,rejectFirstShift);
+    QImage doc;
+    if(realChat) {
+      const auto path=qEnvironmentVariable("PICUT_SCROLL_RETURN_FIXTURE");
+      if(path.isEmpty()) QSKIP("Set PICUT_SCROLL_RETURN_FIXTURE for the chat replay");
+      doc=QImage(path).convertToFormat(QImage::Format_RGB32);
+    } else doc=document("code");
+    QVERIFY(!doc.isNull());
+    constexpr int start=2400,viewport=960;
+    ScrollStitcherV2 engine;
+    int top=start,bottom=start+viewport;
+    auto verify=[&](int at) {
+      const auto r=engine.accept(doc.copy(0,at,doc.width(),viewport));
+      if(!good(r)) return false;
+      top=qMin(top,at); bottom=qMax(bottom,at+viewport);
+      return engine.viewportPosition()==at-top &&
+          engine.image()==doc.copy(0,top,doc.width(),bottom-top);
+    };
+    QVERIFY(verify(start)); QVERIFY(verify(start-100)); QVERIFY(verify(start));
+    if(rejectFirstShift) {
+      auto interrupted=doc.copy(0,start-120,doc.width(),viewport);
+      QPainter p(&interrupted); p.fillRect(0,0,doc.width(),viewport/2,Qt::magenta); p.end();
+      const auto before=engine.image();
+      QVERIFY(!good(engine.accept(interrupted,-1)));
+      QCOMPARE(engine.image(),before);
+    } else QVERIFY(verify(start-120));
+    // Every stop now differs by 20px from the first pass. Never return to
+    // start-100 (or any other old boundary) to help the matcher recover.
+    for(int at:{start-20,start-120,start-220,start-120,start-20,start-120,
+                start-220,start-320,start-420,start-520,start-620,start-720,
+                start-820,start-920,start-1020,start-1120,start-1220})
+      QVERIFY2(verify(at),qPrintable(QString("offset wheel stop %1 (shifted by 20px) failed").arg(at)));
+  }
+  void fractionalUpwardReversal() {
+    const auto doc=document("code",720,4000);
+    auto frame=[&](double at) {
+      const int row=int(std::floor(at));
+      QImage image(720,720,QImage::Format_RGB32); image.fill(Qt::white);
+      QPainter p(&image); p.setRenderHint(QPainter::SmoothPixmapTransform);
+      p.drawImage(QPointF(0,-(at-row)),doc.copy(0,row,720,722));
+      return image;
+    };
+    constexpr double start=2200.0;
+    ScrollStitcherV2 engine;
+    int top=qRound(start),bottom=top+720;
+    for(double at:{start,2100.0,start,2079.75,2179.75,2079.75,1979.75,
+                   2079.75,2179.75,2079.75,1979.75,1879.75,1779.75,
+                   1679.75,1579.75,1479.75,1379.75,1279.75}) {
+      const auto result=engine.accept(frame(at));
+      QVERIFY2(good(result),qPrintable(QString("fractional upward stop %1 returned %2").arg(at).arg(int(result))));
+      top=qMin(top,qRound(at)); bottom=qMax(bottom,qRound(at)+720);
+      QVERIFY(std::abs(engine.viewportPosition()-(qRound(at)-top))<=1);
+      QVERIFY(std::abs(engine.size().height()-(bottom-top))<=1);
+    }
+  }
   void ambiguityBlankAndMutation() {
     QImage blank(720,720,QImage::Format_RGB32); blank.fill(Qt::white);
     ScrollStitcherV2 empty; QCOMPARE(empty.accept(blank),ScrollStitcher::Started);

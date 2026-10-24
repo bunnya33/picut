@@ -479,7 +479,8 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
   const auto indexed=direct?std::vector<State::Candidate>{}:s.indexed(signature);
   const auto indexNs=timing.nsecsElapsed();
   const bool debug=qEnvironmentVariableIsSet("PICUT_SCROLL_DEBUG");
-  if(debug) qInfo()<<"motion"<<s.position<<motion.dy<<motion.reliable<<"index"<<indexed.size();
+  if(debug) qInfo()<<"motion"<<s.position<<motion.dy<<motion.reliable<<"index"<<indexed.size()
+                  <<"trusted"<<s.motionTrusted<<"lost"<<s.lost;
   if(candidates.empty()) candidates=indexed;
   if(candidates.empty()) { s.lost=true; return Engine::NoOverlap; }
   struct Valid { State::Candidate candidate; double error; bool anchored,perfect,proven; };
@@ -494,6 +495,7 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
     if(result.valid) {
       const bool anchored=candidate.phase==0 && s.anchored(signature,candidate.at);
       const bool proven=result.perfect && anchored && candidate.at>=s.top;
+      if(debug) qInfo()<<"evidence"<<candidate.at<<"anchored"<<anchored<<"perfect"<<result.perfect;
       valid.push_back({candidate,result.error,anchored,result.perfect,proven});
       if(proven) unambiguous=true;
     }
@@ -535,9 +537,21 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
   });
   const auto chosen=valid.front().candidate;
   const int at=chosen.at;
+  const int knownOverlap=qMin(s.bottom,at+frame.height())-qMax(s.top,at);
+  // Repeated stickers can also yield a plausible, locally repainted match at
+  // an old coordinate. A verified integer match with a long overlap and a
+  // previously established optical reference is stronger evidence. A rejected
+  // frame does not invalidate that last confirmed reference: subsequent stops
+  // can recover at any pixel offset, not just at an earlier wheel stop.
+  // Still reject a short edge match, an unestablished track, or two exact copies.
+  const bool trackedExact=valid.front().perfect &&
+      s.motionTrusted && motion.reliable && chosen.phase==0 &&
+      at==qRound(s.coordinate+motion.dy*double(frame.height())/gray.rows) &&
+      std::abs(at-s.position)<=frame.height()/3 && knownOverlap>=frame.height()*2/3;
   for(size_t i=1;!unambiguous && i<valid.size();++i)
     if(std::abs(valid[i].candidate.at+valid[i].candidate.phase-at-chosen.phase)>2 &&
-       (!valid.front().anchored || valid[i].anchored)) {
+       (!valid.front().anchored || valid[i].anchored) &&
+       !(trackedExact && !valid[i].perfect)) {
       s.lost=true; return Engine::NoOverlap;
     }
   const auto validationNs=timing.nsecsElapsed();
@@ -555,7 +569,7 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
   }
   const auto storageNs=timing.nsecsElapsed();
   const bool moved=at!=s.position;
-  s.position=at; s.coordinate=at+chosen.phase; s.motionTrusted=direct || valid.front().anchored;
+  s.position=at; s.coordinate=at+chosen.phase; s.motionTrusted=direct || valid.front().anchored || trackedExact;
   s.remember(frame,std::move(gray));
   if(qEnvironmentVariableIsSet("PICUT_SCROLL_PROFILE"))
     qInfo()<<"SCROLL_PHASE_NS"<<motionNs<<indexNs-motionNs<<validationNs-indexNs
