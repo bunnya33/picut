@@ -286,6 +286,70 @@ private slots:
       QVERIFY(std::abs(engine.size().height()-(bottom-top))<=1);
     }
   }
+  void newlyRenderedBoundaryFromScreenshots_data() {
+    QTest::addColumn<QString>("variant");
+    for(auto variant:{"fill-blank-edge","fill-long-history","known-pixel-conflict","missing-anchor"})
+      QTest::newRow(variant)<<QString(variant);
+  }
+  void newlyRenderedBoundaryFromScreenshots() {
+    QFETCH(QString,variant);
+    const auto folder=qEnvironmentVariable("PICUT_SCROLL_RENDER_FIXTURE_DIR");
+    if(folder.isEmpty()) QSKIP("Set PICUT_SCROLL_RENDER_FIXTURE_DIR for the user's two screenshots");
+    QImage old(folder+"/captured-long.png"),incoming(folder+"/next-viewport.png");
+    QVERIFY(!old.isNull()); QVERIFY(!incoming.isNull());
+    old=old.convertToFormat(QImage::Format_RGB32);
+    // The second screenshot was manually selected 8px farther left. Align
+    // the unchanged chat bubble; its original RGB pixels match at (8, -355).
+    constexpr int prefix=355;
+    QImage frame(old.width(),incoming.height(),QImage::Format_RGB32); frame.fill(Qt::white);
+    { QPainter p(&frame); p.drawImage(8,0,incoming); }
+    const int height=frame.height();
+    auto first=old.copy(0,0,old.width(),height);
+    QCOMPARE(first.copy(690,150,100,50),frame.copy(690,prefix+150,100,50));
+    if(variant=="known-pixel-conflict") frame.setPixel(715,prefix+173,qRgb(255,0,0));
+    if(variant=="missing-anchor") first.fill(Qt::white);
+    const bool longHistory=variant=="fill-long-history";
+    QImage expected(old.width(),(longHistory?old.height():height)+prefix,QImage::Format_RGB32); expected.fill(Qt::white);
+    { QPainter p(&expected); p.drawImage(0,prefix,longHistory?old:first); p.drawImage(0,0,frame); }
+    ScrollStitcherV2 engine;
+    if(longHistory) {
+      for(int at=old.height()-height;;at=qMax(0,at-73)) {
+        const auto r=engine.accept(old.copy(0,at,old.width(),height),-1);
+        QVERIFY2(good(r),qPrintable(QString("real long-history replay at %1 returned %2").arg(at).arg(int(r))));
+        if(!at) break;
+      }
+      QCOMPARE(engine.image(),old);
+    } else QCOMPARE(engine.accept(first),ScrollStitcher::Started);
+    const auto result=engine.accept(frame,-1);
+    if(variant!="fill-blank-edge" && !longHistory) {
+      QVERIFY(!good(result)); QCOMPARE(engine.image(),first); return;
+    }
+    QVERIFY2(good(result),qPrintable(QString("newly rendered boundary returned %1").arg(int(result))));
+    QCOMPARE(engine.viewportPosition(),0);
+    QCOMPARE(engine.size(),expected.size());
+    QCOMPARE(engine.image(),expected);
+    if(longHistory) QVERIFY(engine.image().save(artifacts+"/newly-rendered-boundary-long.png"));
+  }
+  void renderedBlankBoundary_data() {
+    QTest::addColumn<bool>("prepend");
+    QTest::newRow("upwards")<<true;
+    QTest::newRow("downwards")<<false;
+  }
+  void renderedBlankBoundary() {
+    QFETCH(bool,prepend);
+    auto doc=document("code");
+    { QPainter p(&doc); p.fillRect(0,prepend?1000:1680,720,40,Qt::white); }
+    auto first=doc.copy(0,1000,720,720);
+    { QPainter p(&first); p.fillRect(0,prepend?0:560,720,160,Qt::white); }
+    ScrollStitcherV2 engine;
+    QCOMPARE(engine.accept(first),ScrollStitcher::Started);
+    const int at=prepend?800:1200;
+    QVERIFY(good(engine.accept(doc.copy(0,at,720,720),prepend?-1:1)));
+    QCOMPARE(engine.image(),doc.copy(0,prepend?800:1000,720,920));
+    const auto committed=engine.image();
+    QVERIFY(good(engine.accept(doc.copy(0,at,720,720))));
+    QCOMPARE(engine.image(),committed);
+  }
   void ambiguityBlankAndMutation() {
     QImage blank(720,720,QImage::Format_RGB32); blank.fill(Qt::white);
     ScrollStitcherV2 empty; QCOMPARE(empty.accept(blank),ScrollStitcher::Started);

@@ -1,6 +1,6 @@
-﻿# picut v0.5.31 · scrolling performance trial
+﻿# picut v0.5.32 · scrolling performance trial
 
-This branch is the independent scroll performance trial based on Astra v0.5.27. Build with `native/build.ps1 -BuildDir build/native-scroll-performance`, package with `native/package.ps1 -SkipBuild`, and create its separate installer with `native/build-installer.ps1 -ScrollTrial`. Use `run-scroll-performance-trial.ps1`. `run-scroll-trial.ps1` retains v0.5.27; `run.ps1` retains v0.5.26. New trial data is isolated under `FloatShot/FloatShotNative-ScrollPerformanceTrial`, and its installer uses `Programs/picut-scroll-performance-trial`. See `docs/试验版-v0.5.31-流畅滚动.md` for measured results and limitations. Release notes below describe the preserved official version.
+This branch is the independent scroll performance trial based on Astra v0.5.27. Build with `native/build.ps1 -BuildDir build/native-scroll-performance`, package with `native/package.ps1 -SkipBuild`, and create its separate installer with `native/build-installer.ps1 -ScrollTrial`. Use `run-scroll-performance-trial.ps1`. `run-scroll-trial.ps1` retains v0.5.27; `run.ps1` retains v0.5.26. New trial data is isolated under `FloatShot/FloatShotNative-ScrollPerformanceTrial`, and its installer uses `Programs/picut-scroll-performance-trial`. See `docs/试验版-v0.5.32-流畅滚动.md` for measured results and limitations. Release notes below describe the preserved official version.
 
 The accepted translation branch has been fast-forwarded into `main`. The original v0.5.21 baseline remains on `codex/picut-stable-before-translation`, tag `v0.5.21-before-local-translation`; v0.5.25 translation trial packages and tags remain available.
 
@@ -53,7 +53,7 @@ Install Visual Studio 2022 or newer with C++ desktop tools and a Windows 10/11 S
 
 `setup-sdk.ps1` fetches the official Qt MSVC x64 SDK, pinned ZXing-C++ source, and standalone FFmpeg, verifies SHA-256 hashes, and uses Windows tar / Expand-Archive. It does not install anything globally. An existing Qt installation can be used with `build.ps1 -QtDir C:/Qt/6.8.3/msvc2022_64`. `build-native.cmd` is a convenience wrapper. Packaging supports `-QtDir`, `-Ffmpeg`, and `-NoZip`.
 
-This branch builds executables in `build/native-scroll-performance/`. The complete runtime folder and ZIP are in `dist/picut-0.5.31-scroll-trial*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
+This branch builds executables in `build/native-scroll-performance/`. The complete runtime folder and ZIP are in `dist/picut-0.5.32-scroll-trial*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
 
 To build the Windows installer from this deployed runtime, run `./native/build-installer.ps1`. It prepares a local portable Inno Setup 6.7.3 compiler on first use, verifying the official bootstrap's SHA-256 and Authenticode signature and pinning the Chinese translation to the same source tag. No global compiler installation is required. Options `-PackageDir` and `-Iscc` accept an existing runtime/compiler. The app version comes from `picut.exe` metadata. The output is `dist/picut-<version>-setup-x64.exe` plus its SHA-256 file; payload hashes are saved under `build/installer/` for verification.
 

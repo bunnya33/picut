@@ -203,7 +203,7 @@ struct ScrollStitcherV2::State {
     return image;
   }
   enum class Seam { Unchanged, Rebased, Insufficient, Error };
-  Seam rebaseSeam(const QImage &frame,int at,double phase,bool prepend) {
+  Seam rebaseSeam(const QImage &frame,int at,double phase,bool prepend,int renderedRows=0) {
     const int probeBegin=prepend?top:qMax(at,bottom-32);
     const int probeEnd=prepend?qMin(top+32,at+frame.height()):bottom;
     if(probeEnd<=probeBegin) return Seam::Unchanged;
@@ -218,11 +218,12 @@ struct ScrollStitcherV2::State {
         if(delta>7) ++differences;
       }
     }
-    if(differences<4) return Seam::Unchanged;
+    if(differences<4 && !renderedRows) return Seam::Unchanged;
     // The current source must cover the whole bounded seam tail. Otherwise
     // an animated object could be assembled from two incompatible phases.
-    const int begin=prepend?top:qMax(top,bottom-144);
-    const int end=prepend?qMin(bottom,top+144):bottom;
+    const int seamRows=qMax(144,renderedRows);
+    const int begin=prepend?top:qMax(top,bottom-seamRows);
+    const int end=prepend?qMin(bottom,top+seamRows):bottom;
     if(at>begin || at+frame.height()<end) return Seam::Insufficient;
     auto it=parts.upper_bound(begin); if(it!=parts.begin()) --it;
     for(;it!=parts.end() && it->first<end;++it) {
@@ -262,7 +263,52 @@ struct ScrollStitcherV2::State {
     lost=false;
   }
 
-  struct Validation { bool valid=false,boundary=false,cacheError=false; double error=1e10; bool perfect=false; };
+  struct Validation {
+    bool valid=false,boundary=false,cacheError=false;
+    double error=1e10;
+    bool perfect=false;
+    int renderedRows=0;
+  };
+  Validation validateRenderedBoundary(const QImage &frame,int at) const {
+    const bool prepend=at<top && at+frame.height()<=bottom;
+    const bool append=at>=top && at+frame.height()>bottom;
+    if(!prepend && !append) return {};
+    const int begin=qMax(top,at),end=qMin(bottom,at+frame.height()),overlap=end-begin;
+    if(overlap<96) return {};
+    const auto reference=read(begin,overlap);
+    if(reference.isNull()) return {false,false,true};
+    const auto background=reference.pixel(0,prepend?0:overlap-1);
+    int blankRows=0;
+    for(int n=0;n<overlap;++n) {
+      const int y=prepend?n:overlap-1-n;
+      const auto row=reinterpret_cast<const QRgb *>(reference.constScanLine(y));
+      bool flat=true;
+      for(int x=0;x<width;++x)
+        if(std::abs(qRed(row[x])-qRed(background))>2 ||
+           std::abs(qGreen(row[x])-qGreen(background))>2 ||
+           std::abs(qBlue(row[x])-qBlue(background))>2) { flat=false; break; }
+      if(!flat) break;
+      ++blankRows;
+    }
+    // Only a bounded blank interval attached to the growing document edge may
+    // be filled. Every already drawn pixel outside that interval must agree.
+    if(blankRows<8 || blankRows>qMin(512,viewportHeight/2) || overlap-blankRows<64) return {};
+    const int stableBegin=prepend?blankRows:0,stableEnd=prepend?overlap:overlap-blankRows;
+    int oldEvidence=0,newEvidence=0;
+    for(int y=0;y<overlap;++y) {
+      const auto a=reinterpret_cast<const QRgb *>(reference.constScanLine(y));
+      const auto b=reinterpret_cast<const QRgb *>(frame.constScanLine(begin-at+y));
+      const bool stable=y>=stableBegin && y<stableEnd;
+      if(stable && std::memcmp(a,b,size_t(width)*4)) return {};
+      if(y%2) continue;
+      for(int x=2;x<width;x+=2) {
+        if(stable && std::abs(qGray(a[x])-qGray(a[x-2]))>16) ++oldEvidence;
+        if(!stable && std::abs(qGray(b[x])-qGray(b[x-2]))>16) ++newEvidence;
+      }
+    }
+    if(oldEvidence<64 || newEvidence<64) return {};
+    return {true,false,false,0,false,blankRows};
+  }
   Validation validate(const QImage &frame,int at,double phase=0) const {
     const int begin=qMax(top,at),end=qMin(bottom,at+frame.height()),overlap=end-begin;
     if(overlap<qMin(96,qMax(24,viewportHeight/5))) return {};
@@ -483,12 +529,16 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
                   <<"trusted"<<s.motionTrusted<<"lost"<<s.lost;
   if(candidates.empty()) candidates=indexed;
   if(candidates.empty()) { s.lost=true; return Engine::NoOverlap; }
-  struct Valid { State::Candidate candidate; double error; bool anchored,perfect,proven; };
+  struct Valid { State::Candidate candidate; double error; bool anchored,perfect,proven; int renderedRows; };
   std::vector<Valid> valid;
   bool boundary=false,unambiguous=direct;
   auto check=[&](State::Candidate candidate) {
-    const auto result=direct && candidate.at==directCandidate.at && candidate.phase==0?
+    auto result=direct && candidate.at==directCandidate.at && candidate.phase==0?
       State::Validation{true,false,false,0,true}:s.validate(frame,candidate.at,candidate.phase);
+    if(!result.valid && !result.cacheError && candidate.phase==0) {
+      const auto rendered=s.validateRenderedBoundary(frame,candidate.at);
+      if(rendered.valid || rendered.cacheError) result=rendered;
+    }
     if(debug) qInfo()<<"candidate"<<candidate.at<<candidate.phase<<candidate.votes<<"valid"<<result.valid<<"error"<<result.error<<"boundary"<<result.boundary;
     if(result.cacheError) return false;
     boundary|=result.boundary;
@@ -496,7 +546,7 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
       const bool anchored=candidate.phase==0 && s.anchored(signature,candidate.at);
       const bool proven=result.perfect && anchored && candidate.at>=s.top;
       if(debug) qInfo()<<"evidence"<<candidate.at<<"anchored"<<anchored<<"perfect"<<result.perfect;
-      valid.push_back({candidate,result.error,anchored,result.perfect,proven});
+      valid.push_back({candidate,result.error,anchored,result.perfect,proven,result.renderedRows});
       if(proven) unambiguous=true;
     }
     return true;
@@ -561,11 +611,13 @@ ScrollStitcher::Result ScrollStitcherV2::accept(const QImage &input,int directio
        s.bottom-s.top+leading+trailing>100000 || s.parts.size()>=8192) return Engine::LimitReached;
     // Only a bounded, unfrozen seam tail can change source on extension.
     // The rest of the confirmed document remains untouched.
-    const auto seam=s.rebaseSeam(frame,at,chosen.phase,leading>0);
+    const auto seam=s.rebaseSeam(frame,at,chosen.phase,leading>0,valid.front().renderedRows);
     if(seam==State::Seam::Error) return Engine::CacheError;
     if(seam==State::Seam::Insufficient) { s.lost=true; return Engine::NoOverlap; }
     if(leading && !s.append(frame.copy(0,0,s.width,leading),at,chosen.phase)) return Engine::CacheError;
     if(trailing && !s.append(frame.copy(0,frame.height()-trailing,s.width,trailing),s.bottom,chosen.phase)) return Engine::CacheError;
+    if(valid.front().renderedRows) qInfo()<<"Scroll filled blank boundary: prepend"<<(leading>0)
+        <<"rows"<<valid.front().renderedRows<<"overlap"<<knownOverlap;
   }
   const auto storageNs=timing.nsecsElapsed();
   const bool moved=at!=s.position;

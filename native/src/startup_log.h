@@ -23,5 +23,5 @@ inline void installStartupLog() {
       file.write((QDateTime::currentDateTime().toString(Qt::ISODate)+" ["+QString::number(type)+"] "+message+"\n").toUtf8());
     }
   });
-  qInfo().noquote()<<"picut 0.5.31 scroll performance trial startup; Windows"<<QSysInfo::kernelVersion()<<QSysInfo::currentCpuArchitecture();
+  qInfo().noquote()<<"picut 0.5.32 scroll performance trial startup; Windows"<<QSysInfo::kernelVersion()<<QSysInfo::currentCpuArchitecture();
 }
