@@ -947,6 +947,27 @@ bool verifyNativeUi(ApplicationController &controller, const QString &folder) {
   if (auto popup = QApplication::activePopupWidget())
     ok = popup->grab().save(folder + "/native-line-dropdown.png") && ok;
   overlay->toolbar->lineButton->menu()->hide();
+  overlay->annotation->marks.clear();
+  overlay->annotation->confirm();
+  overlay->annotation->refresh();
+  // Retain manual visual samples of the brush hotspot at different widths.
+  // They use synthetic pixels and never capture the user's desktop.
+  for (auto tool : QStringList{"pen", "arrow", "line"}) {
+    overlay->chooseTool(tool);
+    for (int width : {1, 4, 16}) {
+      overlay->setPreference("width", width);
+      const QPoint hotspot(300, 280);
+      QMouseEvent hover(QEvent::MouseMove, QPointF(hotspot),
+                        QPointF(overlay->mapToGlobal(hotspot)),
+                        Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+      QApplication::sendEvent(overlay, &hover);
+      QApplication::processEvents();
+      const auto name = QString("/native-%1-cursor-%2").arg(tool).arg(width);
+      ok = overlay->grab(crop).save(folder + name + ".png") && ok;
+      ok = overlay->grab(QRect(hotspot - QPoint(32, 32), QSize(64, 64)))
+               .save(folder + name + "-detail.png") && ok;
+    }
+  }
   overlay->close();
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   QImage pinImage(240, 180, QImage::Format_ARGB32);

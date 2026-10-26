@@ -199,9 +199,35 @@ void EditingSurface::paintEditing(QPainter &p) {
                     annotation->original.width();
     if (annotation->tool == "marker")
       radius *= 3;
-    p.setPen(QPen(color, 1));
-    p.setBrush(color);
-    p.drawEllipse(QPointF(pointer), qMax(1.0, radius), qMax(1.0, radius));
+    p.save();
+    if (annotation->tool == "pen" || annotation->tool == "arrow" ||
+        annotation->tool == "line") {
+      p.setRenderHint(QPainter::Antialiasing);
+      const auto center = QPointF(pointer);
+      const double dot = qMax(.5 / devicePixelRatioF(), radius);
+      const double inner = qMax(3.0, dot + 3), outer = inner + 5;
+      const QLineF arms[] = {
+          {center - QPointF(outer, 0), center - QPointF(inner, 0)},
+          {center + QPointF(inner, 0), center + QPointF(outer, 0)},
+          {center - QPointF(0, outer), center - QPointF(0, inner)},
+          {center + QPointF(0, inner), center + QPointF(0, outer)}};
+      // Keep the center clear of the reticle: the dot alone previews the
+      // stroke diameter, while a white halo keeps the short arms visible.
+      p.setPen(QPen(Qt::white, 3, Qt::SolidLine, Qt::FlatCap));
+      p.drawLines(arms, 4);
+      p.setPen(QPen(color, 1, Qt::SolidLine, Qt::FlatCap));
+      p.drawLines(arms, 4);
+      p.setPen(Qt::NoPen);
+      p.setBrush(Qt::white);
+      p.drawEllipse(center, dot + 1, dot + 1);
+      p.setBrush(color);
+      p.drawEllipse(center, dot, dot);
+    } else {
+      p.setPen(QPen(color, 1));
+      p.setBrush(color);
+      p.drawEllipse(QPointF(pointer), qMax(1.0, radius), qMax(1.0, radius));
+    }
+    p.restore();
   }
 }
 QString EditingSurface::editTarget(QPoint point) const {
