@@ -102,3 +102,15 @@ Name: "{autodesktop}\picut"; Filename: "{app}\picut.exe"; WorkingDir: "{app}"; A
 Filename: "{app}\picut.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchPicut}"; Flags: nowait postinstall skipifsilent
 
 ; No UninstallDelete entries: user settings, history and saved captures survive uninstall.
+
+[Code]
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  StartupCommand: String;
+begin
+  if CurUninstallStep = usUninstall then
+    if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run',
+                           'picut', StartupCommand) then
+      if CompareText(StartupCommand, '"' + ExpandConstant('{app}\picut.exe') + '" --tray') = 0 then
+        RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'picut');
+end;

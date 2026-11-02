@@ -1,6 +1,7 @@
 ﻿#include "application.h"
 #include "native_windows.h"
 #include "startup_log.h"
+#include "login_startup.h"
 #include <QtCore/QCommandLineParser>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
@@ -17,7 +18,7 @@ static int runApplication(int argc, char **argv) {
   app.setApplicationName("picut");
   app.setApplicationDisplayName("picut");
   app.setOrganizationName("picut");
-  app.setApplicationVersion("0.5.35");
+  app.setApplicationVersion("0.5.36");
   // Retain the accepted scrolling profile so settings, history and pins carry forward.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(
@@ -82,6 +83,14 @@ static int runApplication(int argc, char **argv) {
     QLocalServer::removeServer(lock);
     if (!server.listen(lock))
       return 1;
+    // Only the normal primary instance owns login registration. Verification
+    // commands and secondary launches must not change the user's startup list.
+    if (!controller.store.saveConfig())
+      qWarning() << "Could not persist startup preference.";
+    QString startupError;
+    if (!setLoginStartupEnabled(controller.store.config["startup"].toBool(true),
+                               QCoreApplication::applicationFilePath(), &startupError))
+      qWarning().noquote() << startupError;
     QObject::connect(&server, &QLocalServer::newConnection, &app, [&] {
       auto connection = server.nextPendingConnection();
       if (connection) {

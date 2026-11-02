@@ -50,7 +50,8 @@ Store::Store(QString directory) {
             {"keep_all_capture_history", false},
             {"copy_image_as_file", false},
             {"pin_file_paths", true},
-            {"startup", false},
+            {"startup", true},
+            {"startup_setting_v1", true},
             {"annotation_color", "#ffff0004"},
             {"annotation_last_tool", "arrow"},
             {"image_dir", documents + "/截图"},
@@ -79,6 +80,12 @@ Store::Store(QString directory) {
       config["hotkeys"] = keys;
     } else
       config[i.key()] = i.value();
+  // Earlier releases saved an unused false placeholder. Enable the new setting
+  // once on upgrade, then preserve an explicit choice made in the settings UI.
+  if (!loaded["startup_setting_v1"].toBool()) {
+    config["startup"] = true;
+    config["startup_setting_v1"] = true;
+  }
   // Recording now starts from the F1 selection toolbar. Retired bindings must
   // not reserve Shift+F1 (or a former custom combination) after an upgrade.
   auto keys=config["hotkeys"].toObject(); keys.remove("record"); config["hotkeys"]=keys;

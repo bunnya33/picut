@@ -3,7 +3,7 @@ param([string]$PackageDir, [string]$Iscc, [switch]$TranslationTrial, [switch]$Sc
 $ErrorActionPreference = 'Stop'
 if ($TranslationTrial -and $ScrollTrial) { throw 'Choose one installer identity.' }
 $picutRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.35' }
+if (-not $PackageDir) { $PackageDir = Join-Path $picutRoot 'dist/picut-0.5.36' }
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $picutMain = Join-Path $PackageDir 'picut.exe'
 $picutVersion = (Get-Item -LiteralPath $picutMain).VersionInfo.ProductVersion
@@ -58,7 +58,7 @@ $picutPayload = Join-Path $picutStage 'payload'
 New-Item -ItemType Directory -Path $picutPayload -Force | Out-Null
 Get-ChildItem -LiteralPath $PackageDir -File | Where-Object {
     $_.Extension -in @('.exe', '.dll', '.ico', '.conf') -or
-    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd', '更新记录-v0.5.35-画笔箭头光标.md', '更新记录-v0.5.34-截图录屏整合.md', '试验版-v0.5.33-流畅滚动.md', '试验版-v0.5.32-流畅滚动.md', '试验版-v0.5.31-流畅滚动.md', '试验版-v0.5.30-流畅滚动.md', '试验版-v0.5.29-流畅滚动.md', '更新记录-v0.5.26-正式翻译与Shift画笔.md')
+    $_.Name -in @('THIRD_PARTY_NOTICES.md', '使用说明.txt', 'diagnose.ps1', 'diagnose.cmd', '更新记录-v0.5.36-开机自启动.md', '更新记录-v0.5.35-画笔箭头光标.md', '更新记录-v0.5.34-截图录屏整合.md', '试验版-v0.5.33-流畅滚动.md', '试验版-v0.5.32-流畅滚动.md', '试验版-v0.5.31-流畅滚动.md', '试验版-v0.5.30-流畅滚动.md', '试验版-v0.5.29-流畅滚动.md', '更新记录-v0.5.26-正式翻译与Shift画笔.md')
 } | Copy-Item -Destination $picutPayload
 Get-ChildItem -LiteralPath $PackageDir -Directory | Where-Object {
     $_.Name -notin @('annotation-previews', 'image-text-previews', 'translation-previews')

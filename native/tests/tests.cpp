@@ -14,6 +14,7 @@
 #include "scroll_grabber.h"
 #include "native_windows.h"
 #include "hotkey.h"
+#include "login_startup.h"
 #include <BitMatrix.h>
 #include <MultiFormatWriter.h>
 #include <QtCore/QDir>
@@ -26,6 +27,7 @@
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QScopeGuard>
 #include <QtCore/QTimer>
+#include <QtCore/QUuid>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QMimeData>
@@ -1233,6 +1235,66 @@ private slots:
     overlay->close();
     Toolbar pinToolbar;
     QVERIFY(pinToolbar.findChild<QToolButton *>("action_scroll")->isHidden());
+  }
+  void loginStartupDefaultsUpgradeAndPersistedOptOut() {
+    QTemporaryDir dir;
+    Store fresh(dir.path()); QVERIFY(fresh.config["startup"].toBool());
+    Store::writeJson(dir.path()+"/settings.json",QJsonObject{{"startup",false}});
+    Store upgraded(dir.path()); QVERIFY(upgraded.config["startup"].toBool());
+    QVERIFY(upgraded.config["startup_setting_v1"].toBool());
+    upgraded.config["startup"]=false; QVERIFY(upgraded.saveConfig());
+    Store disabled(dir.path()); QVERIFY(!disabled.config["startup"].toBool());
+    disabled.config["startup"]=true; QVERIFY(disabled.saveConfig());
+    Store enabled(dir.path()); QVERIFY(enabled.config["startup"].toBool());
+  }
+  void loginStartupRegistrationUsesQuotedPathAndTray() {
+    const auto subkey="Software\\picut\\Tests\\LoginStartup-"+QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto key="HKEY_CURRENT_USER\\"+subkey;
+    const auto cleanup=qScopeGuard([&]{RegDeleteTreeW(HKEY_CURRENT_USER,reinterpret_cast<LPCWSTR>(subkey.utf16()));});
+    QSettings systemStartup("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",QSettings::NativeFormat);
+    const auto original=systemStartup.value("picut");
+    const QString executable="C:/用户/截图 工具/picut.exe";
+    QString error;
+    QVERIFY2(setLoginStartupEnabled(true,executable,&error,key),qPrintable(error));
+    HKEY nativeKey=nullptr;
+    QCOMPARE(RegOpenKeyExW(HKEY_CURRENT_USER,reinterpret_cast<LPCWSTR>(subkey.utf16()),0,KEY_READ,&nativeKey),LONG(ERROR_SUCCESS));
+    const auto close=qScopeGuard([&]{RegCloseKey(nativeKey);});
+    wchar_t command[1024]{}; DWORD type=0,bytes=sizeof(command);
+    QCOMPARE(RegQueryValueExW(nativeKey,L"picut",nullptr,&type,reinterpret_cast<LPBYTE>(command),&bytes),LONG(ERROR_SUCCESS));
+    QCOMPARE(type,DWORD(REG_SZ));
+    QCOMPARE(QString::fromWCharArray(command),QString("\"C:\\用户\\截图 工具\\picut.exe\" --tray"));
+    const QString updated="D:/Another path/picut.exe";
+    QVERIFY(setLoginStartupEnabled(true,updated,&error,key));
+    { QSettings readBack(key,QSettings::NativeFormat); QCOMPARE(readBack.value("picut").toString(),loginStartupCommand(updated)); }
+    QVERIFY(setLoginStartupEnabled(false,updated,&error,key));
+    { QSettings readBack(key,QSettings::NativeFormat); QVERIFY(!readBack.contains("picut")); }
+    QVERIFY(setLoginStartupEnabled(false,updated,&error,key));
+    systemStartup.sync(); QCOMPARE(systemStartup.value("picut"),original);
+  }
+  void loginStartupSettingsSaveAndCancel() {
+    QTemporaryDir dir; const auto previous=qgetenv("FLOATSHOT_DATA_DIR");
+    const auto restore=qScopeGuard([&]{if(previous.isNull())qunsetenv("FLOATSHOT_DATA_DIR");else qputenv("FLOATSHOT_DATA_DIR",previous);});
+    qputenv("FLOATSHOT_DATA_DIR",dir.path().toUtf8()); ApplicationController controller(true);
+    auto change=[&](bool expected,bool next,bool save) {
+      bool seen=false;
+      QTimer::singleShot(0,[&]{
+        auto dialog=qobject_cast<QDialog *>(QApplication::activeModalWidget()); if(!dialog)return;
+        const auto reject=qScopeGuard([&]{if(dialog->isVisible())dialog->reject();});
+        auto check=dialog->findChild<QCheckBox *>("setting_startup"); QVERIFY(check);
+        seen=true; QCOMPARE(check->isChecked(),expected);
+        QVERIFY(savePreview(dialog,"settings-startup.png"));
+        check->setChecked(next);
+        auto buttons=dialog->findChild<QDialogButtonBox *>(); QVERIFY(buttons);
+        QTest::mouseClick(buttons->button(save?QDialogButtonBox::Save:QDialogButtonBox::Cancel),Qt::LeftButton);
+      });
+      controller.openSettings(); QVERIFY(seen);
+    };
+    change(true,false,true);
+    Store disabled(dir.path()); QVERIFY(!disabled.config["startup"].toBool());
+    change(false,true,false);
+    Store canceled(dir.path()); QVERIFY(!canceled.config["startup"].toBool());
+    change(false,true,true);
+    Store enabled(dir.path()); QVERIFY(enabled.config["startup"].toBool());
   }
   void recordingSettingsPersistenceAndCancel() {
     QTemporaryDir dir; Store store(dir.path());
@@ -2458,7 +2520,7 @@ private slots:
     Store imported(destination);
     QCOMPARE(imported.config["annotation_color"].toString(),
              QString("#ff123456"));
-    QVERIFY(!imported.config["startup"].toBool());
+    QVERIFY(imported.config["startup"].toBool());
     QCOMPARE(imported.config["hotkeys"].toObject()["capture"].toString(),
              QString("F2"));
     QCOMPARE(imported.config["hotkeys"].toObject()["pin"].toString(),

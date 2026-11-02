@@ -5,6 +5,7 @@
 #include "compact_ui.h"
 #include "hotkey.h"
 #include "panel_theme.h"
+#include "login_startup.h"
 #include <future>
 #include <iterator>
 #include "native_windows.h"
@@ -573,6 +574,7 @@ void ApplicationController::openSettings() {
   auto form = new QFormLayout(general);
   QMap<QString, QCheckBox *> checks;
   for (const auto &pair : QList<QPair<QString, QString>>{
+           {"startup", "开机自启动"},
            {"restore_pins", "启动时恢复贴图"},
            {"auto_save", "完成截图后自动保存"},
            {"notifications_enabled", "显示操作通知（截图、贴图、保存等）"},
@@ -581,6 +583,7 @@ void ApplicationController::openSettings() {
            {"capture_cursor", "截图包含鼠标指针"},
            {"copy_image_as_file", "复制图片时同时复制图片文件"}}) {
     auto check = new QCheckBox(pair.second);
+    check->setObjectName("setting_" + pair.first);
     check->setChecked(store.config[pair.first].toBool());
     form->addRow(check);
     checks[pair.first] = check;
@@ -700,8 +703,19 @@ void ApplicationController::openSettings() {
   config["ocr_engine"] = "paddle";
   config["ocr_profile"] = ocrProfile->currentData().toString();
   config["ocr_acceleration"]=ocrAcceleration->currentData().toString();
+  if (!Store::writeJson(store.path("settings.json"), config)) {
+    QMessageBox::warning(home, "保存失败", "无法保存设置，请检查配置目录的写入权限。");
+    return;
+  }
+  QString startupError;
+  if (!testing && !setLoginStartupEnabled(config["startup"].toBool(true),
+                                        QCoreApplication::applicationFilePath(), &startupError)) {
+    if (!store.saveConfig())
+      startupError += "\n原设置未能恢复，请检查配置目录的写入权限。";
+    QMessageBox::warning(home, "开机自启动未保存", startupError);
+    return;
+  }
   store.config = config;
-  store.saveConfig();
   updateTrayMenu();
   if (home && !config["notifications_enabled"].toBool())
     home->statusBar()->clearMessage();
