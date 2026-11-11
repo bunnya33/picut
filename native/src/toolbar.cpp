@@ -1,6 +1,8 @@
 #include "toolbar.h"
 #include "compact_ui.h"
+#include <QtCore/QEvent>
 #include <QtCore/QSignalBlocker>
+#include <QtCore/QVariantAnimation>
 #include <QtGui/QDoubleValidator>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QColorDialog>
@@ -9,6 +11,184 @@
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidgetAction>
+#include <array>
+
+namespace {
+constexpr int toolCount = 8, buttonSize = 32, buttonGap = 3;
+const QString toolNames[]{"shapes", "arrow", "pen", "marker", "mosaic",
+                          "text", "eraser", "number"};
+const QString toolLabels[]{"形状", "箭头", "画笔", "马克笔", "马赛克",
+                           "文字", "橡皮擦", "序号"};
+
+class AnimatedToolButton final : public QToolButton {
+public:
+  AnimatedToolButton(int index, QWidget *parent) : QToolButton(parent),
+      normal(toolIcon(toolNames[index], QColor("#252d39"))),
+      selected(toolIcon(toolNames[index], Qt::white)) {
+    setObjectName("tool_" + toolNames[index]);
+    setIcon(normal);
+    setIconSize({16, 16});
+    setCheckable(true);
+    setFocusPolicy(Qt::NoFocus);
+    setCursor(Qt::PointingHandCursor);
+    setText(toolLabels[index]);
+    setAccessibleName(toolLabels[index]);
+  }
+  qreal emphasis = 0;
+protected:
+  void paintEvent(QPaintEvent *) override {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    if (underMouse() || isDown()) {
+      p.setPen(Qt::NoPen);
+      p.setBrush(isDown() ? QColor(0, 69, 160, 40) : QColor(0, 69, 160, 17));
+      p.drawRoundedRect(rect(), 8, 8);
+    }
+    const QRect glyph(8, 8, 16, 16);
+    p.setOpacity(1 - emphasis);
+    normal.paint(&p, glyph);
+    if (emphasis > 0) {
+      p.setOpacity(emphasis);
+      selected.paint(&p, glyph);
+      p.setPen(Qt::white);
+      p.drawText(rect().adjusted(29, 0, -3, 0),
+                 Qt::AlignVCenter | Qt::AlignLeft, text());
+    }
+  }
+private:
+  QIcon normal, selected;
+};
+
+// Only this opaque, small surface repaints during a transition. The capture
+// overlay and its desktop-sized image do not take part in the animation.
+class AnimatedToolGroup final : public QWidget {
+  struct Pose {
+    std::array<QRectF, toolCount> boxes{};
+    std::array<qreal, toolCount> emphasis{};
+    QRectF plate;
+    qreal opacity = 0;
+  };
+public:
+  explicit AnimatedToolGroup(QWidget *parent) : QWidget(parent) {
+    setObjectName("annotationToolGroup");
+    setAttribute(Qt::WA_OpaquePaintEvent);
+    for (int i = 0; i < toolCount; ++i)
+      buttons[i] = new AnimatedToolButton(i, this);
+    updateSize();
+    apply(layoutFor(-1));
+    motion.setObjectName("toolbarSelectionAnimation");
+    motion.setParent(this);
+    motion.setDuration(200);
+    motion.setStartValue(0.);
+    motion.setEndValue(1.);
+    motion.setEasingCurve(QEasingCurve::OutCubic);
+    connect(&motion, &QVariantAnimation::valueChanged, this, [this](QVariant value) {
+      const qreal t = value.toReal();
+      auto mix = [t](qreal a, qreal b) { return a + t * (b - a); };
+      auto rect = [&mix](QRectF a, QRectF b) {
+        return QRectF(mix(a.x(), b.x()), mix(a.y(), b.y()),
+                      mix(a.width(), b.width()), mix(a.height(), b.height()));
+      };
+      Pose frame;
+      for (int i = 0; i < toolCount; ++i) {
+        frame.boxes[i] = rect(from.boxes[i], to.boxes[i]);
+        frame.emphasis[i] = mix(from.emphasis[i], to.emphasis[i]);
+      }
+      frame.plate = rect(from.plate, to.plate);
+      frame.opacity = mix(from.opacity, to.opacity);
+      apply(frame);
+    });
+    to = current;
+  }
+  std::array<AnimatedToolButton *, toolCount> buttons{};
+  void select(int index, const QString &label) {
+    const bool labelChanged = index >= 0 && buttons[index]->text() != label;
+    if (active == index && !labelChanged)
+      return; // Preference sync and mouse movement must not restart a transition.
+    motion.stop();
+    if (index >= 0) {
+      buttons[index]->setText(label);
+      buttons[index]->setAccessibleName(label);
+    }
+    active = index;
+    from = current;
+    to = layoutFor(active);
+    if (!from.opacity)
+      from.plate = to.plate;
+    if (!to.opacity)
+      to.plate = from.plate;
+    if (isVisible())
+      motion.start();
+    else
+      apply(to);
+  }
+protected:
+  void hideEvent(QHideEvent *event) override {
+    motion.stop();
+    apply(to);
+    QWidget::hideEvent(event);
+  }
+  void changeEvent(QEvent *event) override {
+    QWidget::changeEvent(event);
+    if (event->type() == QEvent::FontChange) {
+      motion.stop();
+      updateSize();
+      to = layoutFor(active);
+      apply(to);
+    }
+  }
+  void paintEvent(QPaintEvent *) override {
+    QPainter p(this);
+    p.fillRect(rect(), QColor("#fbfcfe"));
+    if (current.opacity > 0) {
+      p.setRenderHint(QPainter::Antialiasing);
+      p.setPen(Qt::NoPen);
+      p.setBrush(QColor("#087ae8"));
+      p.setOpacity(current.opacity);
+      p.drawRoundedRect(current.plate, 8, 8);
+    }
+  }
+private:
+  void updateSize() {
+    int labelRoom = 62;
+    for (const auto &label : toolLabels)
+      labelRoom = qMax(labelRoom, fontMetrics().horizontalAdvance(label) + 7);
+    setFixedSize(toolCount * buttonSize + (toolCount - 1) * buttonGap + labelRoom,
+                 buttonSize);
+  }
+  Pose layoutFor(int index) const {
+    Pose pose;
+    int x = 0;
+    for (int i = 0; i < toolCount; ++i) {
+      const int extra = i == index ? fontMetrics().horizontalAdvance(buttons[i]->text()) + 7 : 0;
+      pose.boxes[i] = QRectF(x, 0, buttonSize + extra, buttonSize);
+      x += buttonSize + buttonGap + extra;
+      if (i == index) {
+        pose.plate = pose.boxes[i];
+        pose.opacity = pose.emphasis[i] = 1;
+      }
+    }
+    return pose;
+  }
+  void apply(const Pose &pose) {
+    const auto dirty = current.plate.united(pose.plate).toAlignedRect().adjusted(-1, -1, 1, 1);
+    current = pose;
+    for (int i = 0; i < toolCount; ++i) {
+      const auto geometry = pose.boxes[i].toRect();
+      if (buttons[i]->geometry() != geometry)
+        buttons[i]->setGeometry(geometry);
+      if (!qFuzzyCompare(buttons[i]->emphasis, pose.emphasis[i])) {
+        buttons[i]->emphasis = pose.emphasis[i];
+        buttons[i]->update();
+      }
+    }
+    update(dirty);
+  }
+  QVariantAnimation motion;
+  Pose from, to, current;
+  int active = -1;
+};
+}
 
 QIcon toolIcon(const QString &name, QColor color) {
   if (name=="record") return recordingIcon("video",color);
@@ -198,6 +378,7 @@ static QIcon swatchIcon(QColor color, int size, bool custom = false) {
 Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
   setCursor(Qt::ArrowCursor);
   setAttribute(Qt::WA_TranslucentBackground);
+  setFont(QFont("Microsoft YaHei UI", 10));
   setStyleSheet(compactToolbarStyle()+
       "QComboBox,QSpinBox{color:#333;background:#fff;border:1px solid "
       "#c5c5c5;padding:2px;}QFontComboBox{color:#333;}QSlider::groove:"
@@ -210,22 +391,16 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
   mainBar = new QFrame;
   mainBar->setObjectName("annotationToolbar");
   auto row = new QHBoxLayout(mainBar);
-  row->setContentsMargins(0, 0, 0, 0);
-  row->setSpacing(0);
-  QStringList names{"shapes", "arrow", "pen",   "marker",
-                    "mosaic", "text",  "eraser", "number"};
+  row->setContentsMargins(6, 6, 6, 6);
+  row->setSpacing(3);
+  auto group = new AnimatedToolGroup(mainBar);
+  row->addWidget(group);
   QStringList titles{"形状",          "线条 / 箭头", "画笔",  "马克笔",
                      "马赛克 / 模糊", "文字",        "橡皮擦", "序号"};
-  for (int n = 0; n < names.size(); ++n) {
-    auto b = new QToolButton;
-    b->setObjectName("tool_" + names[n]);
-    b->setIcon(toolIcon(names[n]));
-    b->setIconSize({16, 16});
-    b->setFixedSize(32, 32);
-    b->setCheckable(true);
+  for (int n = 0; n < toolCount; ++n) {
+    auto b = group->buttons[n];
     b->setToolTip(titles[n] + " · Ctrl+" + QString::number(n + 1) +
-                  (names[n] == "pen" ? " · 按住 Shift 拖动画直线" : ""));
-    row->addWidget(b);
+                  (toolNames[n] == "pen" ? " · 按住 Shift 拖动画直线" : ""));
     tools.append(b);
     connect(b, &QToolButton::clicked, this, [this, n] {
       emit toolChosen(groupTools.value(n, QStringList{"rect", "arrow", "pen", "marker", "mosaic",
@@ -238,7 +413,7 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
     auto line = new QFrame(gap);
     line->setObjectName("toolbarSeparator");
     line->setGeometry(2, 9, 1, 14);
-    line->setStyleSheet("background:#858585;border:0;");
+    line->setStyleSheet("background:#d5dce7;border:0;");
     row->addWidget(gap);
   };
   separator();
@@ -251,6 +426,8 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
     b->setIcon(toolIcon(action));
     b->setIconSize({16, 16});
     b->setFixedSize(32, 32);
+    b->setFocusPolicy(Qt::NoFocus);
+    b->setCursor(Qt::PointingHandCursor);
     b->setToolTip(QMap<QString, QString>{{"undo", "撤销 · Ctrl+Z"},
                                          {"redo", "重做 · Ctrl+Y"},
                                          {"select_text", "文字识别 · F4"},
@@ -271,7 +448,7 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
   optionsBar->setObjectName("annotationOptions");
   auto options = new QHBoxLayout(optionsBar);
   options->setSizeConstraint(QLayout::SetFixedSize);
-  options->setContentsMargins(0, 0, 3, 0);
+  options->setContentsMargins(6, 6, 6, 6);
   options->setSpacing(0);
   widthButton = new QToolButton;
   widthButton->setObjectName("annotationWidth");
@@ -537,10 +714,12 @@ void Toolbar::sync(const Annotation &a) {
     groupTools[group] = a.tool;
   for (int n = 0; n < tools.size(); ++n) {
     tools[n]->setChecked(n == group);
-    tools[n]->setIcon(toolIcon(QStringList{"shapes", "arrow", "pen", "marker",
-                                           "mosaic", "text", "eraser", "number"}[n],
-                               n == group ? Qt::white : QColor("#333333")));
   }
+  const auto label = a.tool == "line" ? QString("线段")
+                     : a.tool == "polyline" ? QString("折线")
+                     : a.tool == "blur" ? QString("模糊")
+                     : group >= 0 ? toolLabels[group] : QString();
+  static_cast<AnimatedToolGroup *>(tools.first()->parentWidget())->select(group, label);
   auto buttonState = [](QToolButton *button, const QString &glyph, bool visible,
                         bool checked) {
     button->setVisible(visible);
@@ -575,8 +754,8 @@ void Toolbar::sync(const Annotation &a) {
   textControls->setVisible(group == 5);
   widthButton->setVisible(group >= 0 && group != 5);
   auto options = qobject_cast<QHBoxLayout *>(optionsBar->layout());
-  options->setContentsMargins(0, 0, 3, 0);
-  qobject_cast<QVBoxLayout *>(layout())->setSpacing(2);
+  options->setContentsMargins(6, 6, 6, 6);
+  qobject_cast<QVBoxLayout *>(layout())->setSpacing(4);
   boldButton->setChecked(a.preferences.bold);
   italicButton->setChecked(a.preferences.italic);
   outlineButton->setChecked(a.preferences.outlineWidth > 0);
@@ -625,8 +804,8 @@ void Toolbar::sync(const Annotation &a) {
   const bool activeWidth = !(group == 0 && a.preferences.filled) &&
                           !((group == 3 || group == 4 || group == 6) &&
                             a.preferences.areaShape != "stroke");
-  widthButton->setStyleSheet(QString("background:%1;color:%2;border:0;")
-                                .arg(activeWidth ? "#2080f0" : "#f2f2f2",
+  widthButton->setStyleSheet(QString("background:%1;color:%2;border:0;border-radius:8px;")
+                                .arg(activeWidth ? "#087ae8" : "#fbfcfe",
                                      activeWidth ? "white" : "#111"));
   widthButton->setEnabled(!(a.tool == "pen" && a.draft));
   widthButton->setToolTip(group == 0 ? "空心描边 · 单击选择；滚轮 / 1、2 或右键调整粗细"

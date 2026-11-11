@@ -75,11 +75,12 @@ public:
                 Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint) {
     setObjectName("recordingControls");
     setAttribute(Qt::WA_ShowWithoutActivating);
+    setAttribute(Qt::WA_TranslucentBackground);
     setStyleSheet(compactToolbarStyle()+
         "QLabel{color:#333;border:0;background:transparent;font-family:'Microsoft YaHei UI';font-size:12px;}");
     auto layout = new QHBoxLayout(this);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setSpacing(3);
     auto grip = new QLabel;
     grip->setPixmap(recordingIcon("grip").pixmap(16,16));
     grip->setAlignment(Qt::AlignCenter); grip->setFixedSize(24,32);
@@ -97,7 +98,7 @@ public:
     time->setContentsMargins(4,0,8,0); time->setMinimumWidth(88);
     layout->addWidget(time);
     auto separator=new QFrame; separator->setFixedSize(1,14);
-    separator->setStyleSheet("background:#858585;border:0;"); layout->addWidget(separator);
+    separator->setStyleSheet("background:#d5dce7;border:0;"); layout->addWidget(separator);
     pause = new QToolButton;
     pause->setObjectName("pauseRecording");
     pause->setIcon(recordingIcon("pause")); pause->setIconSize({16,16}); pause->setFixedSize(32,32);
@@ -158,6 +159,13 @@ public:
   }
 
 protected:
+  void paintEvent(QPaintEvent *) override {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QColor("#d9dfe8"));
+    p.setBrush(QColor("#fbfcfe"));
+    p.drawRoundedRect(QRectF(rect()).adjusted(.5, .5, -.5, -.5), 10, 10);
+  }
   void closeEvent(QCloseEvent *event) override {
     event->ignore(); // The active controller stays available until recording
                      // finishes.

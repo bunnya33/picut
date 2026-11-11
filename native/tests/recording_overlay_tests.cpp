@@ -287,6 +287,10 @@ private slots:
     RecordingOverlay overlay(&recorder,standardRegion(),false,false);
     overlay.setCountdown(3); QSignalSpy canceled(&overlay,&RecordingOverlay::countdownCanceled);
     QVERIFY(overlay.show()); QVERIFY(overlay.boundary()->isVisible()); QVERIFY(overlay.captureExcluded());
+    const auto panel = overlay.controls()->grab().toImage();
+    const auto dpr = panel.devicePixelRatio();
+    QCOMPARE(panel.pixelColor(qRound(4*dpr), qRound(overlay.controls()->height()/2.0*dpr)),
+             QColor("#fbfcfe"));
     QCOMPARE(overlay.boundary()->geometry(),standardRegion());
     QCOMPARE(overlay.controls()->findChild<QLabel *>("recordingState")->text(),QString("倒计时"));
     QCOMPARE(overlay.controls()->findChild<QLabel *>("recordingTime")->text(),QString("3 秒"));

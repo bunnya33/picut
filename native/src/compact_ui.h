@@ -5,10 +5,11 @@
 
 inline QString compactToolbarStyle() {
   return "QFrame#annotationToolbar,QFrame#annotationOptions,QFrame#recordToolbar,"
-         "QWidget#recordingControls{background:#f2f2f2;border:1px solid #2080f0;"
-         "border-radius:0;}QToolButton{background:transparent;border:0;padding:0;"
-         "color:#333;}QToolButton:hover{background:#dedede;}"
-         "QToolButton:checked{background:#2080f0;}";
+         "QWidget#recordingControls{background:#fbfcfe;border:1px solid #d9dfe8;"
+         "border-radius:10px;}QToolButton{background:transparent;border:0;padding:0;"
+         "border-radius:8px;color:#333;}QToolButton:hover{background:#eaf0f8;}"
+         "QToolButton:pressed{background:#dce8f7;}"
+         "QToolButton:checked{background:#087ae8;}";
 }
 inline QIcon recordingIcon(const QString &name, QColor color = QColor("#333333")) {
   static QMap<QString,QIcon> cache;

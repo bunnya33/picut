@@ -264,10 +264,11 @@ CaptureOverlay::CaptureOverlay(Store *s, bool record,
     auto bar = new QFrame(this);
     bar->setStyleSheet(compactToolbarStyle());
     auto row = new QHBoxLayout(bar);
-    row->setContentsMargins(0,0,0,0); row->setSpacing(0);
+    row->setContentsMargins(6,6,6,6); row->setSpacing(3);
     for (auto name:{QString("back"),QString("settings"),QString("record")}) {
       auto button=new QToolButton; button->setObjectName("record_"+name);
       button->setFixedSize(32,32); button->setIconSize({16,16}); button->setFocusPolicy(Qt::NoFocus);
+      button->setCursor(Qt::PointingHandCursor);
       button->setIcon(recordingIcon(name));
       button->setToolTip(name=="settings"?"录屏设置":name=="record"?"开始录制 · Enter":"返回截图 · Esc");
       row->addWidget(button);
