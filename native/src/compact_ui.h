@@ -53,13 +53,12 @@ inline QIcon recordingIcon(const QString &name, QColor color = QColor("#333333")
   QIcon icon(image); cache.insert(key,icon); return icon;
 }
 inline QIcon picutIcon() {
-  QIcon result;
-  for (int size : {16,24,32,48,64,128,256}) {
-    QPixmap image(size,size); image.fill(Qt::transparent); QPainter p(&image);
-    const int margin=qMax(1,size/16), gap=qMax(1,size/16), tile=(size-2*margin-gap)/2;
-    const QColor colors[]{QColor("#4d90fe"),QColor("#ffc700"),QColor("#e94242"),QColor("#80c342")};
-    for (int n=0;n<4;++n) p.fillRect(margin+(n%2)*(tile+gap),margin+(n/2)*(tile+gap),tile,tile,colors[n]);
-    p.end(); result.addPixmap(image);
-  }
+  static const QIcon result = [] {
+    QIcon icon;
+    const QPixmap source(":/app/picut.png");
+    for (int size : {16,20,24,32,40,48,64,96,128,256})
+      icon.addPixmap(source.scaled(size,size,Qt::KeepAspectRatio,Qt::SmoothTransformation));
+    return icon;
+  }();
   return result;
 }

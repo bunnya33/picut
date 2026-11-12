@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.24)
-project(FloatShotNative VERSION 0.5.37 LANGUAGES CXX RC)
+project(FloatShotNative VERSION 0.5.38 LANGUAGES CXX RC)
 # CMake can misdecode the Chinese MSVC /showIncludes prefix on UTF-8 consoles.
 if(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX MATCHES "娉ㄦ剰")
     set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件: ")
@@ -109,7 +109,7 @@ if(BUILD_TESTING)
     target_include_directories(FloatShotScrollV2Tests PRIVATE src)
     target_link_libraries(FloatShotScrollV2Tests PRIVATE Qt6::Test Qt6::Widgets user32 gdi32 d3d11 dxgi dwmapi)
     add_test(NAME scroll-v2 COMMAND FloatShotScrollV2Tests)
-    set_tests_properties(scroll-v2 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PICUT_SCROLL_V2_TEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../.test-artifacts/native-v0.5.37-scroll-v2" TIMEOUT 180)
+    set_tests_properties(scroll-v2 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PICUT_SCROLL_V2_TEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../.test-artifacts/native-v0.5.38-scroll-v2" TIMEOUT 180)
     qt_add_executable(FloatShotTranslationTests tests/translation_tests.cpp
         src/translation_terms.cpp src/translation_terms.h
         src/translation.cpp src/translation.h src/image_translation.cpp src/image_translation.h
@@ -158,6 +158,13 @@ if(BUILD_TESTING)
     add_test(NAME scroll-ui-windows COMMAND FloatShotNativeTests scrollDesktopIndependentProducer scrollDesktopManualAndAutomatic)
     set_tests_properties(scroll-ui-windows PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=windows" TIMEOUT 60)
 endif()
+foreach(icon_target IN ITEMS FloatShotNative FloatShotNativeTests)
+    if(TARGET ${icon_target})
+        qt_add_resources(${icon_target} app_icon PREFIX "/app"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/../assets"
+            FILES "${CMAKE_CURRENT_SOURCE_DIR}/../assets/picut.png")
+    endif()
+endforeach()
 foreach(scroll_target IN ITEMS FloatShotNative FloatShotNativeTests FloatShotScrollV2Tests)
     if(TARGET ${scroll_target})
         target_sources(${scroll_target} PRIVATE src/scroll_motion.cpp src/scroll_motion.h)

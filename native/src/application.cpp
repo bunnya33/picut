@@ -928,6 +928,8 @@ void ApplicationController::previewVideo(const QString &file) {
 
 bool verifyNativeUi(ApplicationController &controller, const QString &folder) {
   QDir().mkpath(folder);
+  if (!QApplication::windowIcon().pixmap(256,256).save(folder + "/native-app-icon.png"))
+    return false;
   QImage image(800, 700, QImage::Format_ARGB32);
   image.fill(Qt::white);
   DesktopSnapshot desktop;
