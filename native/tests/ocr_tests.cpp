@@ -1,4 +1,5 @@
 #include "recognition.h"
+#include "ocr_shared_image.h"
 #include <QtWidgets/QPushButton>
 #include "image_text.h"
 #include "store.h"
@@ -8,6 +9,7 @@
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtCore/QMimeData>
+#include <QtCore/QProcess>
 #include <QtGui/QClipboard>
 #include <QtGui/QFontMetrics>
 #include <QtGui/QFontDatabase>
@@ -21,6 +23,7 @@
 #include <winrt/base.h>
 #include <algorithm>
 #include <numeric>
+#include <windows.h>
 
 class OcrTests : public QObject {
   Q_OBJECT
@@ -88,6 +91,7 @@ class OcrTests : public QObject {
   }
 private slots:
   void initTestCase() {
+    qputenv("PICUT_OCR_IDLE_MS","1500");
     for (auto name : {"msyh.ttc", "msyhbd.ttc", "arial.ttf", "meiryo.ttc"})
       QFontDatabase::addApplicationFont(qEnvironmentVariable("WINDIR")+"/Fonts/"+name);
     artifact = qEnvironmentVariable("FLOATSHOT_OCR_TEST_DIR");
@@ -159,11 +163,13 @@ private slots:
   void coldProcessAndCleanup() {
     PaddleOcrJob job; QSignalSpy finished(&job,&PaddleOcrJob::finished);
     job.start(sample("中文截图测试 0123456789",32));
-    auto temp=job.temporaryPath(); QVERIFY(QFile::exists(temp+"/input.png"));
+    auto temp=job.temporaryPath(); QVERIFY(temp.isEmpty());
     QVERIFY(finished.wait(60000));
     auto result=finished.first()[0].toJsonObject();
     QVERIFY2(!result.contains("error"),qPrintable(result["error"].toString()));
     QVERIFY(result["text"].toString().contains("0123456789"));
+    QVERIFY(result["shared_memory"].toBool());
+    QVERIFY(result["worker_pid"].toInteger()>0);
     QVERIFY(!job.running()); QVERIFY(!QFile::exists(temp));
     QVERIFY(Store::writeJson(artifact+"/cold-process.json",result));
   }
@@ -175,6 +181,109 @@ private slots:
     job.start(sample("test"),"missing-profile"); QCOMPARE(finished.size(),2);
     auto result=run({"--models",PaddleOcrJob::modelsPath(),"--input",artifact+"/不存在.png","--output",artifact+"/failure.json"});
     QVERIFY(result.contains("error"));
+  }
+  void persistentWorkerLifecycle() {
+    PaddleOcrJob first,second,canceled;
+    QSignalSpy firstDone(&first,&PaddleOcrJob::finished),secondDone(&second,&PaddleOcrJob::finished),canceledDone(&canceled,&PaddleOcrJob::finished);
+    first.start(sample("共享识别进程 12345",32),"common",0,"cpu");
+    QVERIFY(firstDone.wait(60000));
+    const auto a=firstDone.first()[0].toJsonObject(); QVERIFY(!a.contains("error"));
+    const auto pid=a["worker_pid"].toInteger(); QVERIFY(pid>0);
+    HANDLE child=OpenProcess(SYNCHRONIZE,FALSE,DWORD(pid)); QVERIFY(child);
+    const auto close=qScopeGuard([&]{CloseHandle(child);});
+    // Multiple owners queue independently, and canceling an unsent request must
+    // not terminate another image's inference or publish the canceled result.
+    second.start(sample("第二张图片 ABC6789",32),"common",0,"cpu");
+    canceled.start(sample("不应发布的旧结果",32),"common",0,"cpu"); canceled.cancel();
+    QVERIFY(secondDone.wait(60000)); const auto b=secondDone.first()[0].toJsonObject();
+    QCOMPARE(b["worker_pid"].toInteger(),pid); QVERIFY(b["model_reused"].toBool());
+    QVERIFY(b["text"].toString().contains("ABC6789")); QCOMPARE(canceledDone.size(),0);
+    QVERIFY(b["shared_memory"].toBool()); QVERIFY(second.temporaryPath().isEmpty());
+    // Real process exit, not merely forgetting its handle or trimming pages.
+    QTRY_COMPARE_WITH_TIMEOUT(WaitForSingleObject(child,0),DWORD(WAIT_OBJECT_0),5000);
+    secondDone.clear(); second.start(sample("空闲释放后恢复 67890",32),"common",0,"cpu");
+    QVERIFY(secondDone.wait(60000));
+    const auto recovered=secondDone.first()[0].toJsonObject();
+    QVERIFY(recovered["text"].toString().contains("67890"));
+    QVERIFY(recovered["worker_pid"].toInteger()!=pid);
+  }
+  void workerCrashAndReplacement() {
+    PaddleOcrJob job; QSignalSpy completed(&job,&PaddleOcrJob::finished);
+    job.start(sample("识别进程恢复测试 12345",32),"common",0,"cpu"); QVERIFY(completed.wait(60000));
+    const auto pid=completed.first()[0].toJsonObject()["worker_pid"].toInteger(); QVERIFY(pid>0);
+    HANDLE child=OpenProcess(PROCESS_TERMINATE|SYNCHRONIZE,FALSE,DWORD(pid)); QVERIFY(child);
+    const auto close=qScopeGuard([&]{CloseHandle(child);});
+    completed.clear();
+    job.start(sample(QString("旧任务 12345\n").repeated(80),24),"common",0,"cpu");
+    QTest::qWait(20); QVERIFY(TerminateProcess(child,71));
+    QTRY_COMPARE_WITH_TIMEOUT(completed.size(),1,10000);
+    QVERIFY(completed.first()[0].toJsonObject().contains("error"));
+    completed.clear(); job.start(sample("新的请求 ABC9876",32),"common",0,"cpu"); QVERIFY(completed.wait(60000));
+    auto result=completed.first()[0].toJsonObject();
+    QVERIFY2(result["text"].toString().contains("ABC9876"),qPrintable(result["error"].toString()));
+    QVERIFY(result["worker_pid"].toInteger()!=pid);
+    completed.clear();
+    job.start(sample("取消中的任务 00000",32),"common",0,"cpu"); QTest::qWait(10); job.cancel();
+    QVERIFY(!job.running());
+    job.start(sample("取消后新任务 54321",32),"common",0,"cpu"); QVERIFY(completed.wait(60000));
+    QCOMPARE(completed.size(),1); QVERIFY(completed.first()[0].toJsonObject()["text"].toString().contains("54321"));
+  }
+  void persistentPerformance() {
+    const auto baseline=qEnvironmentVariable("PICUT_OCR_BASELINE_DIR");
+    if(baseline.isEmpty())QSKIP("Set PICUT_OCR_BASELINE_DIR to compare against a preserved release.");
+    QJsonArray report;
+    for(const auto &name:{QString("small"),QString("screen"),QString("dense")}) {
+      QImage input(name=="small"?QSize(760,240):name=="screen"?QSize(1920,1080):QSize(2560,1440),QImage::Format_RGB32);
+      input.fill(Qt::white);
+      {QPainter painter(&input); QFont font("Microsoft YaHei UI");font.setPixelSize(name=="dense"?18:24);painter.setFont(font);painter.setPen(Qt::black);
+        const int columns=name=="dense"?3:1,rows=name=="small"?4:name=="screen"?20:36;
+        for(int c=0;c<columns;++c)for(int r=0;r<rows;++r)
+          painter.drawText(24+c*840,36+r*(name=="dense"?38:44),QString("第%1行 中文识别测试 Picut ABC 12345 金额100.50").arg(c*rows+r+1));}
+      const auto inputPath=artifact+"/compare-"+name+".png",output=artifact+"/baseline-"+name+".json";
+      QVERIFY(input.save(inputPath));
+      QProcess old;old.setWorkingDirectory(baseline);QElapsedTimer clock;clock.start();
+      old.start(baseline+"/FloatShotPaddleOcr.exe",{"--input",inputPath,"--models",baseline+"/ocr","--output",output});
+      QVERIFY(old.waitForFinished(180000));const auto oldWall=clock.elapsed();
+      QFile saved(output);QVERIFY(saved.open(QIODevice::ReadOnly));const auto reference=QJsonDocument::fromJson(saved.readAll()).object();
+      QVERIFY2(!reference.contains("error"),qPrintable(reference["error"].toString()));
+      QTest::qWait(1700); // The test service's 1500 ms idle lease has expired.
+      PaddleOcrJob job;QSignalSpy done(&job,&PaddleOcrJob::finished);QJsonArray measured;
+      for(int repeat=0;repeat<4;++repeat){
+        done.clear();job.start(input,"common",0,"cpu");QVERIFY(done.wait(180000));auto result=done.first()[0].toJsonObject();
+        QVERIFY2(!result.contains("error"),qPrintable(result["error"].toString()));
+        QCOMPARE(result["text"].toString(),reference["text"].toString());
+        measured.append(result);
+      }
+      verifyCharacterGeometry(measured.last().toObject(),input.size());
+      report.append(QJsonObject{{"name",name},{"baseline_wall_ms",oldWall},{"baseline",reference},{"persistent",measured}});
+    }
+    QVERIFY(Store::writeJson(artifact+"/persistent-comparison.json",QJsonObject{{"cases",report},{"scope","Same machine, synthetic images, same PP-OCRv6 small models. Baseline single-shot CPU versus shared-memory CPU; includes client queue/load time."}}));
+  }
+  void sharedMemoryInputValidation() {
+    QProcess worker;worker.setWorkingDirectory(QCoreApplication::applicationDirPath());
+    worker.start(QCoreApplication::applicationDirPath()+"/FloatShotPaddleOcr.exe",{"--serve","--models",PaddleOcrJob::modelsPath(),"--parent-pid",QString::number(QCoreApplication::applicationPid())});
+    auto next=[&](const QString &event){
+      QElapsedTimer clock;clock.start();
+      while(clock.elapsed()<60000){
+        while(worker.canReadLine()){
+          auto message=QJsonDocument::fromJson(worker.readLine()).object();
+          if(message["event"].toString()==event)return message;
+        }
+        if(worker.state()==QProcess::NotRunning)break;
+        worker.waitForReadyRead(1000);
+      }
+      return QJsonObject();
+    };
+    QVERIFY(!next("ready").isEmpty());
+    const auto invalid=QJsonDocument(QJsonObject{{"id",1},{"mapping","Local\\picut-ocr-invalid"},{"width",2147483647},{"height",2147483647},{"bytes",0}}).toJson(QJsonDocument::Compact)+'\n';
+    QCOMPARE(worker.write(invalid),invalid.size());QVERIFY(worker.waitForBytesWritten(5000));
+    const auto rejected=next("result");QCOMPARE(rejected["id"].toInt(),1);QVERIFY(rejected["result"].toObject().contains("error"));
+    OcrSharedImage mapping;auto request=mapping.create(sample("共享内存校验 ABC123",32));request["id"]=2;
+    const auto valid=QJsonDocument(request).toJson(QJsonDocument::Compact)+'\n';
+    QCOMPARE(worker.write(valid),valid.size());QVERIFY(worker.waitForBytesWritten(5000));
+    const auto accepted=next("result");QCOMPARE(accepted["id"].toInt(),2);
+    QVERIFY(accepted["result"].toObject()["text"].toString().contains("ABC123"));
+    worker.closeWriteChannel();QVERIFY(worker.waitForFinished(5000));QCOMPARE(worker.exitCode(),0);
   }
   void unicodePathAndManualRotation() {
     auto path=artifact+"/中文路径 识别.png";
@@ -315,7 +424,7 @@ private slots:
     // recover from this actual backend failure without leaving a child process.
     PaddleOcrJob fallback(nullptr,QCoreApplication::applicationDirPath()+"/FloatShotPaddleOcr.exe");
     QSignalSpy finished(&fallback,&PaddleOcrJob::finished), progress(&fallback,&PaddleOcrJob::progress);
-    QImage input(800,500,QImage::Format_RGB32); input.fill(Qt::white);
+    QImage input(2100,2000,QImage::Format_RGB32); input.fill(Qt::white);
     {QPainter p(&input); p.drawImage(20,20,sample("回退测试 0123456789",32));}
     fallback.start(input,"common",0,"auto");
     auto path=fallback.temporaryPath(); QVERIFY(finished.wait(60000));

@@ -1870,7 +1870,7 @@ private slots:
     auto pin=new PinWindow(image,&store,{100,80,480,300}); pin->show();
     pin->startImageText(image);
     auto job=pin->imageText->findChild<PaddleOcrJob *>(); QVERIFY(job->running());
-    auto temporary=job->temporaryPath(); QVERIFY(QFileInfo::exists(temporary));
+    auto temporary=job->temporaryPath(); QVERIFY(temporary.isEmpty());
     delete pin;
     QVERIFY(!QFileInfo::exists(temporary));
   }

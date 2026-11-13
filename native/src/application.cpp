@@ -374,6 +374,10 @@ void ApplicationController::beginCapture(bool recordingMode) {
       overlay->show();
       overlay->activateWindow();
       overlay->setFocus();
+      if (!recordingMode) QTimer::singleShot(250, overlay, [this] {
+        PaddleOcrJob::prewarm(store.config["ocr_profile"].toString("common"),
+                            store.config["ocr_acceleration"].toString("auto"));
+      });
     } catch (const std::exception &e) {
       QMessageBox::warning(nullptr, "无法截图", QString::fromUtf8(e.what()));
     }

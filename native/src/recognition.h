@@ -1,12 +1,9 @@
 #pragma once
 #include <QtGui/QImage>
 #include <QtCore/QJsonObject>
-#include <QtCore/QProcess>
-#include <QtCore/QTemporaryDir>
-#include <QtCore/QTimer>
 #include <QtWidgets/QWidget>
-#include <memory>
 class Store;
+class OcrService;
 class PaddleOcrJob : public QObject {
   Q_OBJECT
 public:
@@ -14,25 +11,21 @@ public:
   ~PaddleOcrJob() override;
   void start(const QImage &image, const QString &profile = "common", int rotation = 0, const QString &acceleration = "auto");
   void cancel();
-  bool running() const { return process.state() != QProcess::NotRunning; }
-  QString temporaryPath() const { return temporary ? temporary->path() : QString(); }
+  bool running() const { return active; }
+  // OCR images now travel in shared memory; no temporary image is created.
+  QString temporaryPath() const { return {}; }
+  static void prewarm(const QString &profile = "common", const QString &acceleration = "auto");
   static QString modelsPath();
   static QJsonObject profiles();
 signals:
   void finished(QJsonObject result);
   void progress(QString phase,int done,int total);
 private:
-  QProcess process;
-  QTimer timeout;
-  std::unique_ptr<QTemporaryDir> temporary;
+  friend class OcrService;
   bool active = false;
-  bool gpuAttempt = false;
-  QString gpuProgram,selectedProfile,selectedAcceleration,gpuError;
-  int selectedRotation = 0;
+  QString gpuProgram;
   quint64 generation = 0;
-  QByteArray progressBuffer;
-  void launch(bool gpu);
-  void complete(QJsonObject result);
+  void complete(quint64 token, QJsonObject result);
 };
 QString recognizeText(const QImage &image);
 QString recognizeWindowsText(const QImage &image);

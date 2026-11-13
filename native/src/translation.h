@@ -1,4 +1,8 @@
 #pragma once
+#include <QtCore/QProcess>
+#include <QtCore/QTemporaryDir>
+#include <QtCore/QTimer>
+#include <memory>
 #include "recognition.h"
 #include <QtCore/QJsonArray>
 #include <QtGui/QFont>

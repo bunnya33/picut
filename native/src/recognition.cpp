@@ -1,4 +1,5 @@
 #include "recognition.h"
+#include "ocr_service.h"
 #include "image_text.h"
 #include "store.h"
 #include <BarcodeFormat.h>
@@ -37,82 +38,26 @@ QJsonObject PaddleOcrJob::profiles() {
   if (!file.open(QIODevice::ReadOnly)) return {};
   return QJsonDocument::fromJson(file.readAll()).object()["profiles"].toObject();
 }
-PaddleOcrJob::PaddleOcrJob(QObject *parent,QString gpuWorker) : QObject(parent),gpuProgram(gpuWorker.isEmpty()?QCoreApplication::applicationDirPath()+"/gpu/FloatShotPaddleOcr.exe":gpuWorker) {
-  timeout.setSingleShot(true);
-  connect(&timeout, &QTimer::timeout, this, [this] {
-    cancel(); emit finished({{"error", "识别超过 3 分钟，已停止。请缩小截图区域后重试。"}});
-  });
-  connect(&process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
-    if (error == QProcess::FailedToStart && active) {
-      if(gpuAttempt && selectedAcceleration=="auto") {
-        gpuError=process.errorString(); emit progress("fallback",0,0);
-        auto attempt=generation;
-        QTimer::singleShot(0,this,[this,attempt]{if(active && generation==attempt)launch(false);});
-      }
-      else complete({{"error", "无法启动文字识别组件：" + process.errorString()}});
-    }
-  });
-  connect(&process,&QProcess::readyReadStandardOutput,this,[this] {
-    progressBuffer+=process.readAllStandardOutput();
-    int newline;
-    while((newline=progressBuffer.indexOf('\n'))>=0) {
-      auto item=QJsonDocument::fromJson(progressBuffer.left(newline)).object(); progressBuffer.remove(0,newline+1);
-      if(active && item.contains("phase")) emit progress(item["phase"].toString(),item["done"].toInt(),item["total"].toInt());
-    }
-  });
-  connect(&process, &QProcess::finished, this, [this](int exitCode, QProcess::ExitStatus status) {
-    if (!active) return;
-    QFile output(temporary->path() + "/result.json");
-    QJsonObject result;
-    if (output.open(QIODevice::ReadOnly)) {
-      result = QJsonDocument::fromJson(output.readAll()).object(); output.close();
-    }
-    if (result.isEmpty() || status != QProcess::NormalExit || (exitCode != 0 && !result.contains("error")))
-      result = {{"error", "识别组件未正常完成。请检查 OCR 模型和运行库是否完整。"}};
-    if(result.contains("error") && gpuAttempt && selectedAcceleration=="auto") {
-      gpuError=result["error"].toString(); emit progress("fallback",0,0); launch(false); return;
-    }
-    if(!gpuError.isEmpty()) result["acceleration_fallback"]=true;
-    complete(result);
-  });
-}
+PaddleOcrJob::PaddleOcrJob(QObject *parent,QString gpuWorker) : QObject(parent),gpuProgram(gpuWorker.isEmpty()?QCoreApplication::applicationDirPath()+"/gpu/FloatShotPaddleOcr.exe":gpuWorker) {}
 PaddleOcrJob::~PaddleOcrJob() { cancel(); }
-void PaddleOcrJob::complete(QJsonObject result) {
-  if (!active) return;
-  active = false; timeout.stop(); temporary.reset(); emit finished(result);
+void PaddleOcrJob::prewarm(const QString &profile,const QString &acceleration) {
+  OcrService::instance()->prewarm(profile,acceleration);
+}
+void PaddleOcrJob::complete(quint64 token,QJsonObject result) {
+  if (!active || token!=generation) return;
+  active = false; emit finished(result);
 }
 void PaddleOcrJob::cancel() {
+  if (auto service=OcrService::instance(false)) service->cancel(this,generation);
   ++generation;
-  active = false; timeout.stop();
-  if (process.state() != QProcess::NotRunning) { process.kill(); process.waitForFinished(1000); }
-  temporary.reset();
+  active = false;
 }
 void PaddleOcrJob::start(const QImage &image, const QString &profile, int rotation,const QString &acceleration) {
-  cancel(); active = true; gpuError.clear(); progressBuffer.clear();
-  selectedProfile=profile; selectedRotation=rotation; selectedAcceleration=acceleration;
-  if (image.isNull()) { complete({{"error", "没有可识别的图片。"}}); return; }
-  if (!profiles().contains(profile)) { complete({{"error", "所选语言组的 OCR 模型缺失，请重新解压完整安装包。"}}); return; }
-  temporary = std::make_unique<QTemporaryDir>(QDir::tempPath() + "/FloatShot-OCR-XXXXXX");
-  if (!temporary->isValid() || !image.save(temporary->path() + "/input.png")) {
-    complete({{"error", "无法准备识别图片，请检查临时目录。"}}); return;
-  }
-  bool useGpu=acceleration=="gpu" || (acceleration=="auto" && image.height()>=200 && image.width()>=200 && qint64(image.width())*image.height()>=100000 && QFileInfo::exists(gpuProgram));
-  launch(useGpu);
-  timeout.start(180000);
-}
-void PaddleOcrJob::launch(bool gpu) {
-  gpuAttempt=gpu; progressBuffer.clear();
-  QFile::remove(temporary->path()+"/result.json");
-  process.setProcessChannelMode(QProcess::SeparateChannels);
-  // The child has a GPU-specific runtime beside its executable; Qt DLLs are in
-  // the package root. This makes it independent of the developer's SDK PATH.
-  process.setWorkingDirectory(QCoreApplication::applicationDirPath());
-  QStringList arguments=
-                {"--input", temporary->path() + "/input.png", "--models", modelsPath(),
-                 "--output", temporary->path() + "/result.json", "--profile", selectedProfile,
-                 "--rotation", QString::number(selectedRotation)};
-  if(gpu) arguments.append("--gpu");
-  process.start(gpu ? gpuProgram : QCoreApplication::applicationDirPath()+"/FloatShotPaddleOcr.exe",arguments);
+  cancel(); active = true;
+  if (image.isNull()) { complete(generation,{{"error", "没有可识别的图片。"}}); return; }
+  if (!profiles().contains(profile)) { complete(generation,{{"error", "所选语言组的 OCR 模型缺失，请重新解压完整安装包。"}}); return; }
+  if (qint64(image.width())*image.height()>40000000) { complete(generation,{{"error", "图片超过 4000 万像素，请分区域识别。"}}); return; }
+  OcrService::instance()->submit(this,image,profile,rotation,acceleration);
 }
 QString recognizeText(const QImage &image) {
   PaddleOcrJob job; QEventLoop loop; QJsonObject result;

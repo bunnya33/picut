@@ -9,6 +9,7 @@
 #include <QtCore/QSaveFile>
 #include <QtGui/QImageReader>
 #include <QtGui/QPainter>
+#include "ocr_shared_image.h"
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -24,11 +25,19 @@
 #include <memory>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
 
 namespace {
-void reportProgress(const QString &phase,int done=0,int total=0) {
-  auto data=QJsonDocument(QJsonObject{{"phase",phase},{"done",done},{"total",total}}).toJson(QJsonDocument::Compact)+'\n';
+bool serving = false;
+qint64 requestId = 0;
+void reply(const QJsonObject &object) {
+  const auto data=QJsonDocument(object).toJson(QJsonDocument::Compact)+'\n';
   std::fwrite(data.constData(),1,size_t(data.size()),stdout); std::fflush(stdout);
+}
+void reportProgress(const QString &phase,int done=0,int total=0) {
+  QJsonObject item{{"phase",phase},{"done",done},{"total",total}};
+  if (serving) { item["event"]="progress"; item["id"]=requestId; }
+  reply(item);
 }
 void fail(const QString &message) { throw std::runtime_error(message.toUtf8().constData()); }
 QJsonObject readObject(const QString &path) {
@@ -45,6 +54,7 @@ void writeObject(const QString &path, const QJsonObject &object) {
     fail("无法保存 OCR 结果：" + path);
 }
 class Network {
+  std::vector<float> data;
 public:
   Ort::Session session;
   std::string input, output;
@@ -61,7 +71,7 @@ public:
   }
   Ort::Value runBatch(const std::vector<cv::Mat> &images, int width, int height, bool padding = false, bool imagenet = false, bool rgb = false) {
     size_t imageElements = size_t(3)*width*height;
-    std::vector<float> data(imageElements*images.size(), 0.f);
+    data.assign(imageElements*images.size(), 0.f);
     for (size_t n=0;n<images.size();++n) {
       const auto &image=images[n]; cv::Mat resized;
       int resizedWidth = padding ? std::min(width, int(std::ceil(double(height) * image.cols / image.rows))) : width;
@@ -102,6 +112,18 @@ Quad ordered(cv::RotatedRect rectangle) {
   auto br = p[2].y < p[3].y ? p[3] : p[2];
   return {tl, tr, br, bl};
 }
+cv::Mat imagePixels(const QImage &source) {
+  if (!source.hasAlphaChannel()) {
+    const auto opaque=source.convertToFormat(QImage::Format_RGB32);
+    cv::Mat bgra(opaque.height(),opaque.width(),CV_8UC4,const_cast<uchar *>(opaque.constBits()),opaque.bytesPerLine()), bgr;
+    cv::cvtColor(bgra,bgr,cv::COLOR_BGRA2BGR); return bgr;
+  }
+  QImage opaque(source.size(), QImage::Format_RGB888);
+  opaque.fill(Qt::white);
+  { QPainter painter(&opaque); painter.drawImage(0, 0, source); }
+  cv::Mat rgb(opaque.height(), opaque.width(), CV_8UC3, opaque.bits(), opaque.bytesPerLine()), bgr;
+  cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR); return bgr;
+}
 cv::Mat loadImage(const QString &path) {
   QImageReader reader(path);
   reader.setAutoTransform(true);
@@ -110,12 +132,7 @@ cv::Mat loadImage(const QString &path) {
     fail("图片超过 4000 万像素，请分区域识别。");
   auto source = reader.read();
   if (source.isNull()) fail("无法读取图片：" + reader.errorString());
-  QImage opaque(source.size(), QImage::Format_RGB888);
-  opaque.fill(Qt::white);
-  { QPainter painter(&opaque); painter.drawImage(0, 0, source); }
-  cv::Mat rgb(opaque.height(), opaque.width(), CV_8UC3, opaque.bits(), opaque.bytesPerLine()), bgr;
-  cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
-  return bgr;
+  return imagePixels(source);
 }
 class Pipeline {
   Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "FloatShotOCR"};
@@ -133,7 +150,16 @@ public:
     options.SetInterOpNumThreads(1);
     options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
     if (!arena) options.DisableCpuMemArena();
-    if (!spinning) options.AddConfigEntry("session.intra_op.allow_spinning", "0");
+    else if (!gpu) {
+      const auto memory=Ort::MemoryInfo::CreateCpu(OrtArenaAllocator,OrtMemTypeDefault);
+      Ort::ArenaCfg config(0,1,-1,-1);
+      env.CreateAndRegisterAllocator(memory,config);
+      options.AddConfigEntry("session.use_env_allocators","1");
+    }
+    if (!spinning) {
+      options.AddConfigEntry("session.intra_op.allow_spinning", "0");
+      options.AddConfigEntry("session.inter_op.allow_spinning", "0");
+    }
     options.DisableMemPattern();
     auto directionOptions=options.Clone();
     if(gpu) directionOptions.SetIntraOpNumThreads(2);
@@ -181,6 +207,13 @@ public:
       result[item.first] = shape;
     }
     return result;
+  }
+  void warmup() {
+    const cv::Mat blank(64,320,CV_8UC3,cv::Scalar(255,255,255));
+    detector->run(blank,64,64,false,true);
+    classifier->run(blank,classifier->shape[3]>0?int(classifier->shape[3]):192,
+        classifier->shape[2]>0?int(classifier->shape[2]):48,false,true,true);
+    recognizer->run(blank,320,recognizer->shape[2]>0?int(recognizer->shape[2]):48,true);
   }
   std::vector<Box> detect(const cv::Mat &image, cv::Point offset) {
     double scale = std::min(2., 736. / std::min(image.cols, image.rows));
@@ -303,8 +336,12 @@ public:
     return decoded;
   }
   QJsonObject process(const QString &path, int rotation) {
+    QElapsedTimer decoding; decoding.start();
+    auto image=loadImage(path);
+    return process(std::move(image),rotation,decoding.elapsed());
+  }
+  QJsonObject process(cv::Mat image, int rotation, qint64 inputMs=0) {
     QElapsedTimer timer; timer.start();
-    auto image = loadImage(path);
     const int originalWidth = image.cols, originalHeight = image.rows;
     if (rotation == 90) cv::rotate(image, image, cv::ROTATE_90_CLOCKWISE);
     if (rotation == 180) cv::rotate(image, image, cv::ROTATE_180);
@@ -410,24 +447,83 @@ public:
                                {"characters", characters}});
       text.append(line);
     }
-    return {{"text", text.join('\n')}, {"lines", lines}, {"model", modelName}, {"profile", profileName}, {"elapsed_ms", double(timer.elapsed())}, {"rotation", rotation},
-      {"timing",QJsonObject{{"decode_ms",double(decodeMs)},{"detect_ms",double(detectMs)},{"direction_ms",double(directionMs)},{"recognition_ms",double(recognitionMs)}}},
+    return {{"text", text.join('\n')}, {"lines", lines}, {"model", modelName}, {"profile", profileName}, {"elapsed_ms", double(timer.elapsed()+inputMs)}, {"rotation", rotation},
+      {"timing",QJsonObject{{"decode_ms",double(decodeMs+inputMs)},{"detect_ms",double(detectMs)},{"direction_ms",double(directionMs)},{"recognition_ms",double(recognitionMs)}}},
       {"tiles",tileCount},{"detected_lines",int(boxes.size())},{"device",deviceName},{"gpu",gpuEnabled},
       {"image_width",originalWidth},{"image_height",originalHeight},{"coordinate_space","original"}};
   }
 };
+
+class ParentLease {
+  HANDLE parent=nullptr;
+  std::jthread watcher;
+public:
+  explicit ParentLease(DWORD pid) {
+    if (!pid || pid==GetCurrentProcessId() || !(parent=OpenProcess(SYNCHRONIZE,FALSE,pid)))
+      fail("无法监控 OCR 主程序。");
+    watcher=std::jthread([this](std::stop_token stop) {
+      while (!stop.stop_requested()) {
+        if (WaitForSingleObject(parent,100)==WAIT_OBJECT_0) { TerminateProcess(GetCurrentProcess(),0); return; }
+      }
+    });
+  }
+  ~ParentLease() { watcher.request_stop(); if(watcher.joinable())watcher.join(); if(parent)CloseHandle(parent); }
+};
+int serve(const QCommandLineParser &parser) {
+  serving=true;
+  try {
+    ParentLease parent(parser.value("parent-pid").toUInt());
+    cv::setNumThreads(1);
+    const bool gpu=parser.isSet("gpu");
+    const auto profile=parser.value("profile").isEmpty()?QString("common"):parser.value("profile");
+    QElapsedTimer loading; loading.start();
+    Pipeline pipeline(parser.value("models"),profile,4,!gpu,false,gpu?4:1,gpu);
+    pipeline.warmup();
+    reply({{"event","ready"},{"load_ms",loading.elapsed()},{"pid",qint64(GetCurrentProcessId())}});
+    std::array<char,65536> line{};
+    while (std::fgets(line.data(),int(line.size()),stdin)) {
+      const QByteArray input(line.data());
+      QJsonParseError error; const auto document=QJsonDocument::fromJson(input,&error);
+      if (!input.endsWith('\n') || error.error!=QJsonParseError::NoError || !document.isObject())
+        fail("OCR 请求格式无效。");
+      const auto request=document.object(); requestId=request["id"].toInteger();
+      if (requestId<=0) fail("OCR 请求编号无效。");
+      QElapsedTimer timer; timer.start(); QJsonObject result;
+      try {
+        const auto rotation=request["rotation"].toInt();
+        if (rotation!=0 && rotation!=90 && rotation!=180 && rotation!=270) fail("OCR 旋转角度无效。");
+        OcrSharedImage shared;
+        auto image=imagePixels(shared.open(request));
+        const auto decoding=timer.elapsed();
+        result=pipeline.process(std::move(image),rotation,decoding);
+      } catch (const std::exception &failure) { result={{"error",QString::fromUtf8(failure.what())}}; }
+      result["total_ms"]=double(timer.elapsed());
+      PROCESS_MEMORY_COUNTERS_EX memory{};
+      if (GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&memory),sizeof(memory))) {
+        result["worker_private_mb"]=double(memory.PrivateUsage)/1048576.;
+        result["peak_working_set_mb"]=double(memory.PeakWorkingSetSize)/1048576.;
+      }
+      reply({{"event","result"},{"id",requestId},{"result",result}});
+    }
+    return 0;
+  } catch (const std::exception &error) {
+    reply({{"event","error"},{"error",QString::fromUtf8(error.what())}}); return 1;
+  }
+}
 }
 int main(int argc, char **argv) {
   QCoreApplication app(argc, argv);
   QCommandLineParser parser;
   parser.addHelpOption();
-  for (const auto &name : {"input", "models", "output", "profile", "rotation", "batch", "threads", "rec-batch"})
+  for (const auto &name : {"input", "models", "output", "profile", "rotation", "batch", "threads", "rec-batch", "parent-pid"})
     parser.addOption(QCommandLineOption(name, name, "value"));
   parser.addOption(QCommandLineOption("inspect", "Inspect model dimensions"));
   parser.addOption(QCommandLineOption("arena", "Benchmark reusable CPU allocations"));
   parser.addOption(QCommandLineOption("no-spinning", "Benchmark non-spinning thread pools"));
   parser.addOption(QCommandLineOption("gpu", "Use DirectML hardware acceleration"));
+  parser.addOption(QCommandLineOption("serve", "Serve shared-memory OCR requests until the parent exits"));
   parser.process(app);
+  if (parser.isSet("serve")) return serve(parser);
   QElapsedTimer total; total.start();
   QJsonObject result; int exitCode = 0;
   try {

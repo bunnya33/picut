@@ -1,6 +1,8 @@
-# picut v0.5.40
+# picut v0.5.41 OCR performance trial
 
-This release replaces the app, tray, window, executable and installer icons with the supplied yellow frog artwork. Only the exterior white background is removed; interior whites and highlights are preserved. All recording and screenshot behavior is retained from v0.5.39. See docs/更新记录-v0.5.40-黄色青蛙图标.md.
+The `codex/ocr-performance-trial` branch reuses a serial OCR worker across screenshot, pin and translation requests. Pixels travel through per-request Windows shared mappings. Screenshot selection starts asynchronous prewarming; the process exits after 30 seconds idle or when its parent exits. CPU sessions share an arena with spinning disabled. Auto acceleration uses CPU for images up to 4 million pixels, while explicit GPU and large-page automatic GPU retain CPU fallback. The PP-OCRv6 small models, rotation classifier and character geometry are retained. Version 0.5.40 and main remain available for rollback.
+
+Version 0.5.40 introduced the supplied yellow frog artwork for the app, tray, window, executable and installer. Only the exterior white background is removed; interior whites and highlights are preserved. See docs/更新记录-v0.5.40-黄色青蛙图标.md.
 
 Recordings now accept live annotation updates, including in-progress drafts, dragging, deletion and undo. Closing the annotation toolbar returns input to the desktop. A separate handle moves the captured region without restarting the encoder. Windows Graphics Capture binds window recordings to an HWND; resized contents stretch independently in X/Y to the original canvas, with no letterboxing or cropping. A minimized target pauses the timeline without losing a manual pause; closing it saves the video. Window capture requires Windows 10 1903+; interactive region annotations require capture exclusion on Windows 10 2004+. See docs/更新记录-v0.5.40-黄色青蛙图标.md.
 
@@ -65,7 +67,7 @@ Install Visual Studio 2022 or newer with C++ desktop tools and a Windows 10/11 S
 
 `setup-sdk.ps1` fetches the official Qt MSVC x64 SDK, pinned ZXing-C++ source, and standalone FFmpeg, verifies SHA-256 hashes, and uses Windows tar / Expand-Archive. It does not install anything globally. An existing Qt installation can be used with `build.ps1 -QtDir C:/Qt/6.8.3/msvc2022_64`. `build-native.cmd` is a convenience wrapper. Packaging supports `-QtDir`, `-Ffmpeg`, and `-NoZip`.
 
-This branch builds executables in `build/native-scroll-performance/`. The complete runtime folder and ZIP are in `dist/picut-0.5.40*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
+This branch builds executables in `build/native-scroll-performance/`. The complete runtime folder and ZIP are in `dist/picut-0.5.41*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
 
 To build the Windows installer from this deployed runtime, run `./native/build-installer.ps1`. It prepares a local portable Inno Setup 6.7.3 compiler on first use, verifying the official bootstrap's SHA-256 and Authenticode signature and pinning the Chinese translation to the same source tag. No global compiler installation is required. Options `-PackageDir` and `-Iscc` accept an existing runtime/compiler. The app version comes from `picut.exe` metadata. The output is `dist/picut-<version>-setup-x64.exe` plus its SHA-256 file; payload hashes are saved under `build/installer/` for verification.
 
