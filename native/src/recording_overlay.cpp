@@ -1,6 +1,8 @@
 #include "recording_overlay.h"
 #include "native_windows.h"
 #include "compact_ui.h"
+#include "recording_capture.h"
+#include <QtCore/QSignalBlocker>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
@@ -40,6 +42,9 @@ public:
     }
   }
 
+  void setRegion(QRect value) {
+    captureRegion=value; setGeometry(exterior?value.adjusted(-4,-4,4,4):value); update();
+  }
 protected:
   void paintEvent(QPaintEvent *) override {
     QPainter p(this);
@@ -99,6 +104,14 @@ public:
     layout->addWidget(time);
     auto separator=new QFrame; separator->setFixedSize(1,14);
     separator->setStyleSheet("background:#d5dce7;border:0;"); layout->addWidget(separator);
+    annotate = new QToolButton;
+    annotate->setObjectName("editRecordingMarks"); annotate->setCheckable(true);
+    annotate->setIcon(recordingIcon("pen")); annotate->setIconSize({16,16}); annotate->setFixedSize(32,32);
+    annotate->setToolTip("标记：展开工具栏；关闭后恢复操作桌面"); annotate->hide(); layout->addWidget(annotate);
+    moveRegion = new QToolButton;
+    moveRegion->setObjectName("moveRecordingRegion"); moveRegion->setIcon(recordingIcon("move"));
+    moveRegion->setIconSize({16,16}); moveRegion->setFixedSize(32,32); moveRegion->setCursor(Qt::SizeAllCursor);
+    moveRegion->setToolTip("拖动以移动录屏区域"); moveRegion->hide(); layout->addWidget(moveRegion);
     pause = new QToolButton;
     pause->setObjectName("pauseRecording");
     pause->setIcon(recordingIcon("pause")); pause->setIconSize({16,16}); pause->setFixedSize(32,32);
@@ -140,7 +153,13 @@ public:
       label->installEventFilter(this);
   }
   QLabel *state, *time;
-  QToolButton *pause, *stop;
+  QToolButton *pause, *stop, *annotate, *moveRegion;
+  void followRegion(QRect value, QPoint delta) {
+    auto screen=QGuiApplication::screenAt(value.center());
+    if (!screen) screen=QGuiApplication::primaryScreen();
+    dragBounds=value.width()>=width() && value.height()>=height()?value:screen->availableGeometry();
+    move(clamped(pos()+delta));
+  }
   bool placeOutside(QRect capture) {
     QRect best;
     int distance = std::numeric_limits<int>::max();
@@ -215,6 +234,7 @@ public:
     setObjectName("recordingArtwork"); setAttribute(Qt::WA_TranslucentBackground);
     setAttribute(Qt::WA_ShowWithoutActivating); setGeometry(region);
   }
+  void setImage(const QImage &value) { image=value; update(); }
 protected:
   void paintEvent(QPaintEvent *) override {
     QPainter p(this); p.setCompositionMode(QPainter::CompositionMode_Source);
@@ -265,8 +285,59 @@ RecordingOverlay::~RecordingOverlay() { timer.stop(); }
 QWidget *RecordingOverlay::boundary() const { return frame.get(); }
 QWidget *RecordingOverlay::controls() const { return panel.get(); }
 void RecordingOverlay::setArtwork(const QImage &image) {
+  if (markLayer && !image.isNull()) {
+    static_cast<RecordingArtwork *>(markLayer.get())->setImage(image); return;
+  }
   markLayer.reset(); artworkExcluded=false;
   if (!image.isNull()) markLayer=std::make_unique<RecordingArtwork>(logicalRegion,image);
+}
+void RecordingOverlay::configureLive(std::shared_ptr<RecordingLiveState> state, quintptr window) {
+  live=std::move(state); targetWindow=window;
+  panel->annotate->show(); panel->moveRegion->setVisible(!window); panel->adjustSize();
+  panel->followRegion(logicalRegion,{});
+  panel->moveRegion->installEventFilter(this);
+  connect(panel->annotate,&QToolButton::toggled,this,[this](bool value) { setEditing(value); emit editingRequested(value); });
+  timer.setInterval(16);
+}
+void RecordingOverlay::setEditing(bool value) {
+  editing=value;
+  QSignalBlocker block(panel->annotate); panel->annotate->setChecked(value);
+  panel->annotate->setIcon(recordingIcon("pen",value?QColor(Qt::white):QColor("#333333")));
+  refresh();
+}
+void RecordingOverlay::setRegion(QRect value) {
+  if (value.isEmpty() || logicalRegion==value) return;
+  const auto delta=value.topLeft()-logicalRegion.topLeft();
+  logicalRegion=value; frame->setRegion(value);
+  if (markLayer) markLayer->setGeometry(value);
+  panel->followRegion(value,delta);
+  if (compatibility) outsideControls=panel->placeOutside(value);
+  if (live) live->setRegion(physicalRect(value));
+  emit regionChanged(value);
+}
+bool RecordingOverlay::eventFilter(QObject *watched,QEvent *event) {
+  if (watched!=panel->moveRegion || targetWindow) return false;
+  if (event->type()!=QEvent::MouseButtonPress && event->type()!=QEvent::MouseMove && event->type()!=QEvent::MouseButtonRelease) return false;
+  auto mouse=static_cast<QMouseEvent *>(event);
+  if (event->type()==QEvent::MouseButtonPress && mouse->button()==Qt::LeftButton) {
+    movingRegion=true; moveOrigin=mouse->globalPosition().toPoint(); originalRegion=logicalRegion; return true;
+  }
+  if (!movingRegion) return false;
+  if (event->type()==QEvent::MouseMove) {
+    auto next=originalRegion.translated(mouse->globalPosition().toPoint()-moveOrigin);
+    auto screen=QGuiApplication::screenAt(next.center());
+    if (screen) {
+      const auto bounds=screen->geometry();
+      const auto captureSize=physicalRect(originalRegion).size();
+      next.setSize(QSize(qRound(captureSize.width()/screen->devicePixelRatio()),qRound(captureSize.height()/screen->devicePixelRatio())));
+      next.moveLeft(qBound(bounds.left(),next.x(),qMax(bounds.left(),bounds.right()-next.width()+1)));
+      next.moveTop(qBound(bounds.top(),next.y(),qMax(bounds.top(),bounds.bottom()-next.height()+1)));
+      setRegion(next);
+    }
+    return true;
+  }
+  if (event->type()==QEvent::MouseButtonRelease) { movingRegion=false; return true; }
+  return false;
 }
 bool RecordingOverlay::show() {
   if (compatibility) {
@@ -320,9 +391,21 @@ void RecordingOverlay::refresh() {
   if (!recorder)
     return;
   const bool saving = recorder->finalizing();
-  const bool paused = recorder->paused();
+  bool paused = recorder->paused();
+  bool targetHidden = false;
   const bool counting=countdown>=0 && !begun;
-  if (markLayer) markLayer->setVisible(shown && artworkExcluded && !compatibility && !saving);
+  if (targetWindow && !saving) {
+    const auto info=recordingWindowInfo(targetWindow);
+    if (!info.valid && begun) { recorder->stop(); return; }
+    if (begun) recorder->setTargetUnavailable(info.minimized);
+    paused=recorder->paused();
+    targetHidden=info.minimized;
+    if (info.valid && !info.minimized) setRegion(info.logical);
+  }
+  if (targetWindow) frame->setVisible(shown && !targetHidden);
+  if (markLayer) markLayer->setVisible(shown && artworkExcluded && !compatibility && !saving && !editing && !targetHidden);
+  if (targetHidden && editing) { setEditing(false); emit editingRequested(false); }
+  if (saving && editing) { setEditing(false); emit editingRequested(false); }
   if (shown && compatibility) {
     frame->setExterior(!counting);
     panel->setVisible(counting || outsideControls);
@@ -347,6 +430,9 @@ void RecordingOverlay::refresh() {
   panel->pause->setIcon(recordingIcon(paused?"play":"pause"));
   panel->pause->setToolTip(paused?"继续录屏 · Ctrl+Alt+P":"暂停录屏 · Ctrl+Alt+P");
   panel->pause->setEnabled(begun && recorder->active() && !saving);
+  panel->annotate->setEnabled(begun && recorder->active() && !saving && !compatibility && excluded && !targetHidden);
+  if (compatibility) panel->annotate->setToolTip("当前系统不支持捕获排除，录制中编辑标记需要 Windows 10 2004 或更新版本。");
+  panel->moveRegion->setEnabled(!saving && !counting);
   panel->stop->setEnabled(counting || (begun && recorder->active() && !saving));
   panel->stop->setIcon(recordingIcon(counting?"cancel":"stop"));
   panel->stop->setToolTip(counting?"取消录屏倒计时 · Esc":"结束录屏 · Ctrl+Alt+S");

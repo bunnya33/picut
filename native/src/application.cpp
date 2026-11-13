@@ -2,6 +2,8 @@
 #include "menu.h"
 #include "recording_settings.h"
 #include "recording_markup.h"
+#include "recording_editor.h"
+#include "recording_capture.h"
 #include "compact_ui.h"
 #include "hotkey.h"
 #include "panel_theme.h"
@@ -730,6 +732,7 @@ void ApplicationController::makeRecorder() {
   connect(recorder.get(), &Recorder::status, this,
           &ApplicationController::notify);
   connect(recorder.get(), &Recorder::failed, this, [this](QString text) {
+    recordEditor.reset();
     recordOverlay.reset();
     const auto source=recordSource;
     restoreRecordSource();
@@ -740,6 +743,7 @@ void ApplicationController::makeRecorder() {
     if (source) source->close();
   });
   connect(recorder.get(), &Recorder::finished, this, [this](QJsonObject item) {
+    recordEditor.reset();
     recordOverlay.reset();
     item["created"] = QDateTime::currentDateTime().toString(Qt::ISODate);
     store.addVideo(item);
@@ -757,8 +761,10 @@ void ApplicationController::prepareRecord(QRect region, bool showSettings,
                                            RecordingPainter painter, CaptureOverlay *source) {
   if (recording() || recordSetup || pending || (overlay && overlay!=source)) return;
   recordSource=source;
+  const auto target=source?source->recordingWindow():0;
+  const auto windowInfo=recordingWindowInfo(target);
   auto screen=QGuiApplication::screenAt(region.center());
-  if (!screen || !screen->geometry().contains(region)) {
+  if ((!screen || !screen->geometry().contains(region)) && !target) {
     restoreRecordSource();
     QMessageBox::warning(source?static_cast<QWidget *>(source):home.data(),"录制区域","录屏区域需要位于一个显示器内。"); return;
   }
@@ -767,9 +773,14 @@ void ApplicationController::prepareRecord(QRect region, bool showSettings,
     RecordingSettingsDialog dialog(&store,region,true,home);
     if (dialog.exec()!=QDialog::Accepted) { recordSetup=false; restoreRecordSource(); return; }
   }
-  auto options=savedRecordingOptions(store.config,physicalRect(region),
+  if (target && (!windowInfo.valid || windowInfo.minimized)) {
+    recordSetup=false; restoreRecordSource(); return;
+  }
+  auto options=savedRecordingOptions(store.config,target?windowInfo.physical:physicalRect(region),
       store.outputPath(store.config["video_dir"].toString(),"录屏","mp4"));
   options.painter=std::move(painter);
+  options.window=target;
+  options.live=std::make_shared<RecordingLiveState>(options.region,options.painter);
   makeRecorder();
   int seconds=qBound(0,store.config["countdown"].toInt(3),10);
   auto counter=new QLabel(nullptr,Qt::FramelessWindowHint|Qt::Tool|Qt::WindowStaysOnTopHint);
@@ -778,22 +789,32 @@ void ApplicationController::prepareRecord(QRect region, bool showSettings,
   counter->setStyleSheet("background:rgba(0,0,0,170);color:white;font-size:60px;");
   counter->setGeometry(QRect(region.center()-QPoint(60,60),QSize(120,120)));
   connect(counter,&QObject::destroyed,this,[this] {
-    if (recordSetup) { recordOverlay.reset(); recordSetup=false; restoreRecordSource(); }
+    if (recordSetup) { recordEditor.reset(); recordOverlay.reset(); recordSetup=false; restoreRecordSource(); }
   });
   auto escape=new QShortcut(QKeySequence(Qt::Key_Escape),counter);
   escape->setContext(Qt::ApplicationShortcut);
   connect(escape,&QShortcut::activated,counter,&QWidget::close);
   try {
     recordOverlay=std::make_unique<RecordingOverlay>(recorder.get(),region,options.systemAudio,options.microphone);
-    if (source && source->annotation && options.painter) {
-      QImage artwork(options.region.size(),QImage::Format_ARGB32_Premultiplied);
-      artwork.fill(Qt::transparent); options.painter(artwork); recordOverlay->setArtwork(artwork);
-    }
+    recordOverlay->configureLive(options.live,target);
+    recordEditor=std::make_unique<RecordingEditor>(&store,region,options.region.size(),
+        source?source->annotation.get():nullptr,options.live);
+    recordOverlay->setArtwork(recordEditor->annotation->render());
+    connect(recordEditor.get(),&RecordingEditor::artworkChanged,recordOverlay.get(),&RecordingOverlay::setArtwork);
+    connect(recordOverlay.get(),&RecordingOverlay::regionChanged,recordEditor.get(),&RecordingEditor::setRegion);
+    connect(recordOverlay.get(),&RecordingOverlay::editingRequested,this,[this](bool value) {
+      if (!recordEditor) return;
+      if (value) { recordEditor->begin(); if (recordOverlay) recordOverlay->controls()->raise(); }
+      else recordEditor->finish();
+    });
+    connect(recordEditor.get(),&RecordingEditor::editingFinished,this,[this] {
+      if (recordOverlay) recordOverlay->setEditing(false);
+    });
     recordOverlay->setCountdown(seconds);
     connect(recordOverlay.get(),&RecordingOverlay::countdownCanceled,counter,&QWidget::close);
     if (!recordOverlay->show()) throw std::runtime_error("无法从录制画面排除控制条。请在 Windows 10 2004 或更新版本的本地桌面会话中录制。");
   } catch (const std::exception &e) {
-    recordOverlay.reset(); recordSetup=false; counter->close();
+    recordEditor.reset(); recordOverlay.reset(); recordSetup=false; counter->close();
     restoreRecordSource();
     QMessageBox::warning(source?static_cast<QWidget *>(source):home.data(),"无法录屏",QString::fromUtf8(e.what())); return;
   }
@@ -801,7 +822,7 @@ void ApplicationController::prepareRecord(QRect region, bool showSettings,
     recordSetup=false; counter->close();
     try { recordOverlay->setCountdown(-1); recorder->start(options); }
     catch (const std::exception &e) {
-      recordOverlay.reset(); restoreRecordSource();
+      recordEditor.reset(); recordOverlay.reset(); restoreRecordSource();
       QMessageBox::warning(overlay?static_cast<QWidget *>(overlay.data()):home.data(),"无法录屏",QString::fromUtf8(e.what()));
     }
   };

@@ -1,5 +1,6 @@
 #include "native_windows.h"
 #include "recording_overlay.h"
+#include "recording_capture.h"
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QJsonDocument>
@@ -264,7 +265,125 @@ class RecordingOverlayTests : public QObject {
                 QPoint(90, 100),
             QSize(640, 400)};
   }
+  QList<QImage> decodeFrames(const QString &path,int width,int height) {
+    QProcess decode;
+    decode.start(Recorder::ffmpegPath(),{"-v","error","-i",path,"-f","rawvideo","-pix_fmt","rgb24","pipe:1"});
+    if (!decode.waitForFinished(15000) || decode.exitCode()!=0) return {};
+    const auto bytes=decode.readAllStandardOutput();
+    const qint64 frameBytes=qint64(width)*height*3;
+    QList<QImage> result;
+    for (qint64 offset=0;offset+frameBytes<=bytes.size();offset+=frameBytes)
+      result.append(QImage(reinterpret_cast<const uchar *>(bytes.constData()+offset),width,height,width*3,QImage::Format_RGB888).copy());
+    return result;
+  }
 private slots:
+  void closingTargetWindowSavesCompletedVideo() {
+    QTemporaryDir dir;
+    auto target=std::make_unique<QWidget>(nullptr,Qt::Tool|Qt::FramelessWindowHint);
+    target->setGeometry(QRect(QGuiApplication::primaryScreen()->availableGeometry().topLeft()+QPoint(100,100),QSize(320,240)));
+    target->setAutoFillBackground(true); target->show(); QVERIFY(QTest::qWaitForWindowExposed(target.get()));
+    RecordOptions options; options.window=quintptr(target->winId()); options.region=recordingWindowInfo(options.window).physical;
+    options.output=dir.path()+"/closed.mp4"; options.fps=12;
+    Recorder recorder(dir.path()); QSignalSpy started(&recorder,&Recorder::started),finished(&recorder,&Recorder::finished),failed(&recorder,&Recorder::failed);
+    recorder.start(options); QVERIFY(started.wait(7000)); QTest::qWait(250); target.reset();
+    QVERIFY2(finished.wait(15000),failed.isEmpty()?"Closing a target did not save the recording":qPrintable(failed.first().first().toString()));
+    QVERIFY(failed.isEmpty()); QVERIFY(QFile::exists(options.output));
+  }
+  void movingRegionAndLiveMarksAreEncodedImmediately() {
+    QTemporaryDir dir;
+    const auto available=QGuiApplication::primaryScreen()->availableGeometry();
+    const QRect region(available.topLeft()+QPoint(80,100),QSize(320,240));
+    QWidget canvas(nullptr,Qt::Tool|Qt::FramelessWindowHint|Qt::WindowStaysOnTopHint);
+    canvas.setGeometry(region.adjusted(0,0,400,100));
+    canvas.setAutoFillBackground(true);
+    auto palette=canvas.palette(); palette.setColor(QPalette::Window,QColor(220,40,40)); canvas.setPalette(palette);
+    canvas.show(); QVERIFY(QTest::qWaitForWindowExposed(&canvas)); QTest::qWait(150);
+    Recorder recorder(dir.path());
+    RecordOptions options; options.region=physicalRect(region); options.output=dir.path()+"/live.mp4"; options.fps=12; options.cursor=false;
+    options.live=std::make_shared<RecordingLiveState>(options.region);
+    RecordingOverlay overlay(&recorder,region,false,false); overlay.configureLive(options.live); QVERIFY(overlay.show());
+    QSignalSpy started(&recorder,&Recorder::started),finished(&recorder,&Recorder::finished),failed(&recorder,&Recorder::failed);
+    recorder.start(options); QVERIFY(started.wait(7000)); QTest::qWait(350);
+    // A draft's partial line, then a longer line, then deletion, all reach encoded frames.
+    const auto canvasSize=options.region.size();
+    auto line=[canvasSize](int length) {return [canvasSize,length](QImage &frame) {
+      QPainter painter(&frame); painter.fillRect(canvasSize.width()/8,canvasSize.height()*3/4,length,8,QColor(20,30,240));
+    };};
+    options.live->setPainter(line(canvasSize.width()/4)); QTest::qWait(350);
+    options.live->setPainter(line(canvasSize.width()/2)); QTest::qWait(350);
+    options.live->setPainter({}); QTest::qWait(350);
+    palette.setColor(QPalette::Window,QColor(30,190,60)); canvas.setPalette(palette); canvas.update();
+    auto handle=overlay.controls()->findChild<QToolButton *>("moveRecordingRegion"); QVERIFY(handle); QVERIFY(handle->isVisible());
+    const auto origin=handle->mapToGlobal(handle->rect().center());
+    QTest::mousePress(handle,Qt::LeftButton,Qt::NoModifier,handle->rect().center());
+    QMouseEvent move(QEvent::MouseMove,handle->rect().center(),origin+QPoint(200,30),Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
+    QApplication::sendEvent(handle,&move); QTest::mouseRelease(handle,Qt::LeftButton);
+    QCOMPARE(overlay.region().topLeft(),region.topLeft()+QPoint(200,30));
+    QCOMPARE(options.live->snapshot().region.topLeft(),physicalRect(overlay.region()).topLeft());
+    QTest::qWait(450); recorder.stop(); QVERIFY(finished.wait(15000)); QVERIFY(failed.isEmpty());
+    const auto result=finished.first().first().toJsonObject();
+    const auto frames=decodeFrames(options.output,result["width"].toInt(),result["height"].toInt());
+    QVERIFY(frames.size()>12);
+    bool partial=false,full=false,deleted=false,green=false;
+    for (const auto &frame:frames) {
+      const auto a=frame.pixelColor(frame.width()/4,frame.height()*3/4+3);
+      const auto b=frame.pixelColor(frame.width()/2,frame.height()*3/4+3);
+      if (a.blue()>180 && b.red()>150) partial=true;
+      if (a.blue()>180 && b.blue()>180) full=true;
+      if (full && a.red()>150 && a.blue()<100) deleted=true;
+      if (a.green()>130 && a.red()<100) green=true;
+    }
+    QVERIFY(partial); QVERIFY(full); QVERIFY(deleted); QVERIFY(green);
+    if (!artifacts.isEmpty()) QFile::copy(options.output,artifacts+"/live-marks-and-moved-region.mp4");
+  }
+  void windowCaptureFollowsResizeWithoutBordersOrOccluders() {
+    QTemporaryDir dir;
+    const auto position=QGuiApplication::primaryScreen()->availableGeometry().topLeft()+QPoint(90,100);
+    QWidget target(nullptr,Qt::Tool|Qt::FramelessWindowHint);
+    target.setGeometry(QRect(position,QSize(400,240))); target.setAutoFillBackground(true);
+    auto palette=target.palette(); palette.setColor(QPalette::Window,QColor(220,40,40)); target.setPalette(palette);
+    target.show(); QVERIFY(QTest::qWaitForWindowExposed(&target)); QTest::qWait(150);
+    const auto id=quintptr(target.winId()); const auto info=recordingWindowInfo(id); QVERIFY(info.valid);
+    Recorder recorder(dir.path()); RecordOptions options;
+    options.region=info.physical; options.window=id; options.output=dir.path()+"/window.mp4"; options.fps=12; options.cursor=false;
+    options.live=std::make_shared<RecordingLiveState>(options.region);
+    RecordingOverlay overlay(&recorder,info.logical,false,false); overlay.configureLive(options.live,id); QVERIFY(overlay.show());
+    QSignalSpy started(&recorder,&Recorder::started),finished(&recorder,&Recorder::finished),failed(&recorder,&Recorder::failed);
+    recorder.start(options); QVERIFY2(started.wait(7000),failed.isEmpty()?"Window capture did not start":qPrintable(failed.first().first().toString()));
+    QTest::qWait(400);
+    target.move(position+QPoint(120,100)); target.resize(230,360);
+    palette.setColor(QPalette::Window,QColor(30,190,60)); target.setPalette(palette); target.update();
+    QTRY_COMPARE(overlay.region(),recordingWindowInfo(id).logical);
+    QWidget cover(nullptr,Qt::Tool|Qt::FramelessWindowHint|Qt::WindowStaysOnTopHint);
+    cover.setGeometry(target.geometry()); cover.setAutoFillBackground(true);
+    auto coverPalette=cover.palette(); coverPalette.setColor(QPalette::Window,Qt::yellow); cover.setPalette(coverPalette); cover.show(); cover.raise();
+    QTest::qWait(600);
+    target.showMinimized(); QTRY_VERIFY(recorder.paused());
+    const double elapsed=recorder.elapsed(); QTest::qWait(250); QVERIFY(qAbs(recorder.elapsed()-elapsed)<0.1);
+    target.showNormal(); QTRY_VERIFY(!recorder.paused()); QTest::qWait(350);
+    // A manual pause must survive minimizing and restoring the target window.
+    recorder.pause(); QVERIFY(recorder.paused()); target.showMinimized(); QTest::qWait(80);
+    target.showNormal(); QTest::qWait(80); QVERIFY(recorder.paused()); recorder.pause(); QVERIFY(!recorder.paused());
+    recorder.stop(); QVERIFY2(finished.wait(15000),failed.isEmpty()?"Window recording did not finish":qPrintable(failed.first().first().toString()));
+    QVERIFY(failed.isEmpty()); const auto result=finished.first().first().toJsonObject();
+    QCOMPARE(result["width"].toInt(),options.region.width()/2*2); QCOMPARE(result["height"].toInt(),options.region.height()/2*2);
+    const auto frames=decodeFrames(options.output,result["width"].toInt(),result["height"].toInt());
+    bool red=false,green=false;
+    for (const auto &frame:frames) {
+      const auto center=frame.pixelColor(frame.width()/2,frame.height()/2);
+      red=red || (center.red()>180 && center.green()<100);
+      if (center.green()>130 && center.red()<100) {
+        green=true;
+        // Changed aspect ratio is stretched to every edge of the fixed canvas.
+        for (auto point:{QPoint(4,4),QPoint(frame.width()-5,4),QPoint(4,frame.height()-5),QPoint(frame.width()-5,frame.height()-5)}) {
+          const auto corner=frame.pixelColor(point); QVERIFY(corner.green()>130 && corner.red()<100);
+        }
+      }
+      QVERIFY(!(center.red()>180 && center.green()>180));
+    }
+    QVERIFY(red); QVERIFY(green);
+    if (!artifacts.isEmpty()) QFile::copy(options.output,artifacts+"/window-move-resize-occlusion.mp4");
+  }
   void initTestCase() {
     QVERIFY2(QGuiApplication::platformName() == "windows",
              "Use the real Windows Qt platform for recording UI tests.");

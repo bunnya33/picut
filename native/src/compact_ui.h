@@ -24,6 +24,20 @@ inline QIcon recordingIcon(const QString &name, QColor color = QColor("#333333")
     p.drawLine(4,6,20,6); p.drawLine(4,12,20,12); p.drawLine(4,18,20,18);
     p.setBrush(QColor("#f2f2f2"));
     p.drawEllipse(QPointF(9,6),2,2); p.drawEllipse(QPointF(16,12),2,2); p.drawEllipse(QPointF(7,18),2,2);
+  } else if (name=="move") {
+    p.drawLine(12,3,12,21); p.drawLine(3,12,21,12);
+    p.drawPolyline(QPolygonF{{8,7},{12,3},{16,7}}); p.drawPolyline(QPolygonF{{8,17},{12,21},{16,17}});
+    p.drawPolyline(QPolygonF{{7,8},{3,12},{7,16}}); p.drawPolyline(QPolygonF{{17,8},{21,12},{17,16}});
+  } else if (name=="pen") {
+    p.drawPolygon(QPolygonF{{4,16},{15,5},{19,9},{8,20},{3,21}}); p.drawLine(13,7,17,11);
+  } else if (name=="trash") {
+    p.drawLine(4,6,20,6); p.drawPolyline(QPolygonF{{8,6},{8,3},{16,3},{16,6}});
+    p.drawPolyline(QPolygonF{{6,6},{7,21},{17,21},{18,6}}); p.drawLine(10,10,10,17); p.drawLine(14,10,14,17);
+  } else if (name=="clear") {
+    p.drawLine(13,3,8,13); p.drawPolygon(QPolygonF{{5,12},{12,15},{10,21},{2,18}});
+    p.drawLine(14,17,21,17); p.drawLine(16,21,21,21);
+  } else if (name=="window") {
+    p.drawRoundedRect(QRectF(3,4,18,16),1,1); p.drawLine(3,8,21,8); p.drawPoint(6,6);
   } else if (name=="video") {
     p.drawRoundedRect(QRectF(3,6,12,12),1,1);
     p.drawPolygon(QPolygonF{{15,10},{21,6},{21,18},{15,14}});

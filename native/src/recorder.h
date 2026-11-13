@@ -7,6 +7,7 @@
 #include <chrono>
 #include <functional>
 #include <mutex>
+#include <memory>
 #include <thread>
 
 struct AudioDevice {
@@ -14,12 +15,25 @@ struct AudioDevice {
 };
 QList<AudioDevice> audioDevices(bool capture);
 using RecordingPainter = std::function<void(QImage &)>;
+class RecordingLiveState {
+public:
+  struct Snapshot { QRect region; RecordingPainter painter; };
+  explicit RecordingLiveState(QRect region, RecordingPainter painter = {}):value{region,std::move(painter)} {}
+  Snapshot snapshot() const { std::lock_guard lock(mutex); return value; }
+  void setRegion(QRect region) { std::lock_guard lock(mutex); value.region=region; }
+  void setPainter(RecordingPainter painter) { std::lock_guard lock(mutex); value.painter=std::move(painter); }
+private:
+  mutable std::mutex mutex;
+  Snapshot value;
+};
 struct RecordOptions {
   QRect region;
   QString output, speakerId, micId;
   int fps = 30, quality = 22;
   bool cursor = true, systemAudio = false, microphone = false;
   RecordingPainter painter;
+  std::shared_ptr<RecordingLiveState> live;
+  quintptr window = 0;
 };
 class ActiveClock {
 public:
@@ -46,6 +60,7 @@ public:
   double elapsed() const { return clock.elapsed(); }
   void start(RecordOptions options, std::function<QImage()> source = {});
   void pause();
+  void setTargetUnavailable(bool unavailable);
   void stop();
   void setMuted(bool system, bool value);
   static QString ffmpegPath();
@@ -62,5 +77,7 @@ private:
   ActiveClock clock;
   std::atomic_bool running = false, stopFlag = false, pauseFlag = false,
                    muteSystem = false, muteMic = false, begunFlag = false;
+  bool userPaused = false, targetUnavailable = false;
+  void syncPause();
   void run(const RecordOptions &options, const std::function<QImage()> &source);
 };

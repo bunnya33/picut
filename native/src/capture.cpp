@@ -1,4 +1,5 @@
 #include "capture.h"
+#include "recording_capture.h"
 #include "element_detector.h"
 #include "native_windows.h"
 #include "compact_ui.h"
@@ -265,15 +266,23 @@ CaptureOverlay::CaptureOverlay(Store *s, bool record,
     bar->setStyleSheet(compactToolbarStyle());
     auto row = new QHBoxLayout(bar);
     row->setContentsMargins(6,6,6,6); row->setSpacing(3);
-    for (auto name:{QString("back"),QString("settings"),QString("record")}) {
+    for (auto name:{QString("back"),QString("area"),QString("window"),QString("settings"),QString("record")}) {
       auto button=new QToolButton; button->setObjectName("record_"+name);
       button->setFixedSize(32,32); button->setIconSize({16,16}); button->setFocusPolicy(Qt::NoFocus);
       button->setCursor(Qt::PointingHandCursor);
-      button->setIcon(recordingIcon(name));
-      button->setToolTip(name=="settings"?"录屏设置":name=="record"?"开始录制 · Enter":"返回截图 · Esc");
+      button->setIcon(name=="area"?toolIcon("rect"):recordingIcon(name));
+      button->setToolTip(name=="settings"?"录屏设置":name=="record"?"开始录制 · Enter":
+          name=="area"?"区域录屏":name=="window"?"窗口录屏：点击要录制的窗口":"返回截图 · Esc");
+      if (name=="area" || name=="window") { button->setCheckable(true); button->setChecked(name=="area"); }
       row->addWidget(button);
       connect(button,&QToolButton::clicked,this,[this,name] {
-        if (name=="settings") {
+        if (name=="area" || name=="window") {
+          targetRecordingWindow=0; pickingRecordingWindow=name=="window";
+          findChild<QToolButton *>("record_area")->setChecked(!pickingRecordingWindow);
+          findChild<QToolButton *>("record_window")->setChecked(pickingRecordingWindow);
+          findChild<QToolButton *>("record_record")->setEnabled(!pickingRecordingWindow);
+          updateRecordingSummary(); setCursor(Qt::CrossCursor); setFocus(); update();
+        } else if (name=="settings") {
           RecordingSettingsDialog dialog(store,globalSelection(),false,this);
           dialog.exec(); updateSelectionToolbar(); activateWindow(); setFocus(); update();
         } else complete(name=="record"?"record":"back");
@@ -299,6 +308,12 @@ void CaptureOverlay::setRecordingMode(bool enabled) {
   }
   dragOriginal.reset(); dragHandle.clear(); suppressDraw=false;
   recording=enabled;
+  if (!enabled) {
+    targetRecordingWindow=0; pickingRecordingWindow=false;
+    findChild<QToolButton *>("record_area")->setChecked(true);
+    findChild<QToolButton *>("record_window")->setChecked(false);
+    findChild<QToolButton *>("record_record")->setEnabled(true);
+  }
   editing=!recording && annotation && annotation->tool!="select";
   if (toolbar) toolbar->hide();
   if (auto bar=findChild<QFrame *>("recordToolbar")) bar->hide();
@@ -308,6 +323,16 @@ void CaptureOverlay::setRecordingMode(bool enabled) {
   updateSelectionToolbar(!selection.isEmpty());
   setCursor(recording?Qt::CrossCursor:Qt::ArrowCursor);
   activateWindow(); setFocus(); update();
+}
+bool CaptureOverlay::bindRecordingWindow(quintptr window) {
+  const auto info=recordingWindowInfo(window);
+  if (!info.valid || info.minimized || info.logical.isEmpty()) return false;
+  targetRecordingWindow=window; pickingRecordingWindow=false;
+  selectRegion(info.logical.translated(-pos()));
+  findChild<QToolButton *>("record_area")->setChecked(false);
+  findChild<QToolButton *>("record_window")->setChecked(true);
+  findChild<QToolButton *>("record_record")->setEnabled(true);
+  updateRecordingSummary(); return true;
 }
 void CaptureOverlay::selectRegion(QRect region) {
   selection = region.intersected(rect());
@@ -338,7 +363,8 @@ void CaptureOverlay::updateRecordingSummary() {
   auto screen=QGuiApplication::screenAt(globalSelection().center());
   if (!screen) screen=QGuiApplication::primaryScreen();
   auto available=QRect(mapFromGlobal(screen->availableGeometry().topLeft()),screen->availableGeometry().size()).intersected(rect()).adjusted(4,4,-4,-4);
-  summary->setText(recordingSummary(store->config));
+  summary->setText((pickingRecordingWindow?QString("点击要录制的窗口 · Esc 取消选择　"):
+      targetRecordingWindow?QString("窗口：%1　").arg(recordingWindowInfo(targetRecordingWindow).title):QString())+recordingSummary(store->config));
   summary->setFixedWidth(qMin(available.width(),summary->fontMetrics().horizontalAdvance(summary->text())+20));
   summary->adjustSize();
   int x=qBound(available.left(),selection.left(),qMax(available.left(),available.right()-summary->width()+1));
@@ -406,7 +432,7 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
   if (includeCursor)
     p.drawImage(desktop.cursorRect.translated(-pos()), desktop.cursorImage);
   p.fillRect(rect(), QColor(0, 0, 0, 110));
-  auto r = selection.isEmpty() ? hover : selection;
+  auto r = selection.isEmpty() || pickingRecordingWindow ? hover : selection;
   QImage preview;
   if (!r.isEmpty()) {
     p.save();
@@ -416,14 +442,14 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
     if (includeCursor)
       p.drawImage(desktop.cursorRect.translated(-pos()), desktop.cursorImage);
     p.restore();
-    if (annotation) {
+    if (annotation && !pickingRecordingWindow) {
       preview = annotation->draft ? annotation->render() : annotation->cached;
       p.drawImage(selection, preview);
     }
     p.setPen(QPen(QColor("#1688ef"), 1));
     p.setBrush(Qt::NoBrush);
     p.drawRect(r.adjusted(0, 0, -1, -1));
-    if (!selection.isEmpty()) {
+    if (!selection.isEmpty() && !pickingRecordingWindow && !targetRecordingWindow) {
       p.setBrush(Qt::white);
       for (auto point : QList<QPoint>{r.topLeft(),
                                       r.topRight(),
@@ -545,6 +571,10 @@ void CaptureOverlay::paintMagnifier(QPainter &p, const QImage &preview) {
 }
 void CaptureOverlay::mousePressEvent(QMouseEvent *e) {
   pointer = e->position().toPoint();
+  if (recording && pickingRecordingWindow && e->button()==Qt::LeftButton) {
+    bindRecordingWindow(recordingWindowAt(pointer+pos())); return;
+  }
+  if (recording && targetRecordingWindow && e->button()==Qt::LeftButton) return;
   if (e->button() == Qt::MiddleButton) {
     complete(recording ? "record" : "pin");
     return;
@@ -597,6 +627,10 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *e) {
 }
 void CaptureOverlay::mouseMoveEvent(QMouseEvent *e) {
   pointer = e->position().toPoint();
+  if (recording && pickingRecordingWindow) {
+    const auto info=recordingWindowInfo(recordingWindowAt(pointer+pos()));
+    hover=info.logical.translated(-pos()); setCursor(Qt::CrossCursor); update(); return;
+  }
   if (dragging) {
     auto delta = pointer - origin;
     if (space)
@@ -678,6 +712,13 @@ void CaptureOverlay::wheelEvent(QWheelEvent *e) {
     annotationWheel(e);
 }
 void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
+  if (recording && pickingRecordingWindow && e->key()==Qt::Key_Escape) {
+    pickingRecordingWindow=false;
+    findChild<QToolButton *>("record_area")->setChecked(true);
+    findChild<QToolButton *>("record_window")->setChecked(false);
+    findChild<QToolButton *>("record_record")->setEnabled(true);
+    updateRecordingSummary(); update(); return;
+  }
   if (e->key() == Qt::Key_QuoteLeft || e->key() == Qt::Key_Exclam) {
     includeCursor = !includeCursor;
     rebuildAnnotation();
@@ -858,6 +899,7 @@ bool CaptureOverlay::complete(const QString &action) {
     return false;
   auto region = globalSelection();
   if (recording) {
+    if (pickingRecordingWindow) return false;
     rebuildAnnotation();
     if (annotation) { annotation->confirm(); annotation->savePreferences(store); }
     hide();

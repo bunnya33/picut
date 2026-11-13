@@ -10,6 +10,7 @@
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QSystemTrayIcon>
+class RecordingEditor;
 
 class ApplicationController : public QObject,
                               public QAbstractNativeEventFilter {
@@ -22,6 +23,7 @@ public:
   QPointer<CaptureOverlay> overlay;
   QPointer<QMainWindow> home;
   std::unique_ptr<RecordingOverlay> recordOverlay;
+  std::unique_ptr<RecordingEditor> recordEditor;
   std::unique_ptr<Recorder> recorder;
   void showHome();
   void beginCapture(bool recording = false);

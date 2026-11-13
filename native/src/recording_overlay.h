@@ -27,8 +27,16 @@ public:
   QRect region() const { return logicalRegion; }
   bool captureExcluded() const { return excluded; }
   bool compatibilityMode() const { return compatibility; }
+  void configureLive(std::shared_ptr<RecordingLiveState> live, quintptr window = 0);
+  void setRegion(QRect region);
+  void setEditing(bool editing);
 signals:
   void countdownCanceled();
+  void editingRequested(bool enabled);
+  void regionChanged(QRect region);
+
+protected:
+  bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
   QPointer<Recorder> recorder;
@@ -42,4 +50,9 @@ private:
   bool artworkExcluded = false;
   std::function<bool(QWidget *)> exclusion;
   int countdown = -1;
+  std::shared_ptr<RecordingLiveState> live;
+  quintptr targetWindow = 0;
+  bool editing = false, movingRegion = false;
+  QPoint moveOrigin;
+  QRect originalRegion;
 };

@@ -1,7 +1,9 @@
 #include "recorder.h"
 #include "native_windows.h"
+#include "recording_capture.h"
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDataStream>
+#include <QtCore/QElapsedTimer>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -158,6 +160,7 @@ public:
                   region.width() * 4, QImage::Format_RGB32)
         .copy();
   }
+  void moveTo(QPoint point) { region.moveTopLeft(point); }
 };
 struct AudioTrack {
   QString path, id;
@@ -317,13 +320,24 @@ void Recorder::start(RecordOptions options, std::function<QImage()> source) {
   if (worker.joinable())
     worker.join();
   stopFlag = pauseFlag = muteSystem = muteMic = begunFlag = false;
+  userPaused = targetUnavailable = false;
   running = true;
   worker = std::thread([this, options, source] { run(options, source); });
 }
 void Recorder::pause() {
   if (!active() || stopFlag || !begunFlag)
     return;
-  if (pauseFlag) {
+  userPaused=!userPaused;
+  syncPause();
+}
+void Recorder::setTargetUnavailable(bool unavailable) {
+  targetUnavailable=unavailable;
+  if (active() && begunFlag && !stopFlag) syncPause();
+}
+void Recorder::syncPause() {
+  const bool next=userPaused || targetUnavailable;
+  if (next==pauseFlag.load()) return;
+  if (!next) {
     clock.resume();
     pauseFlag = false;
   } else {
@@ -373,15 +387,28 @@ void Recorder::run(const RecordOptions &options,
     if (stopFlag)
       throw std::runtime_error("录制已取消。");
     std::unique_ptr<ScreenGrabber> grabber;
-    if (!source)
+    std::unique_ptr<RecordingWindowCapture> windowGrabber;
+    if (!source && options.window)
+      windowGrabber=std::make_unique<RecordingWindowCapture>(options.window,options.cursor);
+    else if (!source)
       grabber = std::make_unique<ScreenGrabber>(options.region);
     QStorageInfo disk(QFileInfo(options.output).absolutePath());
     auto frame = [&] {
-      auto image=(source ? source() : grabber->grab(options.cursor)).convertToFormat(QImage::Format_RGB32);
-      if (options.painter) options.painter(image);
+      const auto state=options.live?options.live->snapshot():RecordingLiveState::Snapshot{options.region,options.painter};
+      if (grabber) grabber->moveTo(state.region.topLeft());
+      auto image=(source ? source() : windowGrabber?windowGrabber->grab():grabber->grab(options.cursor)).convertToFormat(QImage::Format_RGB32);
+      if (options.window && !image.isNull() && image.size()!=options.region.size())
+        image=image.scaled(options.region.size(),Qt::IgnoreAspectRatio,Qt::SmoothTransformation);
+      if (!image.isNull() && state.painter) state.painter(image);
       return image;
     };
     auto first = frame();
+    if (windowGrabber) {
+      QElapsedTimer deadline; deadline.start();
+      while (first.isNull() && deadline.elapsed()<5000 && !stopFlag) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10)); first=frame();
+      }
+    }
     int w = first.width(), h = first.height();
     if (w < 2 || h < 2)
       throw std::runtime_error("录制区域无效。");
@@ -440,6 +467,7 @@ void Recorder::run(const RecordOptions &options,
     first = {};
     double diskCheck = 0;
     while (!stopFlag) {
+      if (options.window && !IsWindow(reinterpret_cast<HWND>(options.window))) { stop(); break; }
       if (pauseFlag) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
         continue;
@@ -448,6 +476,7 @@ void Recorder::run(const RecordOptions &options,
       auto target = qint64(elapsed * options.fps) + 1;
       if (target > frames) {
         auto image = frame();
+        if (windowGrabber && image.isNull()) image=last;
         if (image.size() != last.size())
           throw std::runtime_error("显示器尺寸改变，录制已停止。");
         if (target - frames > 120)

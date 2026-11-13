@@ -37,6 +37,8 @@ public:
   bool complete(const QString &action) override;
   void selectRegion(QRect region);
   void setRecordingMode(bool enabled);
+  quintptr recordingWindow() const { return targetRecordingWindow; }
+  bool bindRecordingWindow(quintptr window);
 signals:
   void finished();
   void recordRegion(QRect region);
@@ -61,6 +63,8 @@ private:
   bool dragging = false, rgb = true, alt = false, space = false;
   bool includeCursor = false;
   quintptr sourceWindow = 0;
+  quintptr targetRecordingWindow = 0;
+  bool pickingRecordingWindow = false;
   int screenSelectCount = 0;
   void rebuildAnnotation();
   void updateSelectionToolbar(bool show = false);

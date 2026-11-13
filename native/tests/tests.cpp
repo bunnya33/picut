@@ -10,6 +10,8 @@
 #include "recorder.h"
 #include "recording_settings.h"
 #include "recording_markup.h"
+#include "recording_editor.h"
+#include "recording_capture.h"
 #include "scroll_capture.h"
 #include "scroll_grabber.h"
 #include "native_windows.h"
@@ -246,6 +248,88 @@ class NativeTests : public QObject {
         line("10.49",220,70,{14,18,8,18,18})}}};
   }
 private slots:
+  void liveRecordingMarksPublishBeforeReleaseAndRemainEditable() {
+    QTemporaryDir dir; Store store(dir.path());
+    const QRect region(QGuiApplication::primaryScreen()->geometry().topLeft()+QPoint(80,80),QSize(400,260));
+    auto live=std::make_shared<RecordingLiveState>(physicalRect(region));
+    RecordingEditor editor(&store,region,region.size(),nullptr,live);
+    auto image=[&] {
+      QImage frame(region.size(),QImage::Format_RGB32); frame.fill(Qt::white);
+      const auto snapshot=live->snapshot(); if (snapshot.painter) snapshot.painter(frame); return frame;
+    };
+    auto local=[&](QPoint point) { return editor.contentRect().topLeft()+point; };
+    editor.chooseTool("arrow"); editor.setPreference("width",8);
+    const auto begin=local({60,150}),end=local({240,150});
+    QTest::mousePress(&editor,Qt::LeftButton,Qt::NoModifier,begin);
+    QMouseEvent move(QEvent::MouseMove,end,editor.mapToGlobal(end),Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
+    QApplication::sendEvent(&editor,&move);
+    QVERIFY(editor.annotation->draft); QVERIFY(editor.annotation->marks.isEmpty());
+    QVERIFY(image().pixelColor(140,150).red()>220); QVERIFY(image().pixelColor(140,150).green()<40);
+    QTest::mouseRelease(&editor,Qt::LeftButton,Qt::NoModifier,end);
+    QCOMPARE(editor.annotation->marks.size(),1);
+    editor.chooseTool("rect");
+    QTest::mousePress(&editor,Qt::LeftButton,Qt::NoModifier,local({280,140}));
+    QTest::mouseRelease(&editor,Qt::LeftButton,Qt::NoModifier,local({350,220}));
+    QCOMPARE(editor.annotation->marks.size(),2);
+    // Re-select an older confirmed arrow and record every intermediate drag position.
+    QTest::mousePress(&editor,Qt::LeftButton,Qt::NoModifier,local({140,150}));
+    QCOMPARE(editor.annotation->selected,0);
+    const auto moved=local({140,190});
+    QMouseEvent drag(QEvent::MouseMove,moved,editor.mapToGlobal(moved),Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
+    QApplication::sendEvent(&editor,&drag);
+    QCOMPARE(image().pixelColor(140,150),QColor(Qt::white));
+    QVERIFY(image().pixelColor(140,190).green()<40);
+    QTest::mouseRelease(&editor,Qt::LeftButton,Qt::NoModifier,moved);
+    QTest::keyClick(&editor,Qt::Key_Delete);
+    QCOMPARE(editor.annotation->marks.size(),1);
+    QCOMPARE(image().pixelColor(140,190),QColor(Qt::white));
+    QTest::keyClick(&editor,Qt::Key_Z,Qt::ControlModifier);
+    QCOMPARE(editor.annotation->marks.size(),2); QVERIFY(image().pixelColor(140,190).green()<40);
+    QVERIFY(editor.complete("clear")); QCOMPARE(editor.annotation->marks.size(),0);
+    QCOMPARE(image().pixelColor(140,190),QColor(Qt::white));
+  }
+  void liveRecordingEditorClosesWithoutRemovingMarks() {
+    QTemporaryDir dir; Store store(dir.path());
+    QRect region(QGuiApplication::primaryScreen()->geometry().topLeft()+QPoint(80,80),QSize(400,260));
+    auto live=std::make_shared<RecordingLiveState>(physicalRect(region));
+    RecordingEditor editor(&store,region,region.size(),nullptr,live);
+    editor.chooseTool("rect");
+    Mark mark; mark.kind="rect"; mark.points={{40,140},{200,220}}; editor.annotation->add(mark); editor.publish();
+    QSignalSpy closed(&editor,&RecordingEditor::editingFinished);
+    editor.begin(); QVERIFY(editor.isVisible()); QVERIFY(editor.toolbar->isVisible());
+    const auto previewDirectory=qEnvironmentVariable("FLOATSHOT_ANNOTATION_TEST_DIR");
+    if (!previewDirectory.isEmpty()) {
+      QDir().mkpath(previewDirectory);
+      const auto area=editor.contentRect().united(editor.toolbar->geometry()).adjusted(-8,-8,8,8).intersected(editor.rect());
+      QImage preview(area.size(),QImage::Format_RGB32); preview.fill(QColor("#f2f5f9"));
+      QPainter painter(&preview); painter.drawPixmap(0,0,editor.grab(area)); painter.end();
+      QVERIFY(preview.save(previewDirectory+"/live-recording-editor.png"));
+    }
+    QTest::mouseClick(editor.toolbar->findChild<QToolButton *>("action_cancel"),Qt::LeftButton);
+    QVERIFY(!editor.isVisible()); QCOMPARE(closed.size(),1); QCOMPARE(editor.annotation->marks.size(),1);
+    QImage frame(region.size(),QImage::Format_RGB32); frame.fill(Qt::white); live->snapshot().painter(frame);
+    QVERIFY(frame.pixelColor(40,180).green()<40);
+    const auto original=editor.annotation->marks.first().json();
+    region.setSize({600,180}); region.translate(25,30); editor.setRegion(region);
+    QCOMPARE(editor.contentRect().size(),QSize(600,180)); QCOMPARE(editor.annotation->marks.first().json(),original);
+  }
+  void recordingWindowModeCanReturnToRegionAndScreenshot() {
+    QTemporaryDir dir; Store store(dir.path());
+    DesktopSnapshot desktop; desktop.bounds=QGuiApplication::primaryScreen()->availableGeometry();
+    QImage image(desktop.bounds.size(),QImage::Format_RGB32); image.fill(Qt::white); desktop.frames={{desktop.bounds,image}};
+    CaptureOverlay overlay(&store,true,desktop); overlay.setAttribute(Qt::WA_DeleteOnClose,false);
+    overlay.show(); overlay.selectRegion({30,40,420,240});
+    auto window=overlay.findChild<QToolButton *>("record_window"); auto area=overlay.findChild<QToolButton *>("record_area");
+    auto start=overlay.findChild<QToolButton *>("record_record");
+    QTest::mouseClick(window,Qt::LeftButton); QVERIFY(window->isChecked()); QVERIFY(!start->isEnabled());
+    QTest::keyClick(&overlay,Qt::Key_Escape); QVERIFY(area->isChecked()); QVERIFY(start->isEnabled()); QVERIFY(overlay.recording);
+    QWidget target(nullptr,Qt::Tool|Qt::FramelessWindowHint); target.setGeometry(QRect(desktop.bounds.topLeft()+QPoint(60,70),QSize(380,260))); target.show();
+    QVERIFY(overlay.bindRecordingWindow(quintptr(target.winId()))); QCOMPARE(overlay.recordingWindow(),quintptr(target.winId()));
+    QCOMPARE(overlay.globalSelection(),recordingWindowInfo(quintptr(target.winId())).logical);
+    QTest::mouseClick(area,Qt::LeftButton); QCOMPARE(overlay.recordingWindow(),quintptr(0)); QVERIFY(area->isChecked());
+    QTest::mouseClick(overlay.findChild<QToolButton *>("record_back"),Qt::LeftButton); QVERIFY(!overlay.recording);
+    overlay.setRecordingMode(true); QVERIFY(area->isChecked()); QVERIFY(!window->isChecked()); QVERIFY(start->isEnabled());
+  }
   void scrollDesktopIndependentProducer_data() {
     QTest::addColumn<bool>("code");
     QTest::addColumn<bool>("blockGui");
