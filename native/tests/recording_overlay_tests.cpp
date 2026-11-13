@@ -519,6 +519,58 @@ private slots:
       if (!screen->geometry().intersects(overlay.region()) && screen->availableGeometry().width()>=overlay.controls()->width() && screen->availableGeometry().height()>=overlay.controls()->height()) outsideFits=true;
     if (!outsideFits) QVERIFY(overlay.region().contains(overlay.controls()->geometry()));
   }
+  void regionDragDefersPlacementUntilReleaseAndRestoresTop_data() {
+    QTest::addColumn<bool>("compatibility");
+    QTest::newRow("capture-excluded")<<false;
+    QTest::newRow("legacy-exterior")<<true;
+  }
+  void regionDragDefersPlacementUntilReleaseAndRestoresTop() {
+    QFETCH(bool,compatibility);
+    QTemporaryDir dir; Recorder recorder(dir.path());
+    const auto available=QGuiApplication::primaryScreen()->availableGeometry();
+    const QRect region(available.topLeft()+QPoint(120,180),QSize(640,400));
+    RecordingOverlay overlay(&recorder,region,false,false,nullptr,
+        compatibility?std::function<bool(QWidget *)>([](QWidget *){return false;}):std::function<bool(QWidget *)>());
+    auto live=std::make_shared<RecordingLiveState>(physicalRect(region));
+    overlay.configureLive(live); QVERIFY(overlay.show());
+    auto panel=overlay.controls();
+    auto handle=panel->findChild<QToolButton *>("moveRecordingRegion"); QVERIFY(handle);
+    const auto initial=panel->pos();
+    QVERIFY(panel->geometry().bottom()<region.top());
+    auto press=[&] {
+      const auto point=handle->mapToGlobal(handle->rect().center());
+      QTest::mousePress(handle,Qt::LeftButton,Qt::NoModifier,handle->rect().center());
+      return point;
+    };
+    auto drag=[&](QPoint origin,QPoint delta) {
+      QMouseEvent move(QEvent::MouseMove,handle->rect().center(),origin+delta,Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
+      QApplication::sendEvent(handle,&move); overlay.refresh();
+    };
+    const QPoint topDelta(0,available.top()-region.top());
+    auto origin=press();
+    drag(origin,topDelta);
+    QCOMPARE(overlay.region().top(),available.top());
+    QCOMPARE(panel->y(),compatibility?initial.y()+topDelta.y():available.top());
+    QCOMPARE(panel->geometry().intersects(overlay.region()),!compatibility);
+    for (int step=1;step<=3;++step) {
+      drag(origin,topDelta+QPoint(0,step*4));
+      QCOMPARE(panel->y(),compatibility?initial.y()+topDelta.y()+step*4:available.top());
+    }
+    drag(origin,{});
+    QCOMPARE(panel->pos(),initial); // clamping has not lost the original offset
+    QTest::mouseRelease(handle,Qt::LeftButton);
+    QCOMPARE(panel->pos(),initial);
+    origin=press(); drag(origin,topDelta);
+    QTest::mouseRelease(handle,Qt::LeftButton);
+    QVERIFY(!panel->geometry().intersects(overlay.region()));
+    QVERIFY(panel->y()>overlay.region().bottom()); // relocate only after release
+    QCOMPARE(live->snapshot().controls,physicalRect(panel->geometry()));
+    origin=press(); drag(origin,-topDelta);
+    QVERIFY(panel->y()>overlay.region().bottom()); // retains bottom side while held
+    QTest::mouseRelease(handle,Qt::LeftButton);
+    QCOMPARE(overlay.region(),region);
+    QCOMPARE(panel->pos(),initial); // enough room above again
+  }
   void clickAnimationMapsPixelsExpiresAndIgnoresExcludedInput() {
     RecordingClicks clicks;
     const auto now=RecordingClicks::Clock::now();

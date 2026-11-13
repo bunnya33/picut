@@ -155,11 +155,27 @@ public:
   }
   QLabel *state, *time;
   QToolButton *pause, *stop, *annotate, *moveRegion;
-  void followRegion(QRect value, QPoint delta) {
+  void beginRegionMove(QRect value,bool exterior) {
+    followingRegion=true;
+    followingExterior=exterior;
+    followingOffset=pos()-value.topLeft();
+  }
+  void endRegionMove(QRect value) {
+    followingRegion=false;
+    followRegion(value);
+  }
+  void followRegion(QRect value) {
     auto screen=QGuiApplication::screenAt(value.center());
     if (!screen) screen=QGuiApplication::primaryScreen();
-    dragBounds=value.width()>=width() && value.height()>=height()?value:screen->availableGeometry();
-    move(clamped(pos()+delta));
+    dragBounds=screen->availableGeometry();
+    if (followingRegion) {
+      // Keep the initial offset throughout the drag. Clamping must not change
+      // that offset, otherwise reversing direction leaves the panel displaced.
+      const auto point=value.topLeft()+followingOffset;
+      move(followingExterior?point:clamped(point));
+      return;
+    }
+    move(clamped({value.center().x()-width()/2,value.top()-height()-8}));
     placeOutside(value);
   }
   bool placeOutside(QRect capture) {
@@ -217,8 +233,8 @@ protected:
 
 private:
   QRect dragBounds;
-  QPoint dragOffset;
-  bool dragging = false;
+  QPoint dragOffset, followingOffset;
+  bool dragging = false, followingRegion = false, followingExterior = false;
   QPoint clamped(QPoint point) const {
     return {qBound(dragBounds.left(), point.x(),
                    qMax(dragBounds.left(), dragBounds.right() - width() + 1)),
@@ -323,7 +339,7 @@ void RecordingOverlay::showArtwork() {
 void RecordingOverlay::configureLive(std::shared_ptr<RecordingLiveState> state, quintptr window) {
   live=std::move(state); targetWindow=window;
   panel->annotate->show(); panel->moveRegion->setVisible(!window); panel->adjustSize();
-  panel->followRegion(logicalRegion,{});
+  panel->followRegion(logicalRegion);
   panel->moveRegion->installEventFilter(this);
   connect(panel->annotate,&QToolButton::toggled,this,[this](bool value) { setEditing(value); emit editingRequested(value); });
   timer.setInterval(16);
@@ -336,11 +352,13 @@ void RecordingOverlay::setEditing(bool value) {
 }
 void RecordingOverlay::setRegion(QRect value) {
   if (value.isEmpty() || logicalRegion==value) return;
-  const auto delta=value.topLeft()-logicalRegion.topLeft();
   logicalRegion=value; frame->setRegion(value);
   if (markLayer) markLayer->setGeometry(value);
-  panel->followRegion(value,delta);
-  if (compatibility) outsideControls=panel->placeOutside(value);
+  panel->followRegion(value);
+  if (compatibility) {
+    outsideControls=!value.intersects(panel->geometry());
+    if (!movingRegion) outsideControls=panel->placeOutside(value);
+  }
   if (live) live->setRegion(physicalRect(value));
   emit regionChanged(value);
 }
@@ -349,7 +367,8 @@ bool RecordingOverlay::eventFilter(QObject *watched,QEvent *event) {
   if (event->type()!=QEvent::MouseButtonPress && event->type()!=QEvent::MouseMove && event->type()!=QEvent::MouseButtonRelease) return false;
   auto mouse=static_cast<QMouseEvent *>(event);
   if (event->type()==QEvent::MouseButtonPress && mouse->button()==Qt::LeftButton) {
-    movingRegion=true; moveOrigin=mouse->globalPosition().toPoint(); originalRegion=logicalRegion; return true;
+    movingRegion=true; moveOrigin=mouse->globalPosition().toPoint(); originalRegion=logicalRegion;
+    panel->beginRegionMove(logicalRegion,compatibility); return true;
   }
   if (!movingRegion) return false;
   if (event->type()==QEvent::MouseMove) {
@@ -365,7 +384,11 @@ bool RecordingOverlay::eventFilter(QObject *watched,QEvent *event) {
     }
     return true;
   }
-  if (event->type()==QEvent::MouseButtonRelease) { movingRegion=false; return true; }
+  if (event->type()==QEvent::MouseButtonRelease && mouse->button()==Qt::LeftButton) {
+    movingRegion=false; panel->endRegionMove(logicalRegion);
+    if (compatibility) outsideControls=panel->placeOutside(logicalRegion);
+    refresh(); return true;
+  }
   return false;
 }
 bool RecordingOverlay::show() {
