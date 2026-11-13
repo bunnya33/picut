@@ -143,6 +143,7 @@ class Pipeline {
   int recognitionBatch;
   QString deviceName = "CPU";
   bool gpuEnabled;
+  int recognitionBatches = 0, largestBatch = 0;
 public:
   Pipeline(const QString &directory, const QString &profile, int threads = 4, bool arena = false, bool spinning = true, int batch = 1, bool gpu = false) : recognitionBatch(batch), gpuEnabled(gpu) {
     env.DisableTelemetryEvents();
@@ -306,6 +307,7 @@ public:
       if (recognizer->shape[3] > 0) width = int(recognizer->shape[3]);
       std::vector<cv::Mat> batch; for(size_t i=start;i<end;++i) batch.push_back(images[order[i]]);
       auto result = recognizer->runBatch(batch, width, height, true);
+      ++recognitionBatches; largestBatch=std::max(largestBatch,int(batch.size()));
       auto shape = result.GetTensorTypeAndShapeInfo().GetShape();
       if (shape.size() != 3 || shape[2] != dictionary.size() || shape[0]!=int64_t(batch.size())) fail("文字模型与字典不匹配。");
       auto values = result.GetTensorData<float>();
@@ -342,6 +344,7 @@ public:
   }
   QJsonObject process(cv::Mat image, int rotation, qint64 inputMs=0) {
     QElapsedTimer timer; timer.start();
+    recognitionBatches=largestBatch=0;
     const int originalWidth = image.cols, originalHeight = image.rows;
     if (rotation == 90) cv::rotate(image, image, cv::ROTATE_90_CLOCKWISE);
     if (rotation == 180) cv::rotate(image, image, cv::ROTATE_180);
@@ -449,7 +452,8 @@ public:
     }
     return {{"text", text.join('\n')}, {"lines", lines}, {"model", modelName}, {"profile", profileName}, {"elapsed_ms", double(timer.elapsed()+inputMs)}, {"rotation", rotation},
       {"timing",QJsonObject{{"decode_ms",double(decodeMs+inputMs)},{"detect_ms",double(detectMs)},{"direction_ms",double(directionMs)},{"recognition_ms",double(recognitionMs)}}},
-      {"tiles",tileCount},{"detected_lines",int(boxes.size())},{"device",deviceName},{"gpu",gpuEnabled},
+      {"tiles",tileCount},{"detected_lines",int(boxes.size())},{"recognition_batches",recognitionBatches},
+      {"largest_recognition_batch",largestBatch},{"device",deviceName},{"gpu",gpuEnabled},
       {"image_width",originalWidth},{"image_height",originalHeight},{"coordinate_space","original"}};
   }
 };
@@ -477,7 +481,7 @@ int serve(const QCommandLineParser &parser) {
     const bool gpu=parser.isSet("gpu");
     const auto profile=parser.value("profile").isEmpty()?QString("common"):parser.value("profile");
     QElapsedTimer loading; loading.start();
-    Pipeline pipeline(parser.value("models"),profile,4,!gpu,false,gpu?4:1,gpu);
+    Pipeline pipeline(parser.value("models"),profile,4,!gpu,false,4,gpu);
     pipeline.warmup();
     reply({{"event","ready"},{"load_ms",loading.elapsed()},{"pid",qint64(GetCurrentProcessId())}});
     std::array<char,65536> line{};

@@ -43,6 +43,9 @@ PaddleOcrJob::~PaddleOcrJob() { cancel(); }
 void PaddleOcrJob::prewarm(const QString &profile,const QString &acceleration) {
   OcrService::instance()->prewarm(profile,acceleration);
 }
+void PaddleOcrJob::releaseIdleModel() {
+  if (auto service=OcrService::instance(false)) service->releaseIdleModel();
+}
 void PaddleOcrJob::complete(quint64 token,QJsonObject result) {
   if (!active || token!=generation) return;
   active = false; emit finished(result);

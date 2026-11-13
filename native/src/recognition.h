@@ -15,6 +15,7 @@ public:
   // OCR images now travel in shared memory; no temporary image is created.
   QString temporaryPath() const { return {}; }
   static void prewarm(const QString &profile = "common", const QString &acceleration = "auto");
+  static void releaseIdleModel();
   static QString modelsPath();
   static QJsonObject profiles();
 signals:

@@ -375,6 +375,7 @@ void ApplicationController::beginCapture(bool recordingMode) {
       overlay->activateWindow();
       overlay->setFocus();
       if (!recordingMode) QTimer::singleShot(250, overlay, [this] {
+        if (!overlay || overlay->recording || recordSetup || recording()) return;
         PaddleOcrJob::prewarm(store.config["ocr_profile"].toString("common"),
                             store.config["ocr_acceleration"].toString("auto"));
       });
@@ -780,19 +781,24 @@ void ApplicationController::prepareRecord(QRect region, bool showSettings,
   if (target && (!windowInfo.valid || windowInfo.minimized)) {
     recordSetup=false; restoreRecordSource(); return;
   }
-  auto options=savedRecordingOptions(store.config,target?windowInfo.physical:physicalRect(region),
-      store.outputPath(store.config["video_dir"].toString(),"录屏","mp4"));
+  QElapsedTimer preparing; preparing.start();
+  // Leave directory access and the annotation editor until feedback is painted.
+  auto options=savedRecordingOptions(store.config,target?windowInfo.physical:physicalRect(region),{});
   options.painter=std::move(painter);
   options.window=target;
   options.live=std::make_shared<RecordingLiveState>(options.region,options.painter);
+  PaddleOcrJob::releaseIdleModel();
   makeRecorder();
   int seconds=qBound(0,store.config["countdown"].toInt(3),10);
   auto counter=new QLabel(nullptr,Qt::FramelessWindowHint|Qt::Tool|Qt::WindowStaysOnTopHint);
   recordCountdown=counter; counter->setObjectName("recordCountdownWindow");
   counter->setAttribute(Qt::WA_DeleteOnClose); counter->setAlignment(Qt::AlignCenter);
-  counter->setStyleSheet("background:rgba(0,0,0,170);color:white;font-size:60px;");
-  counter->setGeometry(QRect(region.center()-QPoint(60,60),QSize(120,120)));
-  connect(counter,&QObject::destroyed,this,[this] {
+  counter->setStyleSheet("background:rgba(0,0,0,170);color:white;font-size:18px;border-radius:8px;");
+  counter->setGeometry(QRect(region.center()-QPoint(100,32),QSize(200,64)));
+  counter->setText("准备录屏…");
+  connect(counter,&QObject::destroyed,this,[this,counter] {
+    // A previous countdown may be deleted after a new one has already opened.
+    if (recordCountdown && recordCountdown!=counter) return;
     if (recordSetup) { recordEditor.reset(); recordOverlay.reset(); recordSetup=false; restoreRecordSource(); }
   });
   auto escape=new QShortcut(QKeySequence(Qt::Key_Escape),counter);
@@ -801,20 +807,7 @@ void ApplicationController::prepareRecord(QRect region, bool showSettings,
   try {
     recordOverlay=std::make_unique<RecordingOverlay>(recorder.get(),region,options.systemAudio,options.microphone);
     recordOverlay->configureLive(options.live,target);
-    recordEditor=std::make_unique<RecordingEditor>(&store,region,options.region.size(),
-        source?source->annotation.get():nullptr,options.live);
-    recordOverlay->setArtwork(recordEditor->annotation->render());
-    connect(recordEditor.get(),&RecordingEditor::artworkChanged,recordOverlay.get(),&RecordingOverlay::setArtwork);
-    connect(recordOverlay.get(),&RecordingOverlay::regionChanged,recordEditor.get(),&RecordingEditor::setRegion);
-    connect(recordOverlay.get(),&RecordingOverlay::editingRequested,this,[this](bool value) {
-      if (!recordEditor) return;
-      if (value) { recordEditor->begin(); if (recordOverlay) recordOverlay->controls()->raise(); }
-      else recordEditor->finish();
-    });
-    connect(recordEditor.get(),&RecordingEditor::editingFinished,this,[this] {
-      if (recordOverlay) recordOverlay->setEditing(false);
-    });
-    recordOverlay->setCountdown(seconds);
+    recordOverlay->setPreparing();
     connect(recordOverlay.get(),&RecordingOverlay::countdownCanceled,counter,&QWidget::close);
     if (!recordOverlay->show()) throw std::runtime_error("无法从录制画面排除控制条。请在 Windows 10 2004 或更新版本的本地桌面会话中录制。");
   } catch (const std::exception &e) {
@@ -822,24 +815,59 @@ void ApplicationController::prepareRecord(QRect region, bool showSettings,
     restoreRecordSource();
     QMessageBox::warning(source?static_cast<QWidget *>(source):home.data(),"无法录屏",QString::fromUtf8(e.what())); return;
   }
-  auto start=[this,counter,options] {
-    recordSetup=false; counter->close();
-    try { recordOverlay->setCountdown(-1); recorder->start(options); }
-    catch (const std::exception &e) {
-      recordEditor.reset(); recordOverlay.reset(); restoreRecordSource();
-      QMessageBox::warning(overlay?static_cast<QWidget *>(overlay.data()):home.data(),"无法录屏",QString::fromUtf8(e.what()));
+  counter->show(); counter->activateWindow(); excludeCapture(counter);
+  recordOverlay->boundary()->repaint(); recordOverlay->controls()->repaint(); counter->repaint();
+  qInfo()<<"Recording preparation: feedback_ms"<<preparing.elapsed();
+  QTimer::singleShot(0,counter,[this,counter,region,options,seconds,preparing]() mutable {
+    if (!recordSetup || recordCountdown!=counter || !counter->isVisible() || !recordOverlay) return;
+    try {
+      auto stage=preparing.elapsed();
+      options.output=store.outputPath(store.config["video_dir"].toString(),"录屏","mp4");
+      qInfo()<<"Recording preparation: output_ms"<<preparing.elapsed()-stage;
+      stage=preparing.elapsed();
+      recordEditor=std::make_unique<RecordingEditor>(&store,recordOverlay->region(),options.region.size(),
+          recordSource?recordSource->annotation.get():nullptr,options.live,true);
+      recordOverlay->setArtwork(recordEditor->annotation->render());
+      connect(recordEditor.get(),&RecordingEditor::artworkChanged,recordOverlay.get(),&RecordingOverlay::setArtwork);
+      connect(recordOverlay.get(),&RecordingOverlay::regionChanged,recordEditor.get(),&RecordingEditor::setRegion);
+      connect(recordOverlay.get(),&RecordingOverlay::editingRequested,this,[this](bool value) {
+        if (!recordEditor) return;
+        if (value) { recordEditor->begin(); if (recordOverlay) recordOverlay->controls()->raise(); }
+        else recordEditor->finish();
+      });
+      connect(recordEditor.get(),&RecordingEditor::editingFinished,this,[this] {
+        if (recordOverlay) recordOverlay->setEditing(false);
+      });
+      qInfo()<<"Recording preparation: artwork_ms"<<preparing.elapsed()-stage
+             <<"ready_ms"<<preparing.elapsed();
+    } catch (const std::exception &e) {
+      recordEditor.reset(); recordOverlay.reset(); recordSetup=false; counter->close();
+      restoreRecordSource();
+      QMessageBox::warning(overlay?static_cast<QWidget *>(overlay.data()):home.data(),"无法录屏",QString::fromUtf8(e.what())); return;
     }
-  };
-  if (!seconds) { start(); return; }
-  counter->setText(QString::number(seconds)); counter->show(); counter->activateWindow();
-  excludeCapture(counter);
-  auto timer=new QTimer(counter); timer->setInterval(1000);
-  connect(timer,&QTimer::timeout,counter,[this,counter,timer,start,seconds]() mutable {
-    --seconds;
-    if (seconds<=0) { timer->stop(); start(); }
-    else { counter->setText(QString::number(seconds)); recordOverlay->setCountdown(seconds); }
+    auto start=[this,counter,options] {
+      if (!recordSetup || recordCountdown!=counter || !counter->isVisible() || !recordOverlay) return;
+      recordSetup=false; counter->close();
+      try { recordOverlay->setCountdown(-1); recorder->start(options); }
+      catch (const std::exception &e) {
+        recordEditor.reset(); recordOverlay.reset(); restoreRecordSource();
+        QMessageBox::warning(overlay?static_cast<QWidget *>(overlay.data()):home.data(),"无法录屏",QString::fromUtf8(e.what()));
+      }
+    };
+    recordOverlay->setCountdown(seconds);
+    if (!seconds) { start(); return; }
+    counter->setStyleSheet("background:rgba(0,0,0,170);color:white;font-size:60px;");
+    counter->setGeometry(QRect(recordOverlay->region().center()-QPoint(60,60),QSize(120,120)));
+    counter->setText(QString::number(seconds));
+    auto timer=new QTimer(counter); timer->setInterval(1000);
+    connect(timer,&QTimer::timeout,counter,[this,counter,timer,start,seconds]() mutable {
+      if (!counter->isVisible() || recordCountdown!=counter) { timer->stop(); return; }
+      --seconds;
+      if (seconds<=0) { timer->stop(); start(); }
+      else { counter->setText(QString::number(seconds)); recordOverlay->setCountdown(seconds); }
+    });
+    timer->start();
   });
-  timer->start();
 }
 void ApplicationController::quit() {
   if (recording()) {

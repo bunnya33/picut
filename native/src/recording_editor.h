@@ -7,7 +7,8 @@ class RecordingEditor : public EditingSurface {
   Q_OBJECT
 public:
   RecordingEditor(Store *store, QRect region, QSize canvas,
-                  const Annotation *initial, std::shared_ptr<RecordingLiveState> live);
+                  const Annotation *initial, std::shared_ptr<RecordingLiveState> live,
+                  bool deferToolbar = false);
   QRect contentRect() const override { return region.translated(-pos()); }
   bool complete(const QString &action) override;
   void setRegion(QRect region);
@@ -32,5 +33,6 @@ private:
   QImage preview;
   QTimer publishTimer;
   int markAt(QPoint point) const;
+  bool toolbarConfigured = false;
   void configureToolbar();
 };

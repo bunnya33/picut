@@ -20,6 +20,7 @@ public:
   void hide();
   void refresh();
   void setCountdown(int seconds);
+  void setPreparing();
   void setArtwork(const QImage &image);
   QWidget *artwork() const { return markLayer.get(); }
   QWidget *boundary() const;
@@ -50,6 +51,8 @@ private:
   bool artworkExcluded = false;
   std::function<bool(QWidget *)> exclusion;
   int countdown = -1;
+  bool preparing = false;
+  void showArtwork();
   std::shared_ptr<RecordingLiveState> live;
   quintptr targetWindow = 0;
   bool editing = false, movingRegion = false;

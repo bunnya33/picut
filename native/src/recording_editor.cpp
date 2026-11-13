@@ -12,7 +12,7 @@
 #include <QtWidgets/QApplication>
 
 RecordingEditor::RecordingEditor(Store *store, QRect rectangle, QSize canvas,
-    const Annotation *initial, std::shared_ptr<RecordingLiveState> state)
+    const Annotation *initial, std::shared_ptr<RecordingLiveState> state, bool deferToolbar)
     : EditingSurface(store,nullptr,Qt::Tool|Qt::FramelessWindowHint|Qt::WindowStaysOnTopHint),
       region(rectangle),live(std::move(state)) {
   setObjectName("recordingEditor"); setAttribute(Qt::WA_TranslucentBackground);
@@ -33,12 +33,16 @@ RecordingEditor::RecordingEditor(Store *store, QRect rectangle, QSize canvas,
     }
   }
   annotation->chooseTool("pen"); annotation->refresh();
-  editing=true; showToolbar(); configureToolbar(); hide();
+  editing=true;
+  if (!deferToolbar) { showToolbar(); configureToolbar(); }
+  hide();
   publishTimer.setInterval(16);
   connect(&publishTimer,&QTimer::timeout,this,&RecordingEditor::publish);
   publish();
 }
 void RecordingEditor::configureToolbar() {
+  if (toolbarConfigured || !toolbar) return;
+  toolbarConfigured=true;
   for (const auto &name:{"select_text","translate","scroll","record","pin","save","copy"})
     toolbar->findChild<QToolButton *>("action_"+QString(name))->hide();
   auto close=toolbar->findChild<QToolButton *>("action_cancel");
@@ -81,7 +85,7 @@ void RecordingEditor::begin() {
   const bool windows=QGuiApplication::platformName()=="windows";
   if (windows && !excludeCapture(this)) { emit editingFinished(); return; }
   qApp->installEventFilter(this);
-  editing=true; show(); showToolbar(); positionToolbar();
+  editing=true; show(); showToolbar(); configureToolbar(); positionToolbar();
   if (windows && !excludeCapture(this)) {
     qApp->removeEventFilter(this); hide(); emit editingFinished(); return;
   }
@@ -106,13 +110,15 @@ bool RecordingEditor::complete(const QString &action) {
   if (action=="cancel") { finish(); return true; }
   if (action=="clear") {
     commitText(); annotation->checkpoint(); annotation->marks.clear(); annotation->draft.reset();
-    annotation->confirm(); annotation->refresh(); toolbar->sync(*annotation); publish(); update(); return true;
+    annotation->confirm(); annotation->refresh(); if (toolbar) toolbar->sync(*annotation); publish(); update(); return true;
   }
   return false;
 }
 void RecordingEditor::publish() {
-  toolbar->findChild<QToolButton *>("recordingDeleteMark")->setEnabled(annotation->selected>=0);
-  toolbar->findChild<QToolButton *>("recordingClearMarks")->setEnabled(!annotation->marks.isEmpty() || annotation->draft.has_value());
+  if (toolbarConfigured) {
+    toolbar->findChild<QToolButton *>("recordingDeleteMark")->setEnabled(annotation->selected>=0);
+    toolbar->findChild<QToolButton *>("recordingClearMarks")->setEnabled(!annotation->marks.isEmpty() || annotation->draft.has_value());
+  }
   auto marks=annotation->marks;
   if (annotation->draft) marks.append(*annotation->draft);
   if (textEntry && textEntry->isVisible()) {

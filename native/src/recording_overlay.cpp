@@ -267,7 +267,7 @@ RecordingOverlay::RecordingOverlay(Recorder *recorder, QRect region,
     }
   });
   connect(panel->stop, &QToolButton::clicked, this, [this] {
-    if (countdown>=0 && !begun) { emit countdownCanceled(); return; }
+    if ((preparing || countdown>=0) && !begun) { emit countdownCanceled(); return; }
     if (this->recorder) {
       this->recorder->stop();
       refresh();
@@ -290,6 +290,20 @@ void RecordingOverlay::setArtwork(const QImage &image) {
   }
   markLayer.reset(); artworkExcluded=false;
   if (!image.isNull()) markLayer=std::make_unique<RecordingArtwork>(logicalRegion,image);
+  if (shown) { showArtwork(); refresh(); }
+}
+void RecordingOverlay::showArtwork() {
+  if (!markLayer || compatibility || QGuiApplication::platformName()!="windows") return;
+  auto exclude=[this](QWidget *widget) { return exclusion?exclusion(widget):excludeCapture(widget); };
+  artworkExcluded=exclude(markLayer.get());
+  if (artworkExcluded) {
+    markLayer->show(); artworkExcluded=exclude(markLayer.get());
+    if (artworkExcluded) { markLayer->raise(); panel->raise(); }
+  }
+  if (!artworkExcluded) {
+    markLayer->hide();
+    SetWindowDisplayAffinity(reinterpret_cast<HWND>(markLayer->winId()),WDA_NONE);
+  }
 }
 void RecordingOverlay::configureLive(std::shared_ptr<RecordingLiveState> state, quintptr window) {
   live=std::move(state); targetWindow=window;
@@ -352,17 +366,7 @@ bool RecordingOverlay::show() {
   panel->raise();
   if (windows && !compatibility) {
     excluded = exclude(frame.get()) && exclude(panel.get());
-    if (markLayer) {
-      artworkExcluded=exclude(markLayer.get());
-      if (artworkExcluded) {
-        markLayer->show(); artworkExcluded=exclude(markLayer.get());
-        if (artworkExcluded) { markLayer->raise(); panel->raise(); }
-      }
-      if (!artworkExcluded) {
-        markLayer->hide();
-        SetWindowDisplayAffinity(reinterpret_cast<HWND>(markLayer->winId()),WDA_NONE);
-      }
-    }
+    showArtwork();
     DwmFlush();
   }
   if ((windows || exclusion) && !excluded && !compatibility) {
@@ -386,14 +390,15 @@ void RecordingOverlay::hide() {
   panel->hide();
   if (markLayer) markLayer->hide();
 }
-void RecordingOverlay::setCountdown(int seconds) { countdown=seconds; refresh(); }
+void RecordingOverlay::setPreparing() { preparing=true; countdown=-1; refresh(); }
+void RecordingOverlay::setCountdown(int seconds) { preparing=false; countdown=seconds; refresh(); }
 void RecordingOverlay::refresh() {
   if (!recorder)
     return;
   const bool saving = recorder->finalizing();
   bool paused = recorder->paused();
   bool targetHidden = false;
-  const bool counting=countdown>=0 && !begun;
+  const bool counting=(preparing || countdown>=0) && !begun;
   if (targetWindow && !saving) {
     const auto info=recordingWindowInfo(targetWindow);
     if (!info.valid && begun) { recorder->stop(); return; }
@@ -416,8 +421,9 @@ void RecordingOverlay::refresh() {
                            .arg(seconds / 3600, 2, 10, QChar('0'))
                            .arg(seconds / 60 % 60, 2, 10, QChar('0'))
                            .arg(seconds % 60, 2, 10, QChar('0')));
-  if (counting) panel->time->setText(QString("%1 秒").arg(countdown));
-  panel->state->setText(counting ? "倒计时"
+  if (counting) panel->time->setText(preparing?QString("…"):QString("%1 秒").arg(countdown));
+  panel->state->setText(preparing ? "准备中"
+                        : counting ? "倒计时"
                         : saving   ? "正在保存"
                         : !begun ? "准备录制"
                         : paused ? "已暂停"

@@ -1530,7 +1530,16 @@ private slots:
     QVERIFY(!QApplication::activeModalWidget()); QVERIFY(controller.recordOverlay);
     QVERIFY(controller.recordOverlay->boundary()->isVisible());
     QCOMPARE(controller.recordOverlay->region(),QRect(screen.topLeft()+QPoint(20,20),QSize(400,250)));
-    QVERIFY(controller.recordOverlay->controls()->findChild<QLabel *>("recordingState")->text().contains("倒计时"));
+    auto state=controller.recordOverlay->controls()->findChild<QLabel *>("recordingState");
+    QCOMPARE(state->text(),QString("准备中"));
+    QVERIFY(!controller.recordEditor);
+    QLabel *counter=nullptr;
+    for (auto widget:QApplication::topLevelWidgets())
+      if (widget->objectName()=="recordCountdownWindow") counter=qobject_cast<QLabel *>(widget);
+    QVERIFY(counter);
+    QVERIFY(counter->isVisible()); QCOMPARE(counter->text(),QString("准备录屏…"));
+    QTRY_COMPARE(state->text(),QString("倒计时"));
+    QVERIFY(controller.recordEditor); QVERIFY(!controller.recordEditor->toolbar);
     QTest::mouseClick(controller.recordOverlay->controls()->findChild<QToolButton *>("stopRecording"),Qt::LeftButton);
     QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
     QVERIFY(!controller.recordOverlay); QVERIFY(!controller.recording());
@@ -1540,6 +1549,42 @@ private slots:
       if (dialog) { prompted=dialog->objectName()=="recordingSettings"; dialog->reject(); }
     });
     controller.prepareRecord(screen,true); QVERIFY(prompted); QVERIFY(!controller.recordOverlay);
+  }
+  void recordingPreparationCanCancelBeforeEditorAndRestart() {
+    QTemporaryDir dir; const auto previous=qgetenv("FLOATSHOT_DATA_DIR");
+    auto restore=qScopeGuard([previous] { if(previous.isNull())qunsetenv("FLOATSHOT_DATA_DIR");else qputenv("FLOATSHOT_DATA_DIR",previous); });
+    qputenv("FLOATSHOT_DATA_DIR",dir.path().toUtf8()); ApplicationController controller(true);
+    controller.store.config["countdown"]=3;
+    const QRect region(QGuiApplication::primaryScreen()->geometry().topLeft()+QPoint(30,40),QSize(420,260));
+    for (int attempt=0;attempt<2;++attempt) {
+      controller.prepareRecord(region,false);
+      QVERIFY(controller.recordOverlay); QVERIFY(controller.recordOverlay->boundary()->isVisible());
+      QVERIFY(!controller.recordEditor);
+      auto controls=controller.recordOverlay->controls();
+      QTest::mouseClick(controls->findChild<QToolButton *>("stopRecording"),Qt::LeftButton);
+      QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+      QTest::qWait(20);
+      QVERIFY(!controller.recordOverlay); QVERIFY(!controller.recordEditor); QVERIFY(!controller.recording());
+    }
+  }
+  void deferredRecordingEditorRetainsMarksAndBuildsToolsOnDemand() {
+    QTemporaryDir dir; Store store(dir.path());
+    const QRect region(QGuiApplication::primaryScreen()->geometry().topLeft()+QPoint(80,80),QSize(400,260));
+    QImage input(region.size(),QImage::Format_RGB32); input.fill(Qt::white);
+    Annotation initial(input,&store); Mark mark; mark.kind="rect"; mark.points={{40,140},{200,220}};
+    initial.add(mark);
+    auto live=std::make_shared<RecordingLiveState>(physicalRect(region));
+    RecordingEditor editor(&store,region,region.size(),&initial,live,true);
+    QVERIFY(!editor.toolbar); QCOMPARE(editor.annotation->marks.size(),1);
+    QImage frame=input.copy(); live->snapshot().painter(frame);
+    QVERIFY(frame.pixelColor(40,180).green()<40);
+    editor.begin(); QVERIFY(editor.isVisible()); QVERIFY(editor.toolbar && editor.toolbar->isVisible());
+    QVERIFY(editor.toolbar->findChild<QToolButton *>("recordingClearMarks"));
+    QVERIFY(!editor.toolbar->findChild<QToolButton *>("action_pin")->isVisible());
+    editor.finish(); editor.begin();
+    QCOMPARE(editor.toolbar->findChildren<QToolButton *>("recordingClearMarks").size(),1);
+    QTest::mouseClick(editor.toolbar->findChild<QToolButton *>("recordingClearMarks"),Qt::LeftButton);
+    QVERIFY(editor.annotation->marks.isEmpty()); editor.finish();
   }
   void captureRecordingRoundTripKeepsArtworkAndSelection() {
     QTemporaryDir dir; Store store(dir.path()); auto overlay=editingFixture(store,"pen");
@@ -1578,7 +1623,8 @@ private slots:
     QTest::mouseClick(source->toolbar->findChild<QToolButton *>("action_record"),Qt::LeftButton);
     QTest::mouseClick(source->findChild<QToolButton *>("record_record"),Qt::LeftButton);
     QVERIFY(controller.recordOverlay); QVERIFY(!source->isVisible());
-    QVERIFY(controller.recordOverlay->artwork());
+    QTRY_VERIFY(controller.recordEditor);
+    QVERIFY(controller.recordOverlay->artwork()); QVERIFY(!controller.recordEditor->toolbar);
     QTest::mouseClick(controller.recordOverlay->controls()->findChild<QToolButton *>("stopRecording"),Qt::LeftButton);
     QTRY_VERIFY(!controller.recordOverlay);
     QVERIFY(source); QVERIFY(source->isVisible()); QVERIFY(!source->recording);

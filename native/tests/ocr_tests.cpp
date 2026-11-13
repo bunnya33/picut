@@ -207,6 +207,24 @@ private slots:
     QVERIFY(recovered["text"].toString().contains("67890"));
     QVERIFY(recovered["worker_pid"].toInteger()!=pid);
   }
+  void cpuBatchKeepsTextAndCharacterPositions() {
+    QStringList rows;
+    for (int row=1;row<=12;++row) rows.append(QString("第%1行 中文批量识别 Picut ABC 12345").arg(row,2,10,QChar('0')));
+    const auto image=sample(rows.join('\n'),24);
+    const auto path=artifact+"/cpu-batch-input.png"; QVERIFY(image.save(path));
+    const auto single=run({"--models",PaddleOcrJob::modelsPath(),"--input",path,
+        "--output",artifact+"/cpu-batch-single.json","--rec-batch","1"});
+    QVERIFY2(!single.contains("error"),qPrintable(single["error"].toString()));
+    PaddleOcrJob job; QSignalSpy finished(&job,&PaddleOcrJob::finished);
+    job.start(image,"common",0,"cpu"); QVERIFY(finished.wait(60000));
+    const auto batched=finished.first()[0].toJsonObject();
+    QVERIFY2(!batched.contains("error"),qPrintable(batched["error"].toString()));
+    QCOMPARE(batched["text"].toString(),single["text"].toString());
+    QVERIFY(batched["largest_recognition_batch"].toInt()>1);
+    QVERIFY(batched["largest_recognition_batch"].toInt()<=4);
+    QVERIFY(batched["recognition_batches"].toInt()<batched["detected_lines"].toInt());
+    verifyCharacterGeometry(batched,image.size());
+  }
   void workerCrashAndReplacement() {
     PaddleOcrJob job; QSignalSpy completed(&job,&PaddleOcrJob::finished);
     job.start(sample("识别进程恢复测试 12345",32),"common",0,"cpu"); QVERIFY(completed.wait(60000));

@@ -172,6 +172,7 @@ class OcrService : public QObject {
   }
 public:
   ~OcrService() override { stopWorker(); }
+  void releaseIdleModel() { if (!current && queue.empty()) stopWorker(); }
   static OcrService *instance(bool create = true) {
     static QPointer<OcrService> service;
     if (!service && create) service = new OcrService(QCoreApplication::instance());
