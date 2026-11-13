@@ -140,7 +140,7 @@ public:
     if (!screen)
       screen = QGuiApplication::primaryScreen();
     const QRect screenArea = screen->availableGeometry();
-    // Fullscreen and normal regions keep the controls inside their border.
+    // Use exterior space when it can hold the entire panel.
     dragBounds = region.width() >= width() && region.height() >= height()
                      ? region
                      : screenArea;
@@ -149,6 +149,7 @@ public:
     if (!region.contains(QRect(x, y, width(), height())))
       y = region.top() - height() - 8;
     move(clamped(QPoint(x, y)));
+    placeOutside(region);
     for (auto label : {grip, state, time})
       label->installEventFilter(this);
   }
@@ -159,22 +160,36 @@ public:
     if (!screen) screen=QGuiApplication::primaryScreen();
     dragBounds=value.width()>=width() && value.height()>=height()?value:screen->availableGeometry();
     move(clamped(pos()+delta));
+    placeOutside(value);
   }
   bool placeOutside(QRect capture) {
-    QRect best;
-    int distance = std::numeric_limits<int>::max();
+    QRect bestScreen;
+    QPoint bestPoint;
+    qint64 distance=std::numeric_limits<qint64>::max();
+    const auto home=QGuiApplication::screenAt(capture.center());
     for (auto screen : QGuiApplication::screens()) {
-      const QRegion free = QRegion(screen->availableGeometry()).subtracted(QRegion(capture));
-      for (auto area : free) {
-        if (area.width() < width() || area.height() < height()) continue;
-        QPoint point(qBound(area.left(), x(), area.right()-width()+1),
-                     qBound(area.top(), y(), area.bottom()-height()+1));
-        const int next = (point-pos()).manhattanLength();
-        if (next < distance) { distance=next; best=area; }
+      const auto available=screen->availableGeometry();
+      for (const int gap:{8,0}) {
+        const int top=qBound(available.top(),capture.top()-gap,available.bottom()+1);
+        const int bottom=qBound(available.top(),capture.bottom()+1+gap,available.bottom()+1);
+        const int left=qBound(available.left(),capture.left()-gap,available.right()+1);
+        const int right=qBound(available.left(),capture.right()+1+gap,available.right()+1);
+        const QList<QRect> spaces=available.intersects(capture)?QList<QRect>{
+            {available.left(),available.top(),available.width(),top-available.top()},
+            {available.left(),bottom,available.width(),available.bottom()+1-bottom},
+            {available.left(),available.top(),left-available.left(),available.height()},
+            {right,available.top(),available.right()+1-right,available.height()}}:QList<QRect>{available};
+        for (auto area:spaces) {
+          if (area.width()<width() || area.height()<height()) continue;
+          const QPoint point(qBound(area.left(),x(),area.right()-width()+1),
+                             qBound(area.top(),y(),area.bottom()-height()+1));
+          const qint64 next=(point-pos()).manhattanLength()+(screen==home?0:1000000)+(gap?0:100000);
+          if (next<distance) { distance=next; bestScreen=available; bestPoint=point; }
+        }
       }
     }
-    if (best.isEmpty()) return false;
-    dragBounds=best; move(clamped(pos())); return true;
+    if (bestScreen.isEmpty()) return false;
+    dragBounds=bestScreen; move(bestPoint); return true;
   }
 
 protected:
@@ -438,6 +453,7 @@ void RecordingOverlay::refresh() {
   panel->pause->setEnabled(begun && recorder->active() && !saving);
   panel->annotate->setEnabled(begun && recorder->active() && !saving && !compatibility && excluded && !targetHidden);
   if (compatibility) panel->annotate->setToolTip("当前系统不支持捕获排除，录制中编辑标记需要 Windows 10 2004 或更新版本。");
+  if (live) live->setControls(panel->isVisible()?physicalRect(panel->geometry()):QRect());
   panel->moveRegion->setEnabled(!saving && !counting);
   panel->stop->setEnabled(counting || (begun && recorder->active() && !saving));
   panel->stop->setIcon(recordingIcon(counting?"cancel":"stop"));

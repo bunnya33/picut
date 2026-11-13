@@ -11,11 +11,12 @@
 
 QString recordingSummary(const QJsonObject &config) {
   const int quality=config["quality"].toInt(22);
-  return QString("%1 fps · %2 · 系统声%3 · 麦克风%4 · 鼠标%5 · 倒计时 %6 秒")
+  return QString("%1 fps · %2 · 系统声%3 · 麦克风%4 · 鼠标%5 · 点击反馈%6 · 倒计时 %7 秒")
       .arg(config["fps"].toInt(30)).arg(quality<=18?"更清晰":quality>=28?"小文件":"清晰")
       .arg(config["system_audio"].toBool()?"开":"关")
       .arg(config["microphone"].toBool()?"开":"关")
       .arg(config["cursor"].toBool(true)?"开":"关")
+      .arg(config["click_feedback"].toBool(false)?"开":"关")
       .arg(qBound(0,config["countdown"].toInt(3),10));
 }
 RecordOptions savedRecordingOptions(const QJsonObject &config, QRect region,const QString &output) {
@@ -23,6 +24,7 @@ RecordOptions savedRecordingOptions(const QJsonObject &config, QRect region,cons
   options.systemAudio=config["system_audio"].toBool(); options.microphone=config["microphone"].toBool();
   options.speakerId=config["speaker_id"].toString(); options.micId=config["mic_id"].toString();
   options.cursor=config["cursor"].toBool(true); options.fps=config["fps"].toInt(30)==15?15:30;
+  options.clickFeedback=config["click_feedback"].toBool(false);
   options.quality=qBound(18,config["quality"].toInt(22),28); return options;
 }
 RecordingSettingsDialog::RecordingSettingsDialog(Store *store,QRect region,bool start,QWidget *parent)
@@ -53,6 +55,9 @@ RecordingSettingsDialog::RecordingSettingsDialog(Store *store,QRect region,bool 
   connect(mic,&QCheckBox::toggled,microphones,&QWidget::setEnabled);
   auto cursor=new QCheckBox("显示鼠标指针"); cursor->setObjectName("recordCursor");
   cursor->setChecked(store->config["cursor"].toBool(true)); form->addRow(cursor);
+  auto clicks=new QCheckBox("鼠标点击反馈"); clicks->setObjectName("recordClickFeedback");
+  clicks->setToolTip("在录制视频中显示短暂的点击圆点动画，支持鼠标左键、右键和中键。");
+  clicks->setChecked(store->config["click_feedback"].toBool(false)); form->addRow(clicks);
   auto fps=new QComboBox; fps->setObjectName("recordFps"); fps->addItem("30 fps",30); fps->addItem("15 fps",15);
   fps->setCurrentIndex(store->config["fps"].toInt(30)==15?1:0); form->addRow("帧率",fps);
   auto quality=new QComboBox; quality->setObjectName("recordQuality");
@@ -69,6 +74,7 @@ RecordingSettingsDialog::RecordingSettingsDialog(Store *store,QRect region,bool 
     config["system_audio"]=system->isChecked(); config["microphone"]=mic->isChecked();
     config["speaker_id"]=speakers->currentData().toString(); config["mic_id"]=microphones->currentData().toString();
     config["cursor"]=cursor->isChecked(); config["fps"]=fps->currentData().toInt();
+    config["click_feedback"]=clicks->isChecked();
     config["quality"]=quality->currentData().toInt(); config["countdown"]=countdown->value();
     store->saveConfig(); accept();
   });

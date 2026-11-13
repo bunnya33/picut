@@ -60,6 +60,7 @@ Store::Store(QString directory) {
             {"fps", 30},
             {"quality", 22},
             {"cursor", true},
+            {"click_feedback", false},
             {"system_audio", false},
             {"microphone", false},
             {"speaker_id", ""},

@@ -1,6 +1,7 @@
 #include "recorder.h"
 #include "native_windows.h"
 #include "recording_capture.h"
+#include "recording_clicks.h"
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDataStream>
 #include <QtCore/QElapsedTimer>
@@ -11,6 +12,7 @@
 #include <QtCore/QStorageInfo>
 #include <QtCore/QUuid>
 #include <audioclient.h>
+#include <dwmapi.h>
 #include <cmath>
 #include <functiondiscoverykeys_devpkey.h>
 #include <mmdeviceapi.h>
@@ -363,7 +365,23 @@ void Recorder::run(const RecordOptions &options,
   std::vector<std::unique_ptr<AudioTrack>> tracks;
   QProcess encoder;
   encoder.setStandardErrorFile(work + "/ffmpeg-video.log");
+  RecordingClicks clicks;
   try {
+    if (options.clickFeedback && !clicks.start([this,&options] {
+      const auto state=options.live?options.live->snapshot():RecordingLiveState::Snapshot{options.region,options.painter};
+      auto region=state.region;
+      bool available=true;
+      if (options.window) {
+        const auto window=reinterpret_cast<HWND>(options.window);
+        available=IsWindow(window) && !IsIconic(window) && IsWindowVisible(window);
+        RECT bounds{};
+        if (available && SUCCEEDED(DwmGetWindowAttribute(window,DWMWA_EXTENDED_FRAME_BOUNDS,&bounds,sizeof(bounds))))
+          region=QRect(bounds.left,bounds.top,bounds.right-bounds.left,bounds.bottom-bounds.top);
+        else available=false;
+      }
+      return RecordingClicks::Target{region,state.controls,available && begunFlag && !pauseFlag && !stopFlag,
+                                    RecordingClicks::mediaTime(clock.elapsed())};
+    })) emit warning("鼠标点击反馈未能启用，本次视频继续录制。");
     if (options.systemAudio)
       tracks.push_back(std::make_unique<AudioTrack>(
           work + "/system.wav", options.speakerId, true, &clock, &stopFlag,
@@ -450,7 +468,11 @@ void Recorder::run(const RecordOptions &options,
                      QUuid::createUuid().toString(QUuid::Id128) + ".png";
     first.scaled(384, 216, Qt::KeepAspectRatio, Qt::SmoothTransformation)
         .save(thumbnail);
-    auto writeFrame = [&](const QImage &image) {
+    qint64 frames = 0;
+    auto writeFrame = [&](QImage image) {
+      // Use the encoded frame's media time, including catch-up frames. A slow
+      // encoder must not let a short click expire before any video frame sees it.
+      if (options.clickFeedback) clicks.paint(image,RecordingClicks::mediaTime(double(frames)/options.fps));
       auto bytes = qint64(image.width()) * image.height() * 4;
       if (encoder.write(reinterpret_cast<const char *>(image.constBits()),
                         bytes) != bytes)
@@ -462,7 +484,6 @@ void Recorder::run(const RecordOptions &options,
     clock.start();
     begunFlag = true;
     emit started();
-    qint64 frames = 0;
     QImage last = first;
     first = {};
     double diskCheck = 0;
@@ -506,6 +527,7 @@ void Recorder::run(const RecordOptions &options,
       ++frames;
     }
     last = {};
+    clicks.stop();
     encoder.closeWriteChannel();
     if (!encoder.waitForFinished(120000) || encoder.exitCode() != 0)
       throw std::runtime_error("视频编码失败，原始片段已保留。");
@@ -574,6 +596,8 @@ void Recorder::run(const RecordOptions &options,
                    {"width", outW},
                    {"height", outH},
                    {"duration", duration},
+                   {"click_feedback",options.clickFeedback},
+                   {"click_feedback_events",qint64(clicks.count())},
                    {"frames", frames}});
   } catch (const std::exception &e) {
     clock.finish();

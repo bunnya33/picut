@@ -1391,7 +1391,11 @@ private slots:
   }
   void recordingSettingsPersistenceAndCancel() {
     QTemporaryDir dir; Store store(dir.path());
+    QVERIFY(!store.config["click_feedback"].toBool());
+    QVERIFY(!savedRecordingOptions(store.config,{30,40,500,300},"movie.mp4").clickFeedback);
     RecordingSettingsDialog dialog(&store,{30,40,500,300},false);
+    QVERIFY(!dialog.findChild<QCheckBox *>("recordClickFeedback")->isChecked());
+    dialog.findChild<QCheckBox *>("recordClickFeedback")->setChecked(true);
     dialog.findChild<QCheckBox *>("recordSystemAudio")->setChecked(true);
     dialog.findChild<QCheckBox *>("recordMicrophone")->setChecked(true);
     dialog.findChild<QCheckBox *>("recordCursor")->setChecked(false);
@@ -1403,13 +1407,16 @@ private slots:
     Store reopened(dir.path());
     auto options=savedRecordingOptions(reopened.config,{60,80,1000,600},"movie.mp4");
     QVERIFY(options.systemAudio && options.microphone && !options.cursor);
+    QVERIFY(options.clickFeedback);
     QCOMPARE(options.fps,15); QCOMPARE(options.quality,18);
     QCOMPARE(options.region,QRect(60,80,1000,600));
     QCOMPARE(reopened.config["countdown"].toInt(),5);
     QVERIFY(recordingSummary(reopened.config).contains("15 fps"));
+    QVERIFY(recordingSummary(reopened.config).contains("点击反馈开"));
     auto saved=reopened.config;
     RecordingSettingsDialog canceled(&reopened,{30,40,500,300},false);
     canceled.findChild<QSpinBox *>("recordCountdown")->setValue(1);
+    canceled.findChild<QCheckBox *>("recordClickFeedback")->setChecked(false);
     canceled.reject(); QCOMPARE(reopened.config,saved);
   }
   void retiredRecordingShortcutReleasesOldBindings() {

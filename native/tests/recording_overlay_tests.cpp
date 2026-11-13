@@ -1,6 +1,7 @@
 #include "native_windows.h"
 #include "recording_overlay.h"
 #include "recording_capture.h"
+#include "recording_clicks.h"
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QJsonDocument>
@@ -133,7 +134,10 @@ class RecordingOverlayTests : public QObject {
       if (overlay.controls()->isVisible()) QVERIFY(!region.intersects(overlay.controls()->geometry()));
     } else {
       QVERIFY(overlay.captureExcluded()); QCOMPARE(overlay.boundary()->geometry(), region);
-      QVERIFY(region.contains(overlay.controls()->geometry()));
+      bool visible=false;
+      for (auto screen:QGuiApplication::screens()) visible|=screen->availableGeometry().contains(overlay.controls()->geometry());
+      QVERIFY(visible);
+      if (region==standardRegion()) QVERIFY(!region.intersects(overlay.controls()->geometry()));
     }
     auto frameWindow = reinterpret_cast<HWND>(overlay.boundary()->winId());
     QVERIFY(GetWindowLongPtrW(frameWindow, GWL_EXSTYLE) & WS_EX_TRANSPARENT);
@@ -195,8 +199,10 @@ class RecordingOverlayTests : public QObject {
          {static_cast<QWidget *>(time), static_cast<QWidget *>(pause),
           static_cast<QWidget *>(stop)})
       for (int x : {2, widget->width() / 2, widget->width() - 3})
-        if (!compatibility) samplePoints.append(
-            widget->mapToGlobal(QPoint(x, widget->height() / 2)) - region.topLeft());
+        if (!compatibility) {
+          const auto point=widget->mapToGlobal(QPoint(x,widget->height()/2));
+          if (region.contains(point)) samplePoints.append(point-region.topLeft());
+        }
     QTest::mouseClick(stop, Qt::LeftButton);
     QVERIFY(!stop->isEnabled());
     QVERIFY(!pause->isEnabled());
@@ -464,13 +470,13 @@ private slots:
                        Qt::NoModifier);
       QApplication::sendEvent(grip, &move);
       QCOMPARE(panel->pos(), old + QPoint(35, 70));
-      QVERIFY(region.contains(panel->geometry()));
+      QVERIFY(QGuiApplication::primaryScreen()->availableGeometry().contains(panel->geometry()));
       QMouseEvent farMove(QEvent::MouseMove, QPointF(),
                           origin + QPointF(10000, 10000), Qt::NoButton,
                           Qt::LeftButton, Qt::NoModifier);
       QApplication::sendEvent(grip, &farMove);
       QTest::mouseRelease(grip, Qt::LeftButton);
-      QVERIFY(region.contains(panel->geometry()));
+      QVERIFY(QGuiApplication::primaryScreen()->availableGeometry().contains(panel->geometry()));
       QVERIFY(panel->findChild<QToolButton *>("muteSystemAudio"));
       QVERIFY(panel->findChild<QToolButton *>("muteMicrophone"));
     }
@@ -488,6 +494,109 @@ private slots:
     QCOMPARE(overlay.boundary()->geometry(), region);
     QVERIFY(
         screen->availableGeometry().contains(overlay.controls()->geometry()));
+    QVERIFY(!region.intersects(overlay.controls()->geometry()));
+  }
+  void exteriorControlsFollowRegionAndFallbackForFullscreen() {
+    QTemporaryDir dir; Recorder recorder(dir.path());
+    const auto available=QGuiApplication::primaryScreen()->availableGeometry();
+    QRect region(available.topLeft()+QPoint(120,150),QSize(640,400));
+    RecordingOverlay overlay(&recorder,region,false,false);
+    auto live=std::make_shared<RecordingLiveState>(physicalRect(region));
+    overlay.configureLive(live); overlay.setCountdown(3); QVERIFY(overlay.show());
+    QVERIFY(!region.intersects(overlay.controls()->geometry()));
+    QVERIFY(available.contains(overlay.controls()->geometry()));
+    QCOMPARE(live->snapshot().controls,physicalRect(overlay.controls()->geometry()));
+    // A narrow band can fit the controller across the full screen width. Region
+    // subtraction into small rectangles must not incorrectly reject it.
+    region=QRect(available.left()+5,available.top()+overlay.controls()->height()+10,
+                 available.width()-10,available.height()-overlay.controls()->height()-15);
+    overlay.setRegion(region); overlay.refresh();
+    QVERIFY(!region.intersects(overlay.controls()->geometry()));
+    QVERIFY(available.contains(overlay.controls()->geometry()));
+    overlay.setRegion(QGuiApplication::primaryScreen()->geometry()); overlay.refresh();
+    bool outsideFits=false;
+    for (auto screen:QGuiApplication::screens())
+      if (!screen->geometry().intersects(overlay.region()) && screen->availableGeometry().width()>=overlay.controls()->width() && screen->availableGeometry().height()>=overlay.controls()->height()) outsideFits=true;
+    if (!outsideFits) QVERIFY(overlay.region().contains(overlay.controls()->geometry()));
+  }
+  void clickAnimationMapsPixelsExpiresAndIgnoresExcludedInput() {
+    RecordingClicks clicks;
+    const auto now=RecordingClicks::Clock::now();
+    const RecordingClicks::Target target{{-400,200,400,200},{-380,220,100,40},true};
+    clicks.add({-200,300},target,now);
+    clicks.add({0,300},target,now); // outside
+    clicks.add({-350,230},target,now); // controls
+    clicks.add({-200,300},{{-400,200,400,200},{},false},now); // paused/off
+    QCOMPARE(clicks.count(),quint64(1));
+    QImage blank(800,200,QImage::Format_RGB32); blank.fill(canvasColor);
+    auto frame=blank.copy(); clicks.paint(frame,now+std::chrono::milliseconds(100));
+    QVERIFY(frame.pixelColor(400,100)!=canvasColor);
+    QCOMPARE(frame.pixelColor(100,100),canvasColor);
+    auto expired=blank.copy(); clicks.paint(expired,now+std::chrono::milliseconds(RecordingClicks::durationMs+1));
+    QCOMPARE(expired,blank);
+  }
+  void nativeMouseClicksAreEncodedAndSettingOffLeavesFramesUnchanged() {
+    QTemporaryDir dir;
+    const auto region=standardRegion();
+    QWidget target(nullptr,Qt::Tool|Qt::FramelessWindowHint|Qt::WindowStaysOnTopHint);
+    target.setGeometry(region); target.show(); target.raise();
+    QVERIFY(QTest::qWaitForWindowExposed(&target));
+    POINT original{}; QVERIFY(GetCursorPos(&original));
+    const auto restore=qScopeGuard([&] { SetCursorPos(original.x,original.y); });
+    const auto location=physicalRect(region).center();
+    QVERIFY(SetCursorPos(location.x(),location.y()));
+    for (bool enabled:{false,true}) {
+      Recorder recorder(dir.path()+"/recording");
+      RecordOptions options; options.region=physicalRect(region); options.cursor=false;
+      options.clickFeedback=enabled; options.fps=30;
+      options.output=dir.path()+(enabled?"/clicks-on.mp4":"/clicks-off.mp4");
+      QImage input(options.region.size(),QImage::Format_RGB32); input.fill(canvasColor);
+      QSignalSpy started(&recorder,&Recorder::started),finished(&recorder,&Recorder::finished),failed(&recorder,&Recorder::failed);
+      recorder.start(options,[input,calls=std::make_shared<std::atomic_int>(0)] {
+        // Simulate a capture/encoder stall spanning the entire wall-clock pulse.
+        // Feedback must still occur at the correct position in the video timeline.
+        if (++*calls==2) std::this_thread::sleep_for(std::chrono::milliseconds(600));
+        return input;
+      });
+      QVERIFY(started.wait(10000));
+      QTest::qWait(70);
+      // Only send native input onto this test's own visible canvas.
+      const auto window=WindowFromPoint({location.x(),location.y()});
+      QVERIFY(window==reinterpret_cast<HWND>(target.winId()));
+      // Position and click in the same native input batch: the pointer may have
+      // moved since the previous recording finished.
+      INPUT events[3]{};
+      for (auto &event:events) event.type=INPUT_MOUSE;
+      events[0].mi.dwFlags=MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK;
+      events[0].mi.dx=MulDiv(location.x()-GetSystemMetrics(SM_XVIRTUALSCREEN),65535,GetSystemMetrics(SM_CXVIRTUALSCREEN)-1);
+      events[0].mi.dy=MulDiv(location.y()-GetSystemMetrics(SM_YVIRTUALSCREEN),65535,GetSystemMetrics(SM_CYVIRTUALSCREEN)-1);
+      events[1].mi.dwFlags=MOUSEEVENTF_LEFTDOWN; events[2].mi.dwFlags=MOUSEEVENTF_LEFTUP;
+      QCOMPARE(SendInput(3,events,sizeof(INPUT)),UINT(3));
+      QTest::qWait(650);
+      recorder.pause(); QVERIFY(recorder.paused());
+      QCOMPARE(SendInput(3,events,sizeof(INPUT)),UINT(3)); // ignored while paused
+      QTest::qWait(50); recorder.pause();
+      QTest::qWait(100); recorder.stop();
+      QVERIFY2(finished.wait(15000),failed.isEmpty()?"Recording failed":qPrintable(failed.first()[0].toString()));
+      const auto result=finished.first()[0].toJsonObject();
+      QCOMPARE(result["click_feedback_events"].toInteger(),qint64(enabled?1:0));
+      if (enabled && !artifacts.isEmpty()) {
+        QFile::remove(artifacts+"/click-feedback.mp4");
+        QVERIFY(QFile::copy(options.output,artifacts+"/click-feedback.mp4"));
+      }
+      const auto frames=decodeFrames(options.output,result["width"].toInt(),result["height"].toInt());
+      QVERIFY(frames.size()>=10);
+      int animationFrames=0;
+      for (const auto &frame:frames) {
+        const auto pixel=frame.pixelColor(frame.width()/2-1,frame.height()/2-1);
+        if (qAbs(pixel.blue()-canvasColor.blue())>20 || qAbs(pixel.red()-canvasColor.red())>20) {
+          ++animationFrames;
+          if (enabled && animationFrames==1 && !artifacts.isEmpty()) QVERIFY(frame.save(artifacts+"/click-feedback-decoded.png"));
+        }
+      }
+      if (enabled) { QVERIFY(animationFrames>0); QVERIFY(animationFrames<frames.size()-2); }
+      else QCOMPARE(animationFrames,0);
+    }
   }
   void failureHidesController() {
     QTemporaryDir dir;

@@ -17,11 +17,12 @@ QList<AudioDevice> audioDevices(bool capture);
 using RecordingPainter = std::function<void(QImage &)>;
 class RecordingLiveState {
 public:
-  struct Snapshot { QRect region; RecordingPainter painter; };
+  struct Snapshot { QRect region; RecordingPainter painter; QRect controls; };
   explicit RecordingLiveState(QRect region, RecordingPainter painter = {}):value{region,std::move(painter)} {}
   Snapshot snapshot() const { std::lock_guard lock(mutex); return value; }
   void setRegion(QRect region) { std::lock_guard lock(mutex); value.region=region; }
   void setPainter(RecordingPainter painter) { std::lock_guard lock(mutex); value.painter=std::move(painter); }
+  void setControls(QRect controls) { std::lock_guard lock(mutex); value.controls=controls; }
 private:
   mutable std::mutex mutex;
   Snapshot value;
@@ -30,7 +31,7 @@ struct RecordOptions {
   QRect region;
   QString output, speakerId, micId;
   int fps = 30, quality = 22;
-  bool cursor = true, systemAudio = false, microphone = false;
+  bool cursor = true, systemAudio = false, microphone = false, clickFeedback = false;
   RecordingPainter painter;
   std::shared_ptr<RecordingLiveState> live;
   quintptr window = 0;
