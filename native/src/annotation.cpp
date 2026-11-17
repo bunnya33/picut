@@ -1,4 +1,5 @@
 #include "annotation.h"
+#include "annotation_control_icons.h"
 #include <QtCore/QJsonArray>
 #include <QtGui/QFontMetricsF>
 #include <QtGui/QPainterPathStroker>
@@ -633,13 +634,8 @@ void Annotation::paintControls(QPainter &painter, bool manipulating) const {
     for (auto i = controls.begin(); i != controls.end(); ++i)
       if (i.key() != "rotate")
         painter.drawRect(QRectF(i.value() - QPointF(3, 3), QSizeF(6, 6)));
-    const auto rotate = controls.value("rotate");
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(22, 136, 239, 45)); painter.drawEllipse(rotate, 6, 6);
-    painter.setPen(QPen(QColor("#1688ef"), 1.5));
-    painter.setBrush(Qt::white); painter.drawEllipse(rotate, 3.5, 3.5);
-    painter.setPen(Qt::NoPen); painter.setBrush(QColor("#1688ef"));
-    painter.drawEllipse(rotate, 1.2, 1.2);
+    paintRotationControl(painter,
+        QRectF(controls.value("rotate") - QPointF(7, 7), QSizeF(14, 14)));
     return;
   }
   painter.setBrush(Qt::NoBrush);
@@ -659,10 +655,13 @@ void Annotation::paintControls(QPainter &painter, bool manipulating) const {
         QPolygonF{r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()}));
   } else
     painter.drawRect(markBounds(mark));
-  painter.drawLine(controls.value("n", markBounds(mark).topRight()),
-                   controls.value("rotate"));
+  QLineF stem(controls.value("n", markBounds(mark).topRight()), controls.value("rotate"));
+  stem.setLength(qMax(0., stem.length() - 7));
+  painter.drawLine(stem);
   painter.setPen(QPen(QColor("#1688ef"), 1));
   painter.setBrush(Qt::white);
-  for (auto point : controls)
-    painter.drawEllipse(point, 4, 4);
+  for (auto i = controls.begin(); i != controls.end(); ++i)
+    if (i.key() != "rotate") painter.drawEllipse(i.value(), 4, 4);
+  paintRotationControl(painter,
+      QRectF(controls.value("rotate") - QPointF(7, 7), QSizeF(14, 14)));
 }

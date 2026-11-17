@@ -1,4 +1,5 @@
 #include "text_editor.h"
+#include "annotation_control_icons.h"
 #include <QtCore/QSignalBlocker>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
@@ -19,25 +20,8 @@
 QCursor annotationRotationCursor() {
   static const QCursor cursor = [] {
     QPixmap bitmap(32, 32); bitmap.fill(Qt::transparent);
-    QPainter painter(&bitmap); painter.setRenderHint(QPainter::Antialiasing);
-    QPainterPath arcs;
-    QList<QPolygonF> heads;
-    for (double start : {30., 210.}) {
-      arcs.arcMoveTo(QRectF(8, 8, 16, 16), start);
-      arcs.arcTo(QRectF(8, 8, 16, 16), start, 125);
-      const auto angle = (start + 125) * std::numbers::pi / 180;
-      const QPointF tip(16 + 8 * std::cos(angle), 16 - 8 * std::sin(angle));
-      const QPointF tangent(-std::sin(angle), -std::cos(angle));
-      const QPointF normal(tangent.y(), -tangent.x());
-      heads.append(QPolygonF{tip, tip - tangent * 5 + normal * 3,
-                            tip - tangent * 5 - normal * 3});
-    }
-    painter.setPen(QPen(Qt::white, 4, Qt::SolidLine, Qt::RoundCap));
-    painter.drawPath(arcs);
-    painter.setPen(QPen(QColor("#333333"), 1.5, Qt::SolidLine, Qt::RoundCap));
-    painter.drawPath(arcs);
-    painter.setPen(QPen(Qt::white, 1)); painter.setBrush(QColor("#333333"));
-    for (const auto &head : heads) painter.drawPolygon(head);
+    QPainter painter(&bitmap);
+    paintRotationControl(painter, {6, 6, 20, 20}, QColor("#333333"));
     return QCursor(bitmap, 16, 16);
   }();
   return cursor;
@@ -115,7 +99,7 @@ InlineTextEditor::InlineTextEditor(QWidget *parent) : QGraphicsView(parent) {
     button->setObjectName("text_" + name);
     button->setFixedSize(14, 14);
     button->setFocusPolicy(Qt::NoFocus);
-    button->setIcon(QIcon(":/toolbar/text-" + name + ".png"));
+    button->setIcon(annotationControlIcon(name));
     button->setIconSize({14, 14});
     button->setToolTip(name == "delete" ? "删除当前文字"
                        : name == "rotate" ? "旋转文字"

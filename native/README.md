@@ -1,6 +1,6 @@
-﻿# picut v0.5.52
+﻿# picut v0.5.53
 
-Text annotations now use an I-beam insertion cursor centered on the click, a padded transparent frame, corner scaling about the opposite corner, and rotation about the frame center. Move/scale/rotate gestures hide the editing frame until release; controls remain accessible outside the screenshot crop. See docs/更新记录-v0.5.52-文本标记交互.md.
+Annotation controls now use directly painted transparent icons instead of cropped screenshot assets. Rotation handles share a single circular arrow across text, shapes and effects, retaining the blue/white control palette. Existing text gestures remain unchanged. See docs/更新记录-v0.5.53-控制点图标.md.
 
 For incremental changes, build only affected targets and select the relevant QtTest functions. Do not run unchanged OCR, translation, recording encoders or the full regression suite for annotation or recording-quality changes. The root build script remains available for an explicitly requested full release audit.
 
@@ -73,7 +73,7 @@ Install Visual Studio 2022 or newer with C++ desktop tools and a Windows 10/11 S
 
 `setup-sdk.ps1` fetches the official Qt MSVC x64 SDK, pinned ZXing-C++ source, and standalone FFmpeg, verifies SHA-256 hashes, and uses Windows tar / Expand-Archive. It does not install anything globally. An existing Qt installation can be used with `build.ps1 -QtDir C:/Qt/6.8.3/msvc2022_64`. `build-native.cmd` is a convenience wrapper. Packaging supports `-QtDir`, `-Ffmpeg`, and `-NoZip`.
 
-This branch builds executables in `build/native-scroll-performance/`. The complete runtime folder and ZIP are in `dist/picut-0.5.52*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
+This branch builds executables in `build/native-scroll-performance/`. The complete runtime folder and ZIP are in `dist/picut-0.5.53*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
 
 To build the Windows installer from this deployed runtime, run `./native/build-installer.ps1`. It prepares a local portable Inno Setup 6.7.3 compiler on first use, verifying the official bootstrap's SHA-256 and Authenticode signature and pinning the Chinese translation to the same source tag. No global compiler installation is required. Options `-PackageDir` and `-Iscc` accept an existing runtime/compiler. The app version comes from `picut.exe` metadata. The output is `dist/picut-<version>-setup-x64.exe` plus its SHA-256 file; payload hashes are saved under `build/installer/` for verification.
 

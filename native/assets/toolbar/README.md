@@ -10,5 +10,8 @@ Reference layout: 32 x 32 buttons, 16 x 16 icons, two 5 px separator slots,
 
 The text-bold, text-italic, text-outline glyph masks and the five text control
 icons come from the user's additional inline-text reference on 2026-10-16.
-The text toolbar uses its 20-color palette and ordering. Text controls retain
-the reference's blue and white shapes at 14 px.
+The text toolbar uses its 20-color palette and ordering. Since v0.5.53, the
+five cropped text-control PNGs are reference assets only; the controls are
+drawn with QPainter in annotation_control_icons.h to avoid stray opaque pixels.
+They retain blue/white styling at 14 logical pixels with multiple DPI sizes.
+All annotation rotation controls share one circular-arrow glyph.
