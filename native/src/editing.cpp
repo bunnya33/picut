@@ -6,6 +6,7 @@
 #include <QtCore/QMimeData>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QActionGroup>
+#include <QtGui/QCursor>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QScreen>
@@ -15,6 +16,33 @@
 #include <QtWidgets/QMenu>
 #include <cmath>
 #include <numbers>
+
+static QCursor rotationCursor() {
+  static const QCursor cursor = [] {
+    QPixmap bitmap(32, 32); bitmap.fill(Qt::transparent);
+    QPainter painter(&bitmap); painter.setRenderHint(QPainter::Antialiasing);
+    QPainterPath arcs;
+    QList<QPolygonF> heads;
+    for (double start : {30., 210.}) {
+      arcs.arcMoveTo(QRectF(8, 8, 16, 16), start);
+      arcs.arcTo(QRectF(8, 8, 16, 16), start, 125);
+      const auto angle = (start + 125) * std::numbers::pi / 180;
+      const QPointF tip(16 + 8 * std::cos(angle), 16 - 8 * std::sin(angle));
+      const QPointF tangent(-std::sin(angle), -std::cos(angle));
+      const QPointF normal(tangent.y(), -tangent.x());
+      heads.append(QPolygonF{tip, tip - tangent * 5 + normal * 3,
+                            tip - tangent * 5 - normal * 3});
+    }
+    painter.setPen(QPen(Qt::white, 4, Qt::SolidLine, Qt::RoundCap));
+    painter.drawPath(arcs);
+    painter.setPen(QPen(QColor("#333333"), 1.5, Qt::SolidLine, Qt::RoundCap));
+    painter.drawPath(arcs);
+    painter.setPen(QPen(Qt::white, 1)); painter.setBrush(QColor("#333333"));
+    for (const auto &head : heads) painter.drawPolygon(head);
+    return QCursor(bitmap, 16, 16);
+  }();
+  return cursor;
+}
 
 EditingSurface::EditingSurface(Store *s, QWidget *parent, Qt::WindowFlags flags)
     : QWidget(parent, flags), store(s) {
@@ -188,7 +216,7 @@ void EditingSurface::paintEditing(QPainter &p) {
   p.translate(r.topLeft());
   p.scale(double(r.width()) / annotation->original.width(),
           double(r.height()) / annotation->original.height());
-  annotation->paintControls(p);
+  annotation->paintControls(p, bool(dragOriginal));
   p.restore();
   bool brush = annotation->tool == "pen" || annotation->tool == "arrow" ||
                annotation->tool == "line" || annotation->tool == "marker" ||
@@ -251,14 +279,18 @@ void EditingSurface::updateDrawingCursor(QPoint point) {
   auto target = editTarget(point);
   if (target == "move")
     setCursor(Qt::SizeAllCursor);
-  else if (target == "n" || target == "s")
-    setCursor(Qt::SizeVerCursor);
-  else if (target == "w" || target == "e")
-    setCursor(Qt::SizeHorCursor);
-  else if (target == "nw" || target == "se")
-    setCursor(Qt::SizeFDiagCursor);
-  else if (target == "ne" || target == "sw")
-    setCursor(Qt::SizeBDiagCursor);
+  else if (target == "rotate")
+    setCursor(rotationCursor());
+  else if (QStringList{"n", "s", "w", "e", "nw", "ne", "sw", "se"}.contains(target)) {
+    const QPointF direction(target.contains('e') ? 1 : target.contains('w') ? -1 : 0,
+                            target.contains('s') ? 1 : target.contains('n') ? -1 : 0);
+    const auto transform = markTransform(annotation->marks[annotation->selected]);
+    const auto vector = transform.map(direction) - transform.map(QPointF());
+    const int angle = (qRound(std::atan2(vector.y(), vector.x()) * 4 / std::numbers::pi) % 4 + 4) % 4;
+    const Qt::CursorShape shapes[]{Qt::SizeHorCursor, Qt::SizeFDiagCursor,
+                                   Qt::SizeVerCursor, Qt::SizeBDiagCursor};
+    setCursor(shapes[angle]);
+  }
   else if (!target.isEmpty())
     setCursor(Qt::SizeAllCursor);
   else if (editing && annotation) {
@@ -274,13 +306,13 @@ bool EditingSurface::annotationPress(QMouseEvent *e) {
     return false;
   auto point = e->position().toPoint();
   pointer = point;
-  if (!contentRect().contains(point)) {
+  auto target = editTarget(point);
+  if (!contentRect().contains(point) && (target.isEmpty() || target == "move")) {
     commitText();
     annotation->confirm();
     update();
     return false;
   }
-  auto target = editTarget(point);
   auto image = imagePoint(point);
   if (!target.isEmpty()) {
     dragHandle = target;
@@ -299,6 +331,7 @@ bool EditingSurface::annotationPress(QMouseEvent *e) {
   if (annotation->tool == "text") {
     commitText();
     ensureTextEditor();
+    annotation->preferences.rotation = 0;
     auto mark = annotation->preferences;
     mark.kind = "text";
     mark.text.clear();
@@ -310,6 +343,7 @@ bool EditingSurface::annotationPress(QMouseEvent *e) {
     annotation->draft->points.append(image);
     return true;
   }
+  annotation->preferences.rotation = 0;
   auto mark = annotation->preferences;
   mark.kind = annotation->tool;
   // Choose once per stroke so releasing Shift before the mouse does not

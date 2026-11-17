@@ -591,6 +591,8 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *e) {
   if (e->button() != Qt::LeftButton)
     return;
   setFocus();
+  if (!recording && editing && !editTarget(pointer).isEmpty() && annotationPress(e))
+    return;
   auto handle = selectionHandle(pointer);
   if (!handle.isEmpty() ||
       (!selection.isEmpty() && selection.contains(pointer) &&
@@ -664,6 +666,8 @@ void CaptureOverlay::mouseMoveEvent(QMouseEvent *e) {
     return;
   }
   if (!recording && annotationMove(e))
+    return;
+  if (!recording && editing && !editTarget(pointer).isEmpty())
     return;
   if (selection.isEmpty()) {
     auto global = pointer + pos();

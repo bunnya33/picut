@@ -1446,7 +1446,14 @@ private slots:
     change(false,true,true);
     Store enabled(dir.path()); QVERIFY(enabled.config["startup"].toBool());
   }
+  void recordingSettingsPersistenceAndCancel_data() {
+    QTest::addColumn<int>("fps"); QTest::addColumn<int>("quality");
+    QTest::newRow("15-clearer") << 15 << 18;
+    QTest::newRow("30-default") << 30 << 22;
+    QTest::newRow("60-original") << 60 << 14;
+  }
   void recordingSettingsPersistenceAndCancel() {
+    QFETCH(int, fps); QFETCH(int, quality);
     QTemporaryDir dir; Store store(dir.path());
     QVERIFY(!store.config["click_feedback"].toBool());
     QVERIFY(!savedRecordingOptions(store.config,{30,40,500,300},"movie.mp4").clickFeedback);
@@ -1456,8 +1463,11 @@ private slots:
     dialog.findChild<QCheckBox *>("recordSystemAudio")->setChecked(true);
     dialog.findChild<QCheckBox *>("recordMicrophone")->setChecked(true);
     dialog.findChild<QCheckBox *>("recordCursor")->setChecked(false);
-    dialog.findChild<QComboBox *>("recordFps")->setCurrentIndex(1);
-    dialog.findChild<QComboBox *>("recordQuality")->setCurrentIndex(1);
+    auto fpsChoice=dialog.findChild<QComboBox *>("recordFps");
+    auto qualityChoice=dialog.findChild<QComboBox *>("recordQuality");
+    QVERIFY(fpsChoice->findData(fps)>=0); QVERIFY(qualityChoice->findData(quality)>=0);
+    fpsChoice->setCurrentIndex(fpsChoice->findData(fps));
+    qualityChoice->setCurrentIndex(qualityChoice->findData(quality));
     dialog.findChild<QSpinBox *>("recordCountdown")->setValue(5);
     dialog.findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
     QCOMPARE(dialog.result(),int(QDialog::Accepted));
@@ -1465,16 +1475,51 @@ private slots:
     auto options=savedRecordingOptions(reopened.config,{60,80,1000,600},"movie.mp4");
     QVERIFY(options.systemAudio && options.microphone && !options.cursor);
     QVERIFY(options.clickFeedback);
-    QCOMPARE(options.fps,15); QCOMPARE(options.quality,18);
+    QCOMPARE(options.fps,fps); QCOMPARE(options.quality,quality);
     QCOMPARE(options.region,QRect(60,80,1000,600));
     QCOMPARE(reopened.config["countdown"].toInt(),5);
-    QVERIFY(recordingSummary(reopened.config).contains("15 fps"));
+    QVERIFY(recordingSummary(reopened.config).contains(QString("%1 fps").arg(fps)));
+    if (quality==14) QVERIFY(recordingSummary(reopened.config).contains("原画"));
     QVERIFY(recordingSummary(reopened.config).contains("点击反馈开"));
     auto saved=reopened.config;
     RecordingSettingsDialog canceled(&reopened,{30,40,500,300},false);
     canceled.findChild<QSpinBox *>("recordCountdown")->setValue(1);
     canceled.findChild<QCheckBox *>("recordClickFeedback")->setChecked(false);
     canceled.reject(); QCOMPARE(reopened.config,saved);
+  }
+  void originalResolutionAnd60FpsEncoding_data() {
+    QTest::addColumn<QSize>("sourceSize"); QTest::addColumn<QSize>("encodedSize");
+    QTest::newRow("above-1080p") << QSize(1922,1082) << QSize(1922,1082);
+    QTest::newRow("odd-size-padding") << QSize(321,181) << QSize(322,182);
+  }
+  void originalResolutionAnd60FpsEncoding() {
+    QFETCH(QSize,sourceSize); QFETCH(QSize,encodedSize);
+    QVERIFY2(QFileInfo::exists(Recorder::ffmpegPath()),"FFmpeg required for the recording check");
+    QTemporaryDir dir; Store store(dir.path());
+    store.config["fps"]=60; store.config["quality"]=14;
+    auto options=savedRecordingOptions(store.config,QRect(QPoint(),sourceSize),dir.path()+"/original.mp4");
+    options.cursor=false;
+    QImage frame(sourceSize,QImage::Format_RGB32); frame.fill(Qt::white);
+    { QPainter painter(&frame); painter.setPen(Qt::black);
+      for(int y=10;y<sourceSize.height();y+=24)
+        painter.drawText(8,y,QString("Original screen text %1 / 123456789").arg(y)); }
+    Recorder recorder(store.path("recording"));
+    QSignalSpy started(&recorder,&Recorder::started),done(&recorder,&Recorder::finished),failed(&recorder,&Recorder::failed);
+    recorder.start(options,[frame] { return frame; });
+    QTRY_VERIFY_WITH_TIMEOUT(!started.isEmpty() || !failed.isEmpty(),5000);
+    QVERIFY2(failed.isEmpty(),failed.isEmpty()?"":qPrintable(failed.first().first().toString()));
+    QTest::qWait(450); recorder.stop();
+    QTRY_VERIFY_WITH_TIMEOUT(!done.isEmpty() || !failed.isEmpty(),15000);
+    QVERIFY2(failed.isEmpty(),failed.isEmpty()?"":qPrintable(failed.first().first().toString()));
+    const auto result=done.first().first().toJsonObject();
+    QCOMPARE(QSize(result["width"].toInt(),result["height"].toInt()),encodedSize);
+    QVERIFY(result["frames"].toInt()>=20);
+    QProcess inspect;
+    inspect.start(Recorder::ffmpegPath(),{"-hide_banner","-i",options.output,"-map","0:v:0",
+      "-frames:v","1","-vf","showinfo","-f","null","-"});
+    QVERIFY(inspect.waitForFinished(10000)); QCOMPARE(inspect.exitCode(),0);
+    const auto log=QString::fromUtf8(inspect.readAllStandardError());
+    QVERIFY2(QString(log).remove(' ').contains("frame_rate:60/1"),qPrintable(log));
   }
   void retiredRecordingShortcutReleasesOldBindings() {
     QTemporaryDir dir; Store defaults(dir.path());
@@ -2856,6 +2901,74 @@ private slots:
     QTest::mouseRelease(overlay, Qt::LeftButton, Qt::NoModifier, {120, 570});
     overlay->close();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  }
+  void rotatedAreaControlsAndNewMarkAngle_data() {
+    QTest::addColumn<QString>("kind"); QTest::addColumn<QString>("area");
+    QTest::newRow("rect") << QString("rect") << QString("stroke");
+    QTest::newRow("ellipse") << QString("ellipse") << QString("stroke");
+    QTest::newRow("marker-rect") << QString("marker") << QString("rect");
+    QTest::newRow("mosaic-rect") << QString("mosaic") << QString("rect");
+    QTest::newRow("blur-rect") << QString("blur") << QString("rect");
+    QTest::newRow("mosaic-ellipse") << QString("mosaic") << QString("ellipse");
+    QTest::newRow("blur-ellipse") << QString("blur") << QString("ellipse");
+    QTest::newRow("eraser-rect") << QString("eraser") << QString("rect");
+    QTest::newRow("magnify") << QString("magnify") << QString("rect");
+  }
+  void rotatedAreaControlsAndNewMarkAngle() {
+    QFETCH(QString, kind); QFETCH(QString, area);
+    QTemporaryDir dir; Store store(dir.path());
+    auto overlay=editingFixture(store,kind);
+    auto cleanup=qScopeGuard([&] { delete overlay; });
+    overlay->setPreference("area_shape",area);
+    auto &a=*overlay->annotation;
+    const auto origin=overlay->selection.topLeft();
+    QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,origin+QPoint(40,60));
+    dragMove(overlay,origin+QPoint(220,170));
+    QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,origin+QPoint(220,170));
+    QCOMPARE(a.marks.size(),1); QCOMPARE(markControls(a.marks.first()).size(),9);
+    auto rotate=markControls(a.marks.first())["rotate"];
+    const auto center=QRectF(a.marks.first().points.first(),a.marks.first().points.last()).center();
+    const auto end=center+QPointF(center.y()-rotate.y(),0);
+    QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,origin+rotate.toPoint());
+    dragMove(overlay,origin+end.toPoint());
+    QCOMPARE(a.marks.first().rotation,90);
+    if(kind=="blur" && area=="rect") QVERIFY(savePreview(overlay,"blur-rotating.png"));
+    QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,origin+end.toPoint());
+    QCOMPARE(overlay->cursor().shape(),Qt::BitmapCursor);
+    if(kind=="blur" && area=="rect") QVERIFY(savePreview(overlay,"blur-rotated-controls.png"));
+    a.adjustWidth(1); QCOMPARE(a.marks.first().rotation,90);
+    const auto controls=markControls(a.marks.first());
+    const auto se=origin+controls["se"].toPoint();
+    QMouseEvent hover(QEvent::MouseMove,QPointF(se),QPointF(overlay->mapToGlobal(se)),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+    QApplication::sendEvent(overlay,&hover);
+    QCOMPARE(overlay->cursor().shape(),Qt::SizeBDiagCursor);
+    QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,se);
+    dragMove(overlay,se+QPoint(-20,35));
+    QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,se+QPoint(-20,35));
+    QVERIFY(QLineF(markControls(a.marks.first())["nw"],controls["nw"]).length()<.01);
+    const auto previous=a.marks.first().json();
+    QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,origin+QPoint(340,40));
+    QVERIFY(a.draft); QCOMPARE(a.draft->rotation,0);
+    dragMove(overlay,origin+QPoint(440,90));
+    QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,origin+QPoint(440,90));
+    QCOMPARE(a.marks.size(),2); QCOMPARE(a.marks.last().rotation,0);
+    QCOMPARE(a.marks.first().json(),previous);
+  }
+  void rotateHandleAboveSelectionRemainsOperable() {
+    QTemporaryDir dir; Store store(dir.path());
+    auto overlay=editingFixture(store,"blur");
+    auto cleanup=qScopeGuard([&] { delete overlay; });
+    Mark mark=overlay->annotation->preferences;
+    mark.areaShape="rect"; mark.points={{80,5},{240,75}};
+    overlay->annotation->add(mark);
+    const auto selection=overlay->selection;
+    const auto point=selection.topLeft()+markControls(mark)["rotate"].toPoint();
+    QVERIFY(!selection.contains(point));
+    QTest::mousePress(overlay,Qt::LeftButton,Qt::NoModifier,point);
+    dragMove(overlay,point+QPoint(40,20));
+    QTest::mouseRelease(overlay,Qt::LeftButton,Qt::NoModifier,point+QPoint(40,20));
+    QVERIFY(overlay->annotation->marks.first().rotation!=0);
+    QCOMPARE(overlay->selection,selection);
   }
   void exitPromptAtSelectionAndRotatedWidth() {
     QTemporaryDir dir;

@@ -1,5 +1,5 @@
 ﻿$ErrorActionPreference = 'Stop'
-$floatshotExecutable = Join-Path $PSScriptRoot 'dist/picut-0.5.47/picut.exe'
+$floatshotExecutable = Join-Path $PSScriptRoot 'dist/picut-0.5.48/picut.exe'
 if (-not (Test-Path -LiteralPath $floatshotExecutable)) {
     throw 'Native release missing. Run build.ps1 first.'
 }

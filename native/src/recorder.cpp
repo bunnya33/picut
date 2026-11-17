@@ -430,9 +430,10 @@ void Recorder::run(const RecordOptions &options,
     int w = first.width(), h = first.height();
     if (w < 2 || h < 2)
       throw std::runtime_error("录制区域无效。");
-    double ratio = qMin(1.0, qMin(1920.0 / w, 1080.0 / h));
-    int outW = qMax(2, qRound(w * ratio) / 2 * 2),
-        outH = qMax(2, qRound(h * ratio) / 2 * 2);
+    const bool originalResolution = options.quality <= 14;
+    double ratio = originalResolution ? 1. : qMin(1.0, qMin(1920.0 / w, 1080.0 / h));
+    int outW = originalResolution ? (w + 1) / 2 * 2 : qMax(2, qRound(w * ratio) / 2 * 2),
+        outH = originalResolution ? (h + 1) / 2 * 2 : qMax(2, qRound(h * ratio) / 2 * 2);
     QStringList args{"-y",
                      "-hide_banner",
                      "-loglevel",
@@ -449,7 +450,7 @@ void Recorder::run(const RecordOptions &options,
                      "pipe:0",
                      "-an",
                      "-vf",
-                     QString("scale=%1:%2").arg(outW).arg(outH),
+                     QString(originalResolution ? "pad=%1:%2:0:0" : "scale=%1:%2").arg(outW).arg(outH),
                      "-c:v",
                      "libx264",
                      "-preset",

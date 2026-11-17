@@ -62,5 +62,5 @@ public:
   void adjustWidth(int steps);
   void applyPreferences();
   QImage render(bool includeDraft = true) const;
-  void paintControls(QPainter &painter) const;
+  void paintControls(QPainter &painter, bool manipulating = false) const;
 };

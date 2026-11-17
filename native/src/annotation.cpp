@@ -114,7 +114,9 @@ bool isEndpointMark(const Mark &mark) {
 }
 bool isBoxMark(const Mark &mark) {
   return mark.kind == "rect" || mark.kind == "ellipse" ||
-         (mark.kind == "marker" && mark.areaShape == "rect");
+         (mark.kind == "marker" && mark.areaShape == "rect") ||
+         ((mark.kind == "mosaic" || mark.kind == "blur" || mark.kind == "eraser") &&
+          mark.areaShape != "stroke") || mark.kind == "magnify";
 }
 QTransform markTransform(const Mark &mark) {
   // A freehand stroke keeps the sampled positions. A marker line uses its
@@ -575,13 +577,47 @@ QImage Annotation::render(bool includeDraft) const {
     paint(*draft);
   return image;
 }
-void Annotation::paintControls(QPainter &painter) const {
+void Annotation::paintControls(QPainter &painter, bool manipulating) const {
+  auto effectArea = [](const Mark &mark) {
+    return (mark.kind == "mosaic" || mark.kind == "blur") && mark.areaShape != "stroke";
+  };
+  auto outline = [&](const Mark &mark) {
+    const auto r = QRectF(mark.points.first(), mark.points.last()).normalized();
+    painter.drawPolygon(markTransform(mark).map(
+        QPolygonF{r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()}));
+  };
+  if (draft && effectArea(*draft)) {
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor("#999999"), 1));
+    outline(*draft);
+    return;
+  }
   if (selected < 0 || selected >= marks.size())
     return;
   const auto &mark = marks[selected];
   auto controls = markControls(mark);
   if (controls.isEmpty())
     return;
+  if (effectArea(mark)) {
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor(manipulating ? "#999999" : "#555555"), 1,
+                        manipulating ? Qt::SolidLine : Qt::DashLine));
+    outline(mark);
+    if (manipulating) return;
+    painter.setPen(QPen(QColor("#666666"), 1));
+    painter.setBrush(Qt::white);
+    for (auto i = controls.begin(); i != controls.end(); ++i)
+      if (i.key() != "rotate")
+        painter.drawRect(QRectF(i.value() - QPointF(3, 3), QSizeF(6, 6)));
+    const auto rotate = controls.value("rotate");
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(22, 136, 239, 45)); painter.drawEllipse(rotate, 6, 6);
+    painter.setPen(QPen(QColor("#1688ef"), 1.5));
+    painter.setBrush(Qt::white); painter.drawEllipse(rotate, 3.5, 3.5);
+    painter.setPen(Qt::NoPen); painter.setBrush(QColor("#1688ef"));
+    painter.drawEllipse(rotate, 1.2, 1.2);
+    return;
+  }
   painter.setBrush(Qt::NoBrush);
   if (isEndpointMark(mark)) {
     for (auto point : controls) {

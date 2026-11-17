@@ -12,7 +12,7 @@
 QString recordingSummary(const QJsonObject &config) {
   const int quality=config["quality"].toInt(22);
   return QString("%1 fps · %2 · 系统声%3 · 麦克风%4 · 鼠标%5 · 点击反馈%6 · 倒计时 %7 秒")
-      .arg(config["fps"].toInt(30)).arg(quality<=18?"更清晰":quality>=28?"小文件":"清晰")
+      .arg(config["fps"].toInt(30)).arg(quality<=14?"原画":quality<=18?"更清晰":quality>=28?"小文件":"清晰")
       .arg(config["system_audio"].toBool()?"开":"关")
       .arg(config["microphone"].toBool()?"开":"关")
       .arg(config["cursor"].toBool(true)?"开":"关")
@@ -23,9 +23,10 @@ RecordOptions savedRecordingOptions(const QJsonObject &config, QRect region,cons
   RecordOptions options; options.region=region; options.output=output;
   options.systemAudio=config["system_audio"].toBool(); options.microphone=config["microphone"].toBool();
   options.speakerId=config["speaker_id"].toString(); options.micId=config["mic_id"].toString();
-  options.cursor=config["cursor"].toBool(true); options.fps=config["fps"].toInt(30)==15?15:30;
+  options.cursor=config["cursor"].toBool(true);
+  const auto fps=config["fps"].toInt(30); options.fps=fps==15 || fps==60?fps:30;
   options.clickFeedback=config["click_feedback"].toBool(false);
-  options.quality=qBound(18,config["quality"].toInt(22),28); return options;
+  options.quality=qBound(14,config["quality"].toInt(22),28); return options;
 }
 RecordingSettingsDialog::RecordingSettingsDialog(Store *store,QRect region,bool start,QWidget *parent)
     : QDialog(parent) {
@@ -59,9 +60,12 @@ RecordingSettingsDialog::RecordingSettingsDialog(Store *store,QRect region,bool 
   clicks->setToolTip("在录制视频中显示短暂的点击圆点动画，支持鼠标左键、右键和中键。");
   clicks->setChecked(store->config["click_feedback"].toBool(false)); form->addRow(clicks);
   auto fps=new QComboBox; fps->setObjectName("recordFps"); fps->addItem("30 fps",30); fps->addItem("15 fps",15);
-  fps->setCurrentIndex(store->config["fps"].toInt(30)==15?1:0); form->addRow("帧率",fps);
+  fps->addItem("60 fps",60);
+  fps->setCurrentIndex(qMax(0,fps->findData(store->config["fps"].toInt(30)))); form->addRow("帧率",fps);
   auto quality=new QComboBox; quality->setObjectName("recordQuality");
   quality->addItem("清晰 · 推荐",22); quality->addItem("更清晰",18); quality->addItem("更小文件",28);
+  quality->addItem("原画 · 保留原始分辨率",14);
+  quality->setToolTip("原画保留录制区域的原始分辨率并减少压缩；文件更大，性能开销更高。原画仍为压缩视频。");
   quality->setCurrentIndex(qMax(0,quality->findData(store->config["quality"].toInt(22)))); form->addRow("画质",quality);
   auto countdown=new QSpinBox; countdown->setObjectName("recordCountdown"); countdown->setRange(0,10);
   countdown->setValue(store->config["countdown"].toInt(3)); form->addRow("倒计时",countdown);
