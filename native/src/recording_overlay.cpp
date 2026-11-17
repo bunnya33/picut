@@ -88,7 +88,7 @@ public:
     layout->setSpacing(3);
     moveRegion = new QToolButton;
     moveRegion->setObjectName("moveRecordingRegion"); moveRegion->setIcon(recordingIcon("move",Qt::black));
-    moveRegion->setIconSize({16,16}); moveRegion->setFixedSize(32,32); moveRegion->setCursor(Qt::SizeAllCursor);
+    moveRegion->setIconSize({20,20}); moveRegion->setFixedSize(32,32); moveRegion->setCursor(Qt::SizeAllCursor);
     moveRegion->setToolTip("拖动以移动录屏区域"); moveRegion->hide(); layout->addWidget(moveRegion);
     auto grip = new QLabel;
     grip->setPixmap(recordingIcon("grip").pixmap(16,16));
