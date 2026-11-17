@@ -477,7 +477,7 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
   const bool selectingText = imageText && imageText->isVisible();
   if (!selectingText && !recording) paintEditing(p);
   bool brush = annotation &&
-               QStringList{"pen", "line", "arrow", "marker", "eraser"}.contains(
+               QStringList{"pen", "line", "arrow", "marker", "eraser", "text"}.contains(
                    annotation->tool) &&
                selection.contains(pointer);
   if (!recording && !selectingText && (alt || (!brush && (!annotation || (!annotation->draft && !dragOriginal)))))

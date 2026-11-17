@@ -17,39 +17,17 @@
 #include <cmath>
 #include <numbers>
 
-static QCursor rotationCursor() {
-  static const QCursor cursor = [] {
-    QPixmap bitmap(32, 32); bitmap.fill(Qt::transparent);
-    QPainter painter(&bitmap); painter.setRenderHint(QPainter::Antialiasing);
-    QPainterPath arcs;
-    QList<QPolygonF> heads;
-    for (double start : {30., 210.}) {
-      arcs.arcMoveTo(QRectF(8, 8, 16, 16), start);
-      arcs.arcTo(QRectF(8, 8, 16, 16), start, 125);
-      const auto angle = (start + 125) * std::numbers::pi / 180;
-      const QPointF tip(16 + 8 * std::cos(angle), 16 - 8 * std::sin(angle));
-      const QPointF tangent(-std::sin(angle), -std::cos(angle));
-      const QPointF normal(tangent.y(), -tangent.x());
-      heads.append(QPolygonF{tip, tip - tangent * 5 + normal * 3,
-                            tip - tangent * 5 - normal * 3});
-    }
-    painter.setPen(QPen(Qt::white, 4, Qt::SolidLine, Qt::RoundCap));
-    painter.drawPath(arcs);
-    painter.setPen(QPen(QColor("#333333"), 1.5, Qt::SolidLine, Qt::RoundCap));
-    painter.drawPath(arcs);
-    painter.setPen(QPen(Qt::white, 1)); painter.setBrush(QColor("#333333"));
-    for (const auto &head : heads) painter.drawPolygon(head);
-    return QCursor(bitmap, 16, 16);
-  }();
-  return cursor;
-}
-
 EditingSurface::EditingSurface(Store *s, QWidget *parent, Qt::WindowFlags flags)
     : QWidget(parent, flags), store(s) {
   setMouseTracking(true);
   setFocusPolicy(Qt::StrongFocus);
 }
 EditingSurface::~EditingSurface() {
+  if (textEntry) {
+    textEntry->disconnect(this);
+    delete textEntry;
+    textEntry = nullptr;
+  }
   if (imageTranslation) {
     imageTranslation->disconnect(this); delete imageTranslation; imageTranslation = nullptr;
   }
@@ -284,7 +262,7 @@ void EditingSurface::updateDrawingCursor(QPoint point) {
   if (target == "move")
     setCursor(Qt::SizeAllCursor);
   else if (target == "rotate")
-    setCursor(rotationCursor());
+    setCursor(annotationRotationCursor());
   else if (QStringList{"n", "s", "w", "e", "nw", "ne", "sw", "se"}.contains(target)) {
     const QPointF direction(target.contains('e') ? 1 : target.contains('w') ? -1 : 0,
                             target.contains('s') ? 1 : target.contains('n') ? -1 : 0);
@@ -301,7 +279,9 @@ void EditingSurface::updateDrawingCursor(QPoint point) {
     bool brush =
         QStringList{"pen", "line", "arrow", "marker", "eraser"}.contains(
             annotation->tool);
-    setCursor(brush ? Qt::BlankCursor : Qt::CrossCursor);
+    setCursor(brush ? Qt::BlankCursor
+                   : annotation->tool == "text" && contentRect().contains(point)
+                       ? Qt::IBeamCursor : Qt::CrossCursor);
   } else
     setCursor(Qt::ArrowCursor);
 }
@@ -340,7 +320,8 @@ bool EditingSurface::annotationPress(QMouseEvent *e) {
     mark.kind = "text";
     mark.text.clear();
     mark.points = {image};
-    textEntry->begin(mark, contentRect(), annotation->original.size());
+    textEntry->begin(mark, contentRect(), annotation->original.size(), true);
+    if (toolbar) toolbar->raise();
     return true;
   }
   if (annotation->tool == "polyline" && annotation->draft) {
@@ -524,7 +505,9 @@ bool EditingSurface::annotationKey(QKeyEvent *e) {
     ensureTextEditor(); numberLabelIndex=annotation->selected;
     auto mark=annotation->marks[numberLabelIndex];
     annotation->marks[numberLabelIndex].text.clear(); annotation->refresh();
-    textEntry->begin(mark,contentRect(),annotation->original.size()); update(); return true;
+    textEntry->begin(mark,contentRect(),annotation->original.size());
+    if (toolbar) toolbar->raise();
+    update(); return true;
   }
   if (ctrl && e->key() >= Qt::Key_1 && e->key() <= Qt::Key_8) {
     chooseTool(QStringList{"rect", "arrow", "pen", "marker", "mosaic", "text",
@@ -617,10 +600,12 @@ void EditingSurface::ensureTextEditor() {
               [this](double size, int rotation) {
                 annotation->preferences.fontSize = size;
                 annotation->preferences.rotation = rotation;
-                annotation->savePreferences(store);
-                toolbar->sync(*annotation);
+                if (toolbar) toolbar->sync(*annotation);
                 positionToolbar();
               });
+      connect(textEntry, &InlineTextEditor::geometryEditFinished, this, [this] {
+        annotation->savePreferences(store);
+      });
     }
 }
 void EditingSurface::commitText() {

@@ -40,6 +40,8 @@
 #include <QtGui/QContextMenuEvent>
 #include <QtGui/QWheelEvent>
 #include <QtGui/QInputMethodEvent>
+#include <QtGui/QTextBlock>
+#include <QtGui/QTextLayout>
 #include <QtGui/QPaintEvent>
 #include <QtWidgets/QGraphicsTextItem>
 #include <QtWidgets/QLineEdit>
@@ -205,6 +207,12 @@ class NativeTests : public QObject {
     QMouseEvent move(QEvent::MouseMove, QPointF(point),
                      QPointF(widget->mapToGlobal(point)), Qt::NoButton,
                      Qt::LeftButton, modifiers);
+    QApplication::sendEvent(widget, &move);
+  }
+  static void hoverMove(QWidget *widget, QPoint point) {
+    QMouseEvent move(QEvent::MouseMove, QPointF(point),
+                     QPointF(widget->mapToGlobal(point)), Qt::NoButton,
+                     Qt::NoButton, Qt::NoModifier);
     QApplication::sendEvent(widget, &move);
   }
   static void wheel(QWidget *widget, QPoint point, int steps) {
@@ -2902,6 +2910,8 @@ private slots:
     QTest::mouseClick(bar->italicButton, Qt::LeftButton);
     QTest::mouseClick(bar->outlineButton, Qt::LeftButton);
     overlay->setPreference("color", QColor(0, 180, 255));
+    editor->setFocus();
+    editor->textItem()->setFocus();
     QTest::keyClicks(editor, "Format");
     auto pending = editor->value();
     QVERIFY(pending.bold);
@@ -2909,6 +2919,7 @@ private slots:
     QCOMPARE(pending.outlineWidth, 1);
     QCOMPARE(pending.color, QColor(0, 180, 255));
     QCOMPARE(editor->textItem()->font().pointSizeF(), 8.75);
+    QTest::mouseMove(editor->viewport(), {700, 550});
     auto actualText = overlay->grab().toImage();
     QImage expectedText = overlay->annotation->original.copy();
     paintMark(expectedText, pending);
@@ -2922,7 +2933,10 @@ private slots:
     cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
     QCOMPARE(cursor.charFormat().foreground().color(), pending.color);
     QVERIFY(cursor.charFormat().textOutline().style() != Qt::NoPen);
-    const auto bounds = markBounds(pending).toAlignedRect().adjusted(8, 4, -8, -4);
+    // Compare glyphs inside the actual document, excluding the editor frame
+    // and the larger minimum hit area used for tiny annotations.
+    const auto bounds = QRectF(pending.points.first(), editor->textItem()->document()->size())
+                            .toAlignedRect().adjusted(8, 2, -8, -2);
     int different = 0, pixels = 0;
     for (int y = bounds.top(); y <= bounds.bottom(); ++y)
       for (int x = bounds.left(); x <= bounds.right(); ++x) {
@@ -2962,20 +2976,24 @@ private slots:
     auto editor = overlay->findChild<InlineTextEditor *>();
     QTest::keyClicks(editor, "Resize");
     const auto initial = editor->value();
+    const auto fixed = editor->textItem()->mapToScene(editor->textItem()->boundingRect().topLeft());
     auto corner = editor->findChild<QToolButton *>("text_se");
+    const auto scaleTarget = corner->mapTo(editor->viewport(), QPoint(35, 22));
     QTest::mousePress(corner, Qt::LeftButton, Qt::NoModifier, {7, 7});
-    dragMove(corner, {35, 22});
-    QTest::mouseRelease(corner, Qt::LeftButton);
+    dragMove(editor->viewport(), scaleTarget);
+    QTest::mouseRelease(editor->viewport(), Qt::LeftButton, Qt::NoModifier, scaleTarget);
     QVERIFY(editor->value().fontSize > initial.fontSize);
-    QCOMPARE(editor->value().points.first(), initial.points.first());
+    QVERIFY(QLineF(editor->textItem()->mapToScene(editor->textItem()->boundingRect().topLeft()), fixed).length() < .01);
     auto rotate = editor->findChild<QToolButton *>("text_rotate");
+    const auto rotateTarget = rotate->mapTo(editor->viewport(), QPoint(28, 23));
     QTest::mousePress(rotate, Qt::LeftButton, Qt::NoModifier, {7, 7});
-    dragMove(rotate, {28, 23});
-    QTest::mouseRelease(rotate, Qt::LeftButton);
+    dragMove(editor->viewport(), rotateTarget);
+    QTest::mouseRelease(editor->viewport(), Qt::LeftButton, Qt::NoModifier, rotateTarget);
     QVERIFY(editor->value().rotation != 0);
     QVERIFY(savePreview(overlay, "inline-text-rotated.png"));
     auto before = editor->value();
-    const auto edge = editor->mapFromScene(editor->textItem()->mapToScene({10, 0}));
+    const auto frame = editor->textItem()->boundingRect();
+    const auto edge = editor->mapFromScene(editor->textItem()->mapToScene({frame.center().x(), frame.bottom()}));
     QTest::mousePress(editor->viewport(), Qt::LeftButton, Qt::NoModifier, edge);
     dragMove(editor->viewport(), edge + QPoint(20, 10));
     QTest::mouseRelease(editor->viewport(), Qt::LeftButton, Qt::NoModifier,
@@ -2991,6 +3009,103 @@ private slots:
     QVERIFY(overlay->annotation->marks.isEmpty());
     overlay->close();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  }
+  void inlineTextInsertionPositionAndPointer_data() {
+    QTest::addColumn<double>("scale");
+    QTest::newRow("normal") << 1.;
+    QTest::newRow("half-size-pin") << .5;
+    QTest::newRow("enlarged") << 1.5;
+  }
+  void inlineTextInsertionPositionAndPointer() {
+    QFETCH(double, scale);
+    QWidget surface; surface.resize(800, 600); surface.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&surface));
+    InlineTextEditor editor(&surface);
+    Mark mark; mark.kind = "text"; mark.fontSize = 48; mark.points = {{75, 65}};
+    const QRect display(100, 90, qRound(400 * scale), qRound(260 * scale));
+    editor.begin(mark, display, {400, 260}, true);
+    const auto line = editor.textItem()->document()->begin().layout()->lineAt(0);
+    const auto caret = editor.mapFromScene(editor.textItem()->mapToScene({0, line.height() / 2}));
+    const auto expected = display.topLeft() + QPoint(qRound(75 * scale), qRound(65 * scale));
+    QVERIFY2(QLineF(caret, expected).length() <= 1.5, "The insertion caret must be centered on the click at every image scale");
+    QCOMPARE(editor.viewport()->cursor().shape(), Qt::IBeamCursor);
+    QTest::keyClicks(&editor, "picut");
+    const auto frame = editor.textItem()->boundingRect();
+    const auto edge = editor.mapFromScene(editor.textItem()->mapToScene({frame.center().x(), frame.bottom()}));
+    hoverMove(editor.viewport(), edge);
+    QCOMPARE(editor.viewport()->cursor().shape(), Qt::SizeAllCursor);
+    QCOMPARE(editor.findChild<QToolButton *>("text_se")->cursor().shape(), Qt::SizeFDiagCursor);
+    QCOMPARE(editor.findChild<QToolButton *>("text_sw")->cursor().shape(), Qt::SizeBDiagCursor);
+    QCOMPARE(editor.findChild<QToolButton *>("text_rotate")->cursor().shape(), Qt::BitmapCursor);
+    QCOMPARE(editor.findChild<QToolButton *>("text_delete")->cursor().shape(), Qt::PointingHandCursor);
+    hoverMove(editor.viewport(), {750, 550});
+    QCOMPARE(editor.viewport()->cursor().shape(), Qt::IBeamCursor);
+    QVERIFY(!editor.findChild<QToolButton *>("text_se")->isVisible());
+  }
+  void inlineTextTransformKeepsAnchorAndHidesFrame() {
+    QTemporaryDir dir; Store store(dir.path());
+    auto overlay = editingFixture(store, "text");
+    QPointer<CaptureOverlay> alive = overlay;
+    auto cleanup = qScopeGuard([&] { if (alive) delete alive; });
+    overlay->setPreference("font_size", 48);
+    QVERIFY(QTest::qWaitForWindowExposed(overlay));
+    hoverMove(overlay, {245, 185});
+    QCOMPARE(overlay->cursor().shape(), Qt::IBeamCursor);
+    QTest::mouseClick(overlay, Qt::LeftButton, Qt::NoModifier, {245, 185});
+    auto editor = overlay->findChild<InlineTextEditor *>();
+    QTest::keyClicks(editor, "Sample text");
+    QVERIFY(savePreview(overlay, "inline-text-reference-frame.png"));
+    auto frame = [&] { return editor->textItem()->boundingRect(); };
+    auto sceneCorner = [&](bool bottom) {
+      return editor->textItem()->mapToScene(bottom ? frame().bottomRight() : frame().topLeft());
+    };
+    const auto fixed = sceneCorner(true);
+    auto corner = editor->findChild<QToolButton *>("text_nw");
+    const auto press = corner->mapTo(editor->viewport(), QPoint(7, 7));
+    QSignalSpy finished(editor, &InlineTextEditor::geometryEditFinished);
+    QTest::mousePress(corner, Qt::LeftButton, Qt::NoModifier, {7, 7});
+    QVERIFY(!corner->isVisible());
+    QVERIFY(!editor->findChild<QToolButton *>("text_rotate")->isVisible());
+    if (QGuiApplication::platformName() == "windows")
+      QCOMPARE(QWidget::mouseGrabber(), editor->viewport());
+    dragMove(editor->viewport(), press - QPoint(35, 15));
+    QVERIFY(editor->value().fontSize > 48);
+    QVERIFY(QLineF(sceneCorner(true), fixed).length() < .01);
+    QVERIFY(savePreview(overlay, "inline-text-reference-scaling.png"));
+    const auto intermediate = editor->value().fontSize;
+    // Apply the final release coordinate even if Windows coalesces the last move.
+    QTest::mouseRelease(editor->viewport(), Qt::LeftButton, Qt::NoModifier, press - QPoint(65, 25));
+    QVERIFY(editor->value().fontSize > intermediate);
+    QVERIFY(corner->isVisible());
+    QVERIFY(QLineF(sceneCorner(true), fixed).length() < .01);
+    QCOMPARE(finished.size(), 1);
+    QVERIFY(QWidget::mouseGrabber() != editor->viewport());
+    const auto center = editor->textItem()->mapToScene(frame().center());
+    auto rotate = editor->findChild<QToolButton *>("text_rotate");
+    QTest::mousePress(rotate, Qt::LeftButton, Qt::NoModifier, {7, 7});
+    const auto target = editor->mapFromScene(center + QPointF(100, 0));
+    QTest::mouseRelease(editor->viewport(), Qt::LeftButton, Qt::ShiftModifier, target);
+    QVERIFY(editor->value().rotation != 0);
+    QCOMPARE(editor->value().rotation % 15, 0);
+    QVERIFY(QLineF(editor->textItem()->mapToScene(frame().center()), center).length() < .01);
+    QVERIFY(savePreview(overlay, "inline-text-reference-rotation.png"));
+    QTest::mouseClick(editor->findChild<QToolButton *>("text_delete"), Qt::LeftButton);
+    QVERIFY(!editor->isVisible());
+    QTest::mouseClick(overlay, Qt::LeftButton, Qt::NoModifier, {300, 220});
+    QCOMPARE(editor->value().rotation, 0);
+    // The transparent editor must leave the options bar clickable above it.
+    const auto barPoint = overlay->toolbar->boldButton->mapTo(overlay, QPoint(10, 10));
+    QVERIFY(overlay->toolbar->isAncestorOf(overlay->childAt(barPoint)));
+    QTest::mouseClick(overlay->toolbar->boldButton, Qt::LeftButton);
+    QVERIFY(editor->value().bold);
+    QTest::keyClick(editor, Qt::Key_Escape);
+    overlay->setPreference("font_size", 48);
+    QTest::mouseClick(overlay, Qt::LeftButton, Qt::NoModifier, {115, 94});
+    auto topCorner = editor->findChild<QToolButton *>("text_nw");
+    QVERIFY(topCorner->isVisible());
+    QVERIFY(editor->viewport()->rect().contains(topCorner->geometry()));
+    QVERIFY(topCorner->mapTo(overlay, QPoint(7, 7)).y() < overlay->selection.top());
+    QVERIFY(savePreview(overlay, "inline-text-reference-edge-insertion.png"));
   }
   void inlineTextOnScaledPinAndOutsideConfirmation() {
     QTemporaryDir dir;

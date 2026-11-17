@@ -5,30 +5,75 @@
 #include <QtGui/QWheelEvent>
 #include <QtGui/QTextCursor>
 #include <QtGui/QAbstractTextDocumentLayout>
+#include <QtGui/QFontMetricsF>
+#include <QtGui/QHideEvent>
+#include <QtGui/QTextBlock>
+#include <QtGui/QTextLayout>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QGraphicsScene>
 #include <QtWidgets/QGraphicsTextItem>
+#include <QtWidgets/QStyleOptionGraphicsItem>
 #include <cmath>
 #include <numbers>
+
+QCursor annotationRotationCursor() {
+  static const QCursor cursor = [] {
+    QPixmap bitmap(32, 32); bitmap.fill(Qt::transparent);
+    QPainter painter(&bitmap); painter.setRenderHint(QPainter::Antialiasing);
+    QPainterPath arcs;
+    QList<QPolygonF> heads;
+    for (double start : {30., 210.}) {
+      arcs.arcMoveTo(QRectF(8, 8, 16, 16), start);
+      arcs.arcTo(QRectF(8, 8, 16, 16), start, 125);
+      const auto angle = (start + 125) * std::numbers::pi / 180;
+      const QPointF tip(16 + 8 * std::cos(angle), 16 - 8 * std::sin(angle));
+      const QPointF tangent(-std::sin(angle), -std::cos(angle));
+      const QPointF normal(tangent.y(), -tangent.x());
+      heads.append(QPolygonF{tip, tip - tangent * 5 + normal * 3,
+                            tip - tangent * 5 - normal * 3});
+    }
+    painter.setPen(QPen(Qt::white, 4, Qt::SolidLine, Qt::RoundCap));
+    painter.drawPath(arcs);
+    painter.setPen(QPen(QColor("#333333"), 1.5, Qt::SolidLine, Qt::RoundCap));
+    painter.drawPath(arcs);
+    painter.setPen(QPen(Qt::white, 1)); painter.setBrush(QColor("#333333"));
+    for (const auto &head : heads) painter.drawPolygon(head);
+    return QCursor(bitmap, 16, 16);
+  }();
+  return cursor;
+}
 
 class InlineTextItem : public QGraphicsTextItem {
 public:
   bool numberLabel=false;
   QColor lineColor;
   double lineWidth=1, leader=4;
+  double framePadding = 6;
+  bool frameVisible = true;
+  void setFramePadding(double padding) {
+    if (qFuzzyCompare(framePadding, padding)) return;
+    prepareGeometryChange();
+    framePadding = padding;
+  }
   QRectF boundingRect() const override {
-    return QGraphicsTextItem::boundingRect().united({0, 0, 24, 30});
+    const auto text = QGraphicsTextItem::boundingRect();
+    if (numberLabel) return text.united({0, 0, 24, 30});
+    return text.united({0, 0, 2, QFontMetricsF(font()).height()})
+        .adjusted(-framePadding, -framePadding, framePadding, framePadding);
   }
   void paint(QPainter *painter, const QStyleOptionGraphicsItem *option,
              QWidget *widget) override {
-    QGraphicsTextItem::paint(painter, option, widget);
+    auto textOption = *option;
+    textOption.state &= ~(QStyle::State_HasFocus | QStyle::State_Selected);
+    QGraphicsTextItem::paint(painter, &textOption, widget);
     if (numberLabel) {
       painter->setPen(QPen(lineColor,lineWidth,Qt::SolidLine,Qt::RoundCap));
       const auto bounds=boundingRect();
       painter->drawLine(QPointF(-leader,bounds.bottom()-1),QPointF(bounds.right()+2,bounds.bottom()-1));
       return;
     }
-    QPen border(QColor("#c0c0c0"), 1);
+    if (!frameVisible) return;
+    QPen border(QColor("#303030"), 1);
     border.setCosmetic(true);
     painter->setPen(border);
     painter->setBrush(Qt::NoBrush);
@@ -58,6 +103,7 @@ InlineTextEditor::InlineTextEditor(QWidget *parent) : QGraphicsView(parent) {
   connect(item->document(), &QTextDocument::contentsChanged, this, [this] {
     if (!styling) {
       model.text = item->toPlainText();
+      showHandles = true;
       positionHandles();
     }
   });
@@ -74,7 +120,7 @@ InlineTextEditor::InlineTextEditor(QWidget *parent) : QGraphicsView(parent) {
     button->setToolTip(name == "delete" ? "删除当前文字"
                        : name == "rotate" ? "旋转文字"
                                           : "缩放文字");
-    button->setCursor(name == "delete" ? Qt::ArrowCursor
+    button->setCursor(name == "delete" ? Qt::PointingHandCursor
                        : name == "rotate" ? Qt::SizeAllCursor
                        : name == "sw" ? Qt::SizeBDiagCursor : Qt::SizeFDiagCursor);
     button->setStyleSheet(
@@ -88,16 +134,31 @@ InlineTextEditor::InlineTextEditor(QWidget *parent) : QGraphicsView(parent) {
   }
   hide();
 }
-void InlineTextEditor::begin(const Mark &mark, QRect display, QSize imageSize) {
+void InlineTextEditor::begin(const Mark &mark, QRect display, QSize imageSize,
+                             bool atInsertionPoint) {
+  finishTransform();
   model = mark;
-  setGeometry(display);
-  setSceneRect(QRectF(QPointF(), imageSize));
-  setTransform(QTransform::fromScale(double(display.width()) / imageSize.width(),
-                                    double(display.height()) / imageSize.height()));
+  const double sx = double(display.width()) / imageSize.width();
+  const double sy = double(display.height()) / imageSize.height();
+  // Cover the editing surface so a frame near the crop edge keeps its handles.
+  // Scene (0, 0) still maps to the selected image's top-left corner.
+  setGeometry(parentWidget()->rect());
+  setSceneRect(-display.x() / sx, -display.y() / sy,
+               width() / sx, height() / sy);
+  setTransform(QTransform::fromScale(sx, sy));
+  showHandles = true;
   styling = true;
   item->setPlainText(model.text);
   styling = false;
   applyModel();
+  if (atInsertionPoint && model.kind == "text") {
+    item->document()->documentLayout()->documentSize();
+    const auto layout = item->document()->begin().layout();
+    const auto line = layout && layout->lineCount() ? layout->lineAt(0) : QTextLine();
+    const double height = line.isValid() ? line.height() : QFontMetricsF(item->font()).height();
+    model.points[0] -= QPointF(0, height / 2);
+    applyModel();
+  }
   show();
   raise();
   setFocus(Qt::MouseFocusReason);
@@ -106,6 +167,7 @@ void InlineTextEditor::begin(const Mark &mark, QRect display, QSize imageSize) {
   cursor.movePosition(QTextCursor::End);
   cursor.setCharFormat(annotationTextFormat(model));
   item->setTextCursor(cursor);
+  viewport()->setCursor(Qt::IBeamCursor);
 }
 Mark InlineTextEditor::value() const {
   auto mark = model;
@@ -133,6 +195,8 @@ void InlineTextEditor::applyModel() {
   item->setDefaultTextColor(model.color);
   item->setTextCursor(updatedCursor);
   auto label=static_cast<InlineTextItem *>(item); label->numberLabel=model.kind=="number";
+  label->setFramePadding(qMax(4.0 / transform().m11(),
+                              QFontMetricsF(item->font()).height() * .25));
   label->lineColor=model.color; label->lineWidth=qMax(1.,model.width*.5);
   label->leader=qMax(4.,model.fontSize*.18)+model.fontSize*.65*.4;
   item->setPos(label->numberLabel?numberLabelRect(model).topLeft():model.points.first());
@@ -141,7 +205,9 @@ void InlineTextEditor::applyModel() {
   positionHandles();
 }
 void InlineTextEditor::positionHandles() {
-  if (model.kind=="number") {
+  auto label = static_cast<InlineTextItem *>(item);
+  label->frameVisible = activeHandle.isEmpty();
+  if (model.kind=="number" || !activeHandle.isEmpty() || !showHandles) {
     for (auto handle:handles) handle->hide();
     viewport()->update(); return;
   }
@@ -157,8 +223,10 @@ void InlineTextEditor::positionHandles() {
   double length = qMax(1.0, std::hypot(direction.x(), direction.y()));
   handles["rotate"]->move((QPointF(top) + direction * (14.0 / length)).toPoint() -
                           QPoint(7, 7));
-  // The text item's border is a thin neutral outline; controls stay 14 px at
-  // every image zoom and DPI, independently of the editable text transform.
+  for (auto i = handles.begin(); i != handles.end(); ++i)
+    i.value()->setCursor(i.key() == "rotate" ? annotationRotationCursor()
+                                            : QCursor(handleCursor(i.key())));
+  // Controls stay 14 logical pixels independently of text scale and rotation.
   viewport()->update();
 }
 QPointF InlineTextEditor::scenePoint(QPoint global) const {
@@ -172,52 +240,105 @@ bool InlineTextEditor::eventFilter(QObject *watched, QEvent *event) {
     auto mouse = static_cast<QMouseEvent *>(event);
     if (mouse->button() != Qt::LeftButton)
       return false;
-    activeHandle = name;
-    dragModel = value();
-    dragPoint = scenePoint(mouse->globalPosition().toPoint());
-    const auto r = markBounds(dragModel);
-    const auto fixed = name == "nw" ? r.bottomRight()
-                         : name == "sw" ? r.topRight() : r.topLeft();
-    fixedPoint = markTransform(dragModel).map(fixed);
+    beginTransform(name, mouse->globalPosition().toPoint());
     return true;
   }
   if (event->type() == QEvent::MouseMove && !activeHandle.isEmpty()) {
     auto mouse = static_cast<QMouseEvent *>(event);
-    const auto point = scenePoint(mouse->globalPosition().toPoint());
-    if (activeHandle == "rotate") {
-      auto pivot = dragModel.points.first();
-      model.rotation = dragModel.rotation + qRound(
-          (std::atan2(point.y() - pivot.y(), point.x() - pivot.x()) -
-           std::atan2(dragPoint.y() - pivot.y(), dragPoint.x() - pivot.x())) *
-          180 / std::numbers::pi);
-      if (mouse->modifiers() & Qt::ShiftModifier)
-        model.rotation = qRound(model.rotation / 15.0) * 15;
-    } else {
-      auto diagonal = dragPoint - fixedPoint;
-      auto factor = QPointF::dotProduct(point - fixedPoint, diagonal) /
-                    qMax(1.0, QPointF::dotProduct(diagonal, diagonal));
-      model.fontSize = qBound(4.0 / 3, dragModel.fontSize * qMax(.05, factor),
-                              1600.0 / 3);
-      const auto size = textSize(model);
-      QPointF offset = activeHandle == "nw" ? QPointF(size.width(), size.height())
-                           : activeHandle == "sw" ? QPointF(size.width(), 0)
-                                                   : QPointF();
-      model.points[0] = fixedPoint - QTransform().rotate(model.rotation).map(offset);
-    }
-    applyModel();
-    emit geometryEdited(model.fontSize, model.rotation);
+    updateTransform(mouse->globalPosition().toPoint(), mouse->modifiers());
     return true;
   }
   if (event->type() == QEvent::MouseButtonRelease && !activeHandle.isEmpty()) {
-    activeHandle.clear();
+    auto mouse = static_cast<QMouseEvent *>(event);
+    if (mouse->button() != Qt::LeftButton) return true;
+    updateTransform(mouse->globalPosition().toPoint(), mouse->modifiers());
+    finishTransform();
     return true;
   }
   return QGraphicsView::eventFilter(watched, event);
 }
+Qt::CursorShape InlineTextEditor::handleCursor(const QString &handle) const {
+  if (handle == "delete") return Qt::PointingHandCursor;
+  if (handle == "move" || handle == "rotate") return Qt::SizeAllCursor;
+  const QPointF direction(handle == "sw" ? -1 : 1, 1);
+  const auto vector = QTransform().rotate(model.rotation).map(direction);
+  const int angle = (qRound(std::atan2(vector.y(), vector.x()) * 4 / std::numbers::pi) % 4 + 4) % 4;
+  const Qt::CursorShape cursors[]{Qt::SizeHorCursor, Qt::SizeFDiagCursor,
+                                 Qt::SizeVerCursor, Qt::SizeBDiagCursor};
+  return cursors[angle];
+}
+void InlineTextEditor::beginTransform(const QString &handle, QPoint global) {
+  activeHandle = handle;
+  dragModel = value();
+  dragPoint = scenePoint(global);
+  const auto r = item->boundingRect();
+  const auto fixed = handle == "rotate" ? r.center()
+                       : handle == "nw" ? r.bottomRight()
+                       : handle == "sw" ? r.topRight() : r.topLeft();
+  fixedPoint = item->mapToScene(fixed);
+  viewport()->setCursor(handle == "rotate" ? annotationRotationCursor()
+                                           : QCursor(handleCursor(handle)));
+  // Hiding the pressed corner must not cancel its mouse grab. The viewport
+  // owns the whole drag, including movements outside the original frame.
+  viewport()->grabMouse();
+  positionHandles();
+}
+void InlineTextEditor::updateTransform(QPoint global, Qt::KeyboardModifiers modifiers) {
+  if (activeHandle.isEmpty()) return;
+  const auto point = scenePoint(global);
+  if (activeHandle == "move") {
+    model.points[0] = dragModel.points.first() + point - dragPoint;
+    applyModel();
+    return;
+  }
+  if (activeHandle == "rotate") {
+    model.rotation = dragModel.rotation + qRound(
+        (std::atan2(point.y() - fixedPoint.y(), point.x() - fixedPoint.x()) -
+         std::atan2(dragPoint.y() - fixedPoint.y(), dragPoint.x() - fixedPoint.x())) *
+        180 / std::numbers::pi);
+    if (modifiers & Qt::ShiftModifier)
+      model.rotation = qRound(model.rotation / 15.0) * 15;
+  } else {
+    const auto diagonal = dragPoint - fixedPoint;
+    const double factor = QPointF::dotProduct(point - fixedPoint, diagonal) /
+                          qMax(1.0, QPointF::dotProduct(diagonal, diagonal));
+    model.fontSize = qBound(4.0 / 3, dragModel.fontSize * qMax(.05, factor), 1600.0 / 3);
+  }
+  applyModel();
+  const auto r = item->boundingRect();
+  const auto fixed = activeHandle == "rotate" ? r.center()
+                       : activeHandle == "nw" ? r.bottomRight()
+                       : activeHandle == "sw" ? r.topRight() : r.topLeft();
+  model.points[0] = fixedPoint - QTransform().rotate(model.rotation).map(fixed);
+  applyModel();
+  emit geometryEdited(model.fontSize, model.rotation);
+}
+void InlineTextEditor::finishTransform() {
+  if (activeHandle.isEmpty()) return;
+  activeHandle.clear();
+  if (QWidget::mouseGrabber() == viewport()) viewport()->releaseMouse();
+  showHandles = true;
+  positionHandles();
+  emit geometryEditFinished();
+}
+void InlineTextEditor::updatePointer(QPoint point) {
+  const auto local = item->mapFromScene(mapToScene(point));
+  const auto frame = item->boundingRect();
+  const double tolerance = 4.0 / qMin(transform().m11(), transform().m22());
+  const bool near = frame.adjusted(-tolerance, -tolerance, tolerance, tolerance).contains(local);
+  const bool border = near && !frame.adjusted(tolerance, tolerance, -tolerance, -tolerance).contains(local);
+  bool nearHandle = false;
+  for (auto button : handles)
+    nearHandle |= button->geometry().adjusted(-3, -3, 3, 3).contains(point);
+  showHandles = near || nearHandle;
+  viewport()->setCursor(model.kind != "number" && border ? Qt::SizeAllCursor : Qt::IBeamCursor);
+  positionHandles();
+}
 void InlineTextEditor::mousePressEvent(QMouseEvent *event) {
   auto point = mapToScene(event->position().toPoint());
   const auto local = item->mapFromScene(point);
-  if (!item->boundingRect().adjusted(-3, -3, 3, 3).contains(local)) {
+  const double tolerance = 4.0 / qMin(transform().m11(), transform().m22());
+  if (!item->boundingRect().adjusted(-tolerance, -tolerance, tolerance, tolerance).contains(local)) {
     auto parentPoint = mapToParent(event->position().toPoint());
     const bool numbered=model.kind=="number";
     emit commitRequested();
@@ -228,33 +349,26 @@ void InlineTextEditor::mousePressEvent(QMouseEvent *event) {
     return;
   }
   if (model.kind!="number" && event->button() == Qt::LeftButton &&
-      !item->boundingRect().adjusted(3, 3, -3, -3).contains(local)) {
-    activeHandle = "move";
-    dragModel = value();
-    dragPoint = point;
-    viewport()->setCursor(Qt::SizeAllCursor);
+      !item->boundingRect().adjusted(tolerance, tolerance, -tolerance, -tolerance).contains(local)) {
+    beginTransform("move", event->globalPosition().toPoint());
     return;
   }
   QGraphicsView::mousePressEvent(event);
 }
 void InlineTextEditor::mouseMoveEvent(QMouseEvent *event) {
-  if (activeHandle == "move") {
-    model.points[0] = dragModel.points.first() +
-                      mapToScene(event->position().toPoint()) - dragPoint;
-    applyModel();
+  if (!activeHandle.isEmpty()) {
+    updateTransform(event->globalPosition().toPoint(), event->modifiers());
     return;
   }
-  auto local = item->mapFromScene(mapToScene(event->position().toPoint()));
-  bool inside = item->boundingRect().contains(local);
-  viewport()->setCursor(model.kind!="number" && inside && !item->boundingRect().adjusted(3, 3, -3, -3).contains(local)
-                            ? Qt::SizeAllCursor : inside ? Qt::IBeamCursor
-                                                        : Qt::CrossCursor);
   QGraphicsView::mouseMoveEvent(event);
+  // QGraphicsTextItem installs its I-beam while processing hover events.
+  // Apply the frame's move cursor afterward so it is not overwritten.
+  updatePointer(event->position().toPoint());
 }
 void InlineTextEditor::mouseReleaseEvent(QMouseEvent *event) {
-  if (activeHandle == "move") {
-    mouseMoveEvent(event);
-    activeHandle.clear();
+  if (!activeHandle.isEmpty() && event->button() == Qt::LeftButton) {
+    updateTransform(event->globalPosition().toPoint(), event->modifiers());
+    finishTransform();
     return;
   }
   QGraphicsView::mouseReleaseEvent(event);
@@ -284,7 +398,12 @@ bool InlineTextEditor::focusNextPrevChild(bool next) {
   return model.kind=="number" ? false : QGraphicsView::focusNextPrevChild(next);
 }
 void InlineTextEditor::wheelEvent(QWheelEvent *event) {
+  if (!activeHandle.isEmpty()) { event->accept(); return; }
   if (event->angleDelta().y())
     emit sizeStepRequested(event->angleDelta().y() > 0 ? 1 : -1);
   event->accept();
+}
+void InlineTextEditor::hideEvent(QHideEvent *event) {
+  finishTransform();
+  QGraphicsView::hideEvent(event);
 }
