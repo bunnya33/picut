@@ -25,9 +25,12 @@ inline QIcon recordingIcon(const QString &name, QColor color = QColor("#333333")
     p.setBrush(QColor("#f2f2f2"));
     p.drawEllipse(QPointF(9,6),2,2); p.drawEllipse(QPointF(16,12),2,2); p.drawEllipse(QPointF(7,18),2,2);
   } else if (name=="move") {
-    p.drawLine(12,3,12,21); p.drawLine(3,12,21,12);
-    p.drawPolyline(QPolygonF{{8,7},{12,3},{16,7}}); p.drawPolyline(QPolygonF{{8,17},{12,21},{16,17}});
-    p.drawPolyline(QPolygonF{{7,8},{3,12},{7,16}}); p.drawPolyline(QPolygonF{{17,8},{21,12},{17,16}});
+    p.setPen(Qt::NoPen); p.setBrush(color);
+    p.drawRect(QRectF(10.5,6,3,12)); p.drawRect(QRectF(6,10.5,12,3));
+    p.drawPolygon(QPolygonF{{12,2},{8,7},{16,7}});
+    p.drawPolygon(QPolygonF{{12,22},{8,17},{16,17}});
+    p.drawPolygon(QPolygonF{{2,12},{7,8},{7,16}});
+    p.drawPolygon(QPolygonF{{22,12},{17,8},{17,16}});
   } else if (name=="pen") {
     p.drawPolygon(QPolygonF{{4,16},{15,5},{19,9},{8,20},{3,21}}); p.drawLine(13,7,17,11);
   } else if (name=="trash") {

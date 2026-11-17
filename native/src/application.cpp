@@ -60,7 +60,6 @@ ApplicationController::ApplicationController(bool test)
     if (!testing && !quitting) QMessageBox::warning(home, "保存失败", message);
   });
   tray.setIcon(picutIcon()); QApplication::setWindowIcon(picutIcon());
-  tray.setToolTip("picut");
   trayMenu = new QMenu;
   trayMenu->setObjectName("trayMenu");
   auto add = [this](const QString &label, const QString &hotkey,
@@ -150,6 +149,12 @@ void ApplicationController::updateTrayMenu() {
     trayMenu->findChild<QAction *>("clearPinThrough")->setEnabled(count>0);
   }
   auto bindings = store.config["hotkeys"].toObject();
+  const auto capture = bindings["capture"].toString();
+  const auto pin = bindings["pin"].toString();
+  tray.setToolTip(QString("picut %1\n截图快捷键：%2\n贴图快捷键：%3")
+      .arg(QCoreApplication::applicationVersion(),
+           capture.isEmpty() ? QString("未设置") : capture,
+           pin.isEmpty() ? QString("未设置") : pin));
   for (auto action : trayMenu->actions()) {
     auto label = action->property("base_label").toString();
     if (label.isEmpty())

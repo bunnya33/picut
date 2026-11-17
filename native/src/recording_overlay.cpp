@@ -86,6 +86,10 @@ public:
     auto layout = new QHBoxLayout(this);
     layout->setContentsMargins(6, 6, 6, 6);
     layout->setSpacing(3);
+    moveRegion = new QToolButton;
+    moveRegion->setObjectName("moveRecordingRegion"); moveRegion->setIcon(recordingIcon("move",Qt::black));
+    moveRegion->setIconSize({16,16}); moveRegion->setFixedSize(32,32); moveRegion->setCursor(Qt::SizeAllCursor);
+    moveRegion->setToolTip("拖动以移动录屏区域"); moveRegion->hide(); layout->addWidget(moveRegion);
     auto grip = new QLabel;
     grip->setPixmap(recordingIcon("grip").pixmap(16,16));
     grip->setAlignment(Qt::AlignCenter); grip->setFixedSize(24,32);
@@ -108,10 +112,6 @@ public:
     annotate->setObjectName("editRecordingMarks"); annotate->setCheckable(true);
     annotate->setIcon(recordingIcon("pen")); annotate->setIconSize({16,16}); annotate->setFixedSize(32,32);
     annotate->setToolTip("标记：展开工具栏；关闭后恢复操作桌面"); annotate->hide(); layout->addWidget(annotate);
-    moveRegion = new QToolButton;
-    moveRegion->setObjectName("moveRecordingRegion"); moveRegion->setIcon(recordingIcon("move"));
-    moveRegion->setIconSize({16,16}); moveRegion->setFixedSize(32,32); moveRegion->setCursor(Qt::SizeAllCursor);
-    moveRegion->setToolTip("拖动以移动录屏区域"); moveRegion->hide(); layout->addWidget(moveRegion);
     pause = new QToolButton;
     pause->setObjectName("pauseRecording");
     pause->setIcon(recordingIcon("pause")); pause->setIconSize({16,16}); pause->setFixedSize(32,32);

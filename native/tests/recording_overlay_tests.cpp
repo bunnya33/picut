@@ -535,6 +535,8 @@ private slots:
     overlay.configureLive(live); QVERIFY(overlay.show());
     auto panel=overlay.controls();
     auto handle=panel->findChild<QToolButton *>("moveRecordingRegion"); QVERIFY(handle);
+    if (!artifacts.isEmpty() && !compatibility)
+      panel->grab().save(artifacts+"/move-button-controls.png");
     const auto initial=panel->pos();
     QVERIFY(panel->geometry().bottom()<region.top());
     auto press=[&] {
