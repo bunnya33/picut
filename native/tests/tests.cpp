@@ -3229,6 +3229,157 @@ private slots:
     overlay->close();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   }
+  void captureColorFormatPersistsAcrossCapturesAndRestart() {
+    QTemporaryDir dir;
+    auto savedClipboard = std::make_unique<QMimeData>();
+    if (auto mime = QApplication::clipboard()->mimeData())
+      for (const auto &format : mime->formats())
+        savedClipboard->setData(format, mime->data(format));
+    auto restoreClipboard = qScopeGuard([&] {
+      QApplication::clipboard()->setMimeData(savedClipboard.release());
+    });
+    DesktopSnapshot desktop;
+    desktop.bounds = {0, 0, 240, 180};
+    QImage image(desktop.bounds.size(), QImage::Format_RGB32);
+    image.fill(QColor(18, 52, 86));
+    desktop.frames = {{desktop.bounds, image}};
+    auto copyColor = [](CaptureOverlay &capture) {
+      QMouseEvent move(QEvent::MouseMove, QPointF(40, 40),
+                       QPointF(capture.mapToGlobal(QPoint(40, 40))),
+                       Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+      QApplication::sendEvent(&capture, &move);
+      QTest::keyClick(&capture, Qt::Key_C);
+      return QApplication::clipboard()->text();
+    };
+    {
+      Store store(dir.path());
+      CaptureOverlay first(&store, false, desktop);
+      QCOMPARE(copyColor(first), QString("18, 52, 86"));
+      QTest::keyClick(&first, Qt::Key_Shift);
+      QCOMPARE(copyColor(first), QString("#123456"));
+      QKeyEvent repeat(QEvent::KeyPress, Qt::Key_Shift, Qt::ShiftModifier, {}, true);
+      QApplication::sendEvent(&first, &repeat);
+      QCOMPARE(copyColor(first), QString("#123456"));
+      CaptureOverlay second(&store, false, desktop);
+      QCOMPARE(copyColor(second), QString("#123456"));
+    }
+    {
+      Store store(dir.path());
+      CaptureOverlay restarted(&store, false, desktop);
+      QCOMPARE(copyColor(restarted), QString("#123456"));
+      QTest::keyClick(&restarted, Qt::Key_Shift);
+      QCOMPARE(copyColor(restarted), QString("18, 52, 86"));
+    }
+    Store store(dir.path());
+    CaptureOverlay restarted(&store, false, desktop);
+    QCOMPARE(copyColor(restarted), QString("18, 52, 86"));
+  }
+  void trayRestoresIndividualAndAllThroughPins() {
+    QTemporaryDir dir;
+    auto previous = qgetenv("FLOATSHOT_DATA_DIR");
+    auto restore = qScopeGuard([previous] {
+      if (previous.isNull()) qunsetenv("FLOATSHOT_DATA_DIR");
+      else qputenv("FLOATSHOT_DATA_DIR", previous);
+    });
+    qputenv("FLOATSHOT_DATA_DIR", dir.path().toUtf8());
+    ApplicationController controller(true);
+    auto menu = namedMenu("trayMenu");
+    QVERIFY(menu);
+    auto throughMenu = menu->findChild<QMenu *>("throughPinsMenu");
+    auto clear = menu->findChild<QAction *>("clearPinThrough");
+    QVERIFY(throughMenu); QVERIFY(clear);
+    QVERIFY(!throughMenu->isEnabled()); QVERIFY(!clear->isEnabled());
+    QImage image(80, 60, QImage::Format_RGB32); image.fill(Qt::red);
+    auto first = controller.pins.create(image, {40, 40, 80, 60});
+    image.fill(Qt::blue);
+    auto second = controller.pins.create(image, {140, 40, 80, 60});
+    auto normal = controller.pins.create(image, {240, 40, 80, 60});
+    first->setThrough(true); second->setThrough(true);
+    QVERIFY(first->windowFlags() & Qt::WindowTransparentForInput);
+    if (QGuiApplication::platformName() != "offscreen")
+      QVERIFY(GetWindowLongPtr(reinterpret_cast<HWND>(first->winId()), GWL_EXSTYLE) & WS_EX_TRANSPARENT);
+    QVERIFY(QMetaObject::invokeMethod(menu, "aboutToShow", Qt::DirectConnection));
+    QCOMPARE(throughMenu->actions().size(), 2);
+    QVERIFY(throughMenu->isEnabled()); QVERIFY(clear->isEnabled());
+    QAction *restoreFirst = nullptr, *restoreSecond = nullptr;
+    for (auto action : throughMenu->actions()) {
+      QVERIFY(!action->icon().isNull());
+      if (action->data().toString() == first->id) restoreFirst = action;
+      if (action->data().toString() == second->id) restoreSecond = action;
+    }
+    QVERIFY(restoreFirst); QVERIFY(restoreSecond);
+    restoreFirst->trigger();
+    QVERIFY(!first->through); QVERIFY(second->through); QVERIFY(!normal->through);
+    QVERIFY(!(first->windowFlags() & Qt::WindowTransparentForInput));
+    if (QGuiApplication::platformName() != "offscreen")
+      QVERIFY(!(GetWindowLongPtr(reinterpret_cast<HWND>(first->winId()), GWL_EXSTYLE) & WS_EX_TRANSPARENT));
+    // A menu action may outlive a pin closed while the menu is open.
+    controller.pins.handle(second, "destroy");
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    restoreSecond->trigger();
+    first->setThrough(true); normal->setThrough(true);
+    QVERIFY(QMetaObject::invokeMethod(menu, "aboutToShow", Qt::DirectConnection));
+    QCOMPARE(throughMenu->actions().size(), 2);
+    clear->trigger();
+    QVERIFY(!first->through); QVERIFY(!normal->through);
+    QVERIFY(QMetaObject::invokeMethod(menu, "aboutToShow", Qt::DirectConnection));
+    QVERIFY(throughMenu->actions().isEmpty());
+    QVERIFY(!throughMenu->isEnabled()); QVERIFY(!clear->isEnabled());
+  }
+  void pinBackgroundOptionsOnlyForTransparentImages() {
+    QTemporaryDir dir;
+    Store store(dir.path());
+    QImage image(120, 80, QImage::Format_ARGB32); image.fill(Qt::red);
+    PinWindow pin(image, &store, {40, 40, 120, 80});
+    auto inspectMenu = [&](bool expected, const QString &select = {}) {
+      QTimer::singleShot(0, [&] {
+        auto menu = namedMenu("pinMenu");
+        QVERIFY(menu);
+        auto close = qScopeGuard([&] { menu->close(); });
+        auto bg = menu->findChild<QMenu *>("pinBackgroundMenu");
+        QCOMPARE(bool(bg), expected);
+        if (!bg) return;
+        QList<QAction *> choices;
+        for (auto action : bg->actions())
+          if (action->isCheckable()) choices.append(action);
+        QCOMPARE(choices.size(), 3);
+        QStringList values;
+        int checked = 0;
+        for (auto action : choices) {
+          values.append(action->data().toString());
+          if (action->isChecked()) ++checked;
+        }
+        QCOMPARE(values, (QStringList{"透明", "暗色棋盘", "亮色棋盘"}));
+        QCOMPARE(checked, 1);
+        if (!select.isEmpty()) {
+          for (auto action : choices)
+            if (action->data().toString() == select) action->trigger();
+          QCOMPARE(pin.background, select);
+          for (auto action : choices)
+            QCOMPARE(action->isChecked(), action->data().toString() == select);
+        }
+      });
+      QContextMenuEvent event(QContextMenuEvent::Mouse, {30, 30}, pin.mapToGlobal(QPoint(30, 30)));
+      QApplication::sendEvent(&pin, &event);
+    };
+    inspectMenu(false); // An alpha channel alone must not show the options.
+    pin.setAlpha(.5);
+    inspectMenu(false); // Whole-window opacity is independent of image alpha.
+    pin.setAlpha(1);
+    image.fill(Qt::transparent); image.setPixelColor(60, 40, Qt::red);
+    pin.image = image;
+    inspectMenu(true, "亮色棋盘");
+    auto rendered = pin.grab().toImage();
+    QCOMPARE(rendered.pixelColor(PinWindow::Margin + 30, PinWindow::Margin + 30), QColor("#dddddd"));
+    QCOMPARE(rendered.pixelColor(PinWindow::Margin + 60, PinWindow::Margin + 40), QColor(Qt::red));
+    QCOMPARE(pin.displayedImage(), image);
+    inspectMenu(true, "透明");
+    QCOMPARE(pin.grab().toImage().pixelColor(PinWindow::Margin + 30, PinWindow::Margin + 30).alpha(), 0);
+    QCOMPARE(pin.displayedImage(), image);
+    PinManager manager(&store);
+    auto legacy = manager.create(image, {}, {{"background", "伪透明"}});
+    QCOMPARE(legacy->background, QString("透明"));
+  }
   void trayShortcutHintsFollowSettings() {
     QTemporaryDir dir;
     auto previous = qgetenv("FLOATSHOT_DATA_DIR");

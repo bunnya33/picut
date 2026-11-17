@@ -83,7 +83,10 @@ ApplicationController::ApplicationController(bool test)
   add("显示 / 隐藏贴图", "toggle_pins", [this] { pins.toggleAll(); });
   trayMenu->addAction("恢复最近关闭的贴图", &pins, &PinManager::restoreClosed);
   add("切换鼠标穿透", "through", [this] { pins.toggleThrough(); });
-  trayMenu->addAction("解除鼠标穿透", &pins, &PinManager::clearThrough);
+  auto throughPins=trayMenu->addMenu("恢复穿透贴图");
+  throughPins->setObjectName("throughPinsMenu");
+  auto clearThrough=trayMenu->addAction("解除所有贴图鼠标穿透", &pins, &PinManager::clearThrough);
+  clearThrough->setObjectName("clearPinThrough");
   trayMenu->addAction("设置", this, &ApplicationController::openSettings);
   trayMenu->addSeparator();
   trayMenu->addAction("退出", this, &ApplicationController::quit);
@@ -127,6 +130,25 @@ ApplicationController::~ApplicationController() {
   delete trayMenu;
 }
 void ApplicationController::updateTrayMenu() {
+  if (auto menu=trayMenu->findChild<QMenu *>("throughPinsMenu")) {
+    menu->clear();
+    int number=0;
+    for (const auto &pin:pins.windows) {
+      ++number;
+      if (!pin || !pin->through || pin->state!="visible") continue;
+      auto action=menu->addAction(QIcon(QPixmap::fromImage(pin->displayedImage().scaled(64,48,Qt::KeepAspectRatio,Qt::SmoothTransformation))),
+          QString("贴图 %1 · %2 × %3 · 恢复操作").arg(number).arg(pin->image.width()).arg(pin->image.height()));
+      action->setData(pin->id);
+      connect(action,&QAction::triggered,this,[pin] {
+        if (!pin) return;
+        pin->setThrough(false); pin->raise(); pin->activateWindow(); pin->setFocus();
+      });
+    }
+    const int count=menu->actions().size();
+    menu->setTitle(count?QString("恢复穿透贴图（%1）").arg(count):QString("恢复穿透贴图"));
+    menu->setEnabled(count>0);
+    trayMenu->findChild<QAction *>("clearPinThrough")->setEnabled(count>0);
+  }
   auto bindings = store.config["hotkeys"].toObject();
   for (auto action : trayMenu->actions()) {
     auto label = action->property("base_label").toString();

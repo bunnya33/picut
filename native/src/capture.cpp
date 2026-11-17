@@ -261,6 +261,7 @@ CaptureOverlay::CaptureOverlay(Store *s, bool record,
   setCursor(Qt::CrossCursor);
   pointer = mapFromGlobal(QCursor::pos());
   includeCursor = store && store->config["capture_cursor"].toBool();
+  rgb = !store || store->config["capture_color_format"].toString("RGB")!="HEX";
   {
     auto bar = new QFrame(this);
     bar->setStyleSheet(compactToolbarStyle());
@@ -731,7 +732,13 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
     return;
   }
   if (e->key() == Qt::Key_Shift) {
-    rgb = !rgb;
+    if (!recording && !e->isAutoRepeat()) {
+      rgb = !rgb;
+      if (store) {
+        store->config["capture_color_format"]=rgb?"RGB":"HEX";
+        if (!store->saveConfig()) qWarning("Could not save capture color format.");
+      }
+    }
     update();
     return;
   }

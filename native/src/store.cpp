@@ -40,6 +40,7 @@ Store::Store(QString directory) {
             {"auto_save", false},
             {"capture_delay", 0},
             {"capture_cursor", false},
+            {"capture_color_format", "RGB"},
             {"magnifier_enabled", true},
             {"magnifier_pixels", 11},
             {"magnifier_grid", true},

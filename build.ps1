@@ -22,42 +22,42 @@ if (-not $SkipTests) {
         $env:FLOATSHOT_FFMPEG = $Ffmpeg
         $floatshotReportDirectory = Join-Path $PSScriptRoot '.test-artifacts'
         New-Item -ItemType Directory -Path $floatshotReportDirectory -Force | Out-Null
-        $env:FLOATSHOT_DATA_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.44-regression-data'
-        $env:FLOATSHOT_ANNOTATION_TEST_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.44-annotation-ui'
-        $floatshotTestReport = Join-Path $floatshotReportDirectory 'native-v0.5.44-tests.txt'
+        $env:FLOATSHOT_DATA_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.45-regression-data'
+        $env:FLOATSHOT_ANNOTATION_TEST_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.45-annotation-ui'
+        $floatshotTestReport = Join-Path $floatshotReportDirectory 'native-v0.5.45-tests.txt'
         $floatshotTests = Start-Process -FilePath (Join-Path $PSScriptRoot 'build/native-scroll-performance/FloatShotNativeTests.exe') -ArgumentList '-o', ('"' + $floatshotTestReport + ',txt"') -WindowStyle Hidden -PassThru -Wait
         Get-Content -LiteralPath $floatshotTestReport -Tail 4
         if ($floatshotTests.ExitCode -ne 0) { throw 'Native regression tests failed.' }
-        $env:PICUT_SCROLL_V2_TEST_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.44-scroll-v2'
-        $picutScrollReport = Join-Path $floatshotReportDirectory 'native-v0.5.44-scroll-v2-tests.txt'
+        $env:PICUT_SCROLL_V2_TEST_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.45-scroll-v2'
+        $picutScrollReport = Join-Path $floatshotReportDirectory 'native-v0.5.45-scroll-v2-tests.txt'
         $picutScrollTests = Start-Process -FilePath (Join-Path $PSScriptRoot 'build/native-scroll-performance/FloatShotScrollV2Tests.exe') -ArgumentList '-o', ('"' + $picutScrollReport + ',txt"') -WindowStyle Hidden -PassThru -Wait
         Get-Content -LiteralPath $picutScrollReport -Tail 4
         if ($picutScrollTests.ExitCode -ne 0) { throw 'Scroll V2 tests failed.' }
         $env:QT_QPA_PLATFORM = 'windows'
-        $env:FLOATSHOT_DATA_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.44-pin-after'
+        $env:FLOATSHOT_DATA_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.45-pin-after'
         $floatshotPinTest = Start-Process -FilePath (Join-Path $PSScriptRoot 'build/native-scroll-performance/picut.exe') -ArgumentList '--verify-pin-latency' -WindowStyle Hidden -PassThru -Wait
         if ($floatshotPinTest.ExitCode -ne 0) { throw 'Synthetic F3 latency and persistence checks failed.' }
-        $env:FLOATSHOT_DATA_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.44-regression-data'
+        $env:FLOATSHOT_DATA_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.45-regression-data'
         $env:QT_QPA_PLATFORM = 'offscreen'
-        $env:FLOATSHOT_OCR_TEST_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.44-ocr'
-        $floatshotOcrReport = Join-Path $floatshotReportDirectory 'native-v0.5.44-ocr-tests.txt'
+        $env:FLOATSHOT_OCR_TEST_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.45-ocr'
+        $floatshotOcrReport = Join-Path $floatshotReportDirectory 'native-v0.5.45-ocr-tests.txt'
         $floatshotOcrTests = Start-Process -FilePath (Join-Path $PSScriptRoot 'build/native-scroll-performance/FloatShotOcrTests.exe') -ArgumentList '-o', ('"' + $floatshotOcrReport + ',txt"') -WindowStyle Hidden -PassThru -Wait
         Get-Content -LiteralPath $floatshotOcrReport -Tail 4
         if ($floatshotOcrTests.ExitCode -ne 0) { throw 'Offline OCR tests failed.' }
-        $env:PICUT_TRANSLATION_TEST_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.44-translation'
-        $picutTranslationReport = Join-Path $floatshotReportDirectory 'native-v0.5.44-translation-tests.txt'
+        $env:PICUT_TRANSLATION_TEST_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.45-translation'
+        $picutTranslationReport = Join-Path $floatshotReportDirectory 'native-v0.5.45-translation-tests.txt'
         $picutTranslationTests = Start-Process -FilePath (Join-Path $PSScriptRoot 'build/native-scroll-performance/FloatShotTranslationTests.exe') -ArgumentList '-o', ('"' + $picutTranslationReport + ',txt"') -WindowStyle Hidden -PassThru -Wait
         Get-Content -LiteralPath $picutTranslationReport -Tail 4
         if ($picutTranslationTests.ExitCode -ne 0) { throw 'Local translation tests failed.' }
         $env:QT_QPA_PLATFORM = 'windows'
-        $env:FLOATSHOT_RECORDING_TEST_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.44-recording-ui'
-        $floatshotRecordingReport = Join-Path $floatshotReportDirectory 'native-v0.5.44-recording-tests.txt'
+        $env:FLOATSHOT_RECORDING_TEST_DIR = Join-Path $floatshotReportDirectory 'native-v0.5.45-recording-ui'
+        $floatshotRecordingReport = Join-Path $floatshotReportDirectory 'native-v0.5.45-recording-tests.txt'
         Write-Output 'Recording UI checks briefly show test windows on the Windows desktop.'
         $floatshotRecordingTests = Start-Process -FilePath (Join-Path $PSScriptRoot 'build/native-scroll-performance/FloatShotRecordingOverlayTests.exe') -ArgumentList '-o', ('"' + $floatshotRecordingReport + ',txt"') -WindowStyle Hidden -PassThru -Wait
         Get-Content -LiteralPath $floatshotRecordingReport -Tail 4
         if ($floatshotRecordingTests.ExitCode -ne 0) { throw 'Recording UI tests failed.' }
         if (Select-String -LiteralPath $floatshotRecordingReport -Pattern '^SKIP' -Quiet) {
-            Write-Warning 'Live desktop capture checks were skipped; see native-v0.5.44-recording-tests.txt. Capture exclusion in actual video remains unverified.'
+            Write-Warning 'Live desktop capture checks were skipped; see native-v0.5.45-recording-tests.txt. Capture exclusion in actual video remains unverified.'
         }
     } finally {
         $env:PATH = $floatshotOriginalPath

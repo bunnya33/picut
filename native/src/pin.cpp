@@ -6,6 +6,7 @@
 #include <QtCore/QJsonArray>
 #include <QtCore/QUuid>
 #include <QtGui/QContextMenuEvent>
+#include <QtGui/QActionGroup>
 #include <QtGui/QCursor>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QKeyEvent>
@@ -16,6 +17,19 @@
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QMenu>
 #include <cmath>
+
+static bool hasTransparentPixels(const QImage &image) {
+  if (!image.hasAlphaChannel())
+    return false;
+  const auto pixels = image.convertToFormat(QImage::Format_ARGB32);
+  for (int y = 0; y < pixels.height(); ++y) {
+    const auto row = reinterpret_cast<const QRgb *>(pixels.constScanLine(y));
+    for (int x = 0; x < pixels.width(); ++x)
+      if (qAlpha(row[x]) < 255)
+        return true;
+  }
+  return false;
+}
 
 PinWindow::PinWindow(const QImage &value, Store *s, QRect source, QString key)
     : EditingSurface(s, nullptr,
@@ -289,6 +303,7 @@ void PinWindow::contextMenuEvent(QContextMenuEvent *e) {
   }
   QMenu menu(this);
   menu.setObjectName("pinMenu");
+  menu.setToolTipsVisible(true);
   for (const auto &pair :
        QList<QPair<QString, QString>>{{"select_text", "文字识别"},
                                       {"translate", "图片翻译（本地）"},
@@ -309,16 +324,33 @@ void PinWindow::contextMenuEvent(QContextMenuEvent *e) {
         {"save", "Ctrl+S"}, {"gray", "5"}, {"close", "Esc"},
         {"destroy", "Shift+Esc"},
         {"through", store->config["hotkeys"].toObject()["through"].toString()}}[pair.first];
-    menu.addAction(menuLabel(pair.second, shortcut), this,
+    auto action=menu.addAction(menuLabel(pair.second, shortcut), this,
                    [this, pair] { emit requested(this, pair.first); });
+    if (pair.first=="through") {
+      action->setCheckable(true); action->setChecked(through);
+      action->setToolTip("开启后鼠标可操作下方窗口。右键托盘 → 恢复穿透贴图，可恢复指定贴图；也可解除全部穿透。"+
+          (shortcut.isEmpty()?QString():QString(" 鼠标放在贴图上按 %1 也可切换。").arg(shortcut)));
+    }
   }
-  auto bg = menu.addMenu("背景");
-  for (auto value : QStringList{"透明", "伪透明", "暗色棋盘", "亮色棋盘"})
-    bg->addAction(value, this, [this, value] {
-      background = value;
-      update();
-      emit changed();
-    });
+  if (hasTransparentPixels(displayedImage())) {
+    auto bg = menu.addMenu("透明区域背景");
+    bg->setObjectName("pinBackgroundMenu");
+    bg->setToolTipsVisible(true);
+    auto hint=bg->addAction("仅影响透明像素，不改变原图"); hint->setEnabled(false);
+    bg->addSeparator();
+    auto backgrounds=new QActionGroup(bg);
+    for (auto pair : QList<QPair<QString,QString>>{{"透明","透明（显示下方桌面）"},{"暗色棋盘","暗色棋盘（查看透明区域）"},{"亮色棋盘","亮色棋盘（查看透明区域）"}}) {
+      const auto value=pair.first;
+      auto action=bg->addAction(pair.second, this, [this, value] {
+        background = value;
+        update();
+        emit changed();
+      });
+      backgrounds->addAction(action); action->setData(value);
+      action->setCheckable(true); action->setChecked(background==value || (background=="伪透明" && value=="透明"));
+      action->setToolTip("普通不透明截图不会显示此背景；此设置不会修改图片或保存进图片。" );
+    }
+  }
   menu.exec(e->globalPos());
 }
 void PinWindow::moveEvent(QMoveEvent *) { emit changed(); }
@@ -372,6 +404,7 @@ PinWindow *PinManager::create(const QImage &image, QRect source,
     pin->gray = data["gray"].toBool();
     pin->inverted = data["inverted"].toBool();
     pin->background = data["background"].toString("暗色棋盘");
+    if (pin->background=="伪透明") pin->background="透明";
     pin->setWindowFlag(Qt::WindowStaysOnTopHint, data["topmost"].toBool(true));
     auto r = data["thumbnail"].toArray();
     if (r.size() == 4)
