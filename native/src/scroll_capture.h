@@ -98,6 +98,7 @@ signals:
 protected:
   void paintEvent(QPaintEvent *) override;
   void closeEvent(QCloseEvent *) override;
+  void keyPressEvent(QKeyEvent *) override;
   bool nativeEvent(const QByteArray &, void *, qintptr *) override;
 private:
   Store *store;

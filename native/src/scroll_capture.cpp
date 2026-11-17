@@ -6,6 +6,7 @@
 #include "native_windows.h"
 #include <QtCore/QScopeGuard>
 #include <QtGui/QCloseEvent>
+#include <QtGui/QKeyEvent>
 #include <QtGui/QScreen>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QFrame>
@@ -119,6 +120,8 @@ ScrollCapture::ScrollCapture(Store *value, QRect source, quintptr window, QWidge
           this, [this] { finish("edit"); });
   connect(button("save", "save", "保存长截图"), &QToolButton::clicked,
           this, [this] { finish("save"); });
+  connect(button("pin", "pin", "完成并贴图 · F3"), &QToolButton::clicked,
+          this, [this] { finish("pin"); });
   connect(button("cancel", "cancel", "取消滚动截屏 · Esc", QColor("#ff3849")),
           &QToolButton::clicked, this, [this] { finish("cancel"); });
   connect(button("done", "done", "完成并复制 · Enter", QColor("#00b981")),
@@ -158,7 +161,9 @@ void ScrollCapture::begin(bool enableLive) {
     excluded = supportsCaptureExclusion() && excludeCapture(this);
     if (!excluded) SetWindowDisplayAffinity(reinterpret_cast<HWND>(winId()), WDA_NONE);
     place();
-    for (const auto binding : {QPair<int,UINT>{2201,VK_ESCAPE}, {2202,VK_RETURN}})
+    // The application normally owns F3. If its pin hotkey was changed or
+    // disabled, register F3 only for the duration of this scroll session.
+    for (const auto binding : {QPair<int,UINT>{2201,VK_ESCAPE}, {2202,VK_RETURN}, {2203,VK_F3}})
       if (RegisterHotKey(reinterpret_cast<HWND>(winId()), binding.first, MOD_NOREPEAT, binding.second))
         hotkeys.append(binding.first);
     installInputHooks();
@@ -487,7 +492,15 @@ void ScrollCapture::closeEvent(QCloseEvent *event) {
 bool ScrollCapture::nativeEvent(const QByteArray &, void *raw, qintptr *result) {
   auto message=static_cast<MSG *>(raw);
   if (message->message==WM_HOTKEY && hotkeys.contains(int(message->wParam))) {
-    finish(message->wParam==2201 ? "cancel" : "copy"); *result=0; return true;
+    finish(message->wParam==2201 ? "cancel" : message->wParam==2203 ? "pin" : "copy"); *result=0; return true;
   }
   return false;
+}
+void ScrollCapture::keyPressEvent(QKeyEvent *event) {
+  if (event->key() == Qt::Key_F3) {
+    if (!event->isAutoRepeat()) finish("pin");
+    event->accept();
+    return;
+  }
+  QWidget::keyPressEvent(event);
 }

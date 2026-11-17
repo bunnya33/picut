@@ -867,6 +867,10 @@ bool CaptureOverlay::confirmExit() {
   return accepted;
 }
 bool CaptureOverlay::complete(const QString &action) {
+  if (action == "pin" && scrollCapture) {
+    scrollCapture->finish("pin");
+    return true;
+  }
   commitText();
   if (action=="record" && !recording) {
     if (selection.width()<2 || selection.height()<2) return false;
@@ -882,7 +886,20 @@ bool CaptureOverlay::complete(const QString &action) {
     auto region = globalSelection();
     scrollCapture = new ScrollCapture(store,region,sourceWindow);
     scrollCapture->output = [this,region](const QImage &image,const QString &request) {
-      if (output && !output(image,request == "edit" ? QRect() : region,request)) return false;
+      auto target = request == "edit" ? QRect() : region;
+      if (request == "pin") {
+        auto screen = QGuiApplication::screenAt(region.center());
+        if (!screen) screen = QGuiApplication::primaryScreen();
+        const auto available = screen->availableGeometry();
+        const auto anchor = QPoint(qBound(available.left(), region.left(), available.right()),
+                                   qBound(available.top(), region.top(), available.bottom()));
+        // Keep the complete long image in proportion and visible from the
+        // original selection anchor. Exported pixels remain at full resolution.
+        const QSize room(qMin(region.width(), available.right() - anchor.x() + 1),
+                         available.bottom() - anchor.y() + 1);
+        target = QRect(anchor, image.size().scaled(room, Qt::KeepAspectRatio));
+      }
+      if (output && !output(image,target,request)) return false;
       store->config["last_capture_rect"] = QJsonArray{region.x(),region.y(),region.width(),region.height()};
       store->saveConfig(); return true;
     };

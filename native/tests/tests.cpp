@@ -1309,6 +1309,63 @@ private slots:
     session->finish("copy");
     QVERIFY(copied); QCOMPARE(closed.count(),1); QVERIFY(closed.first().first().toBool());
   }
+  void scrollF3PinsCompleteImage_data() {
+    QTest::addColumn<QString>("entry");
+    QTest::addColumn<bool>("extend");
+    QTest::newRow("global-f3-long") << QString("global") << true;
+    QTest::newRow("local-f3-long") << QString("local") << true;
+    QTest::newRow("toolbar-long") << QString("button") << true;
+    QTest::newRow("global-f3-first-frame") << QString("global") << false;
+  }
+  void scrollF3PinsCompleteImage() {
+    QFETCH(QString, entry);
+    QFETCH(bool, extend);
+    QTemporaryDir dir;
+    const auto previous = qgetenv("FLOATSHOT_DATA_DIR");
+    auto restore = qScopeGuard([&] {
+      if (previous.isNull()) qunsetenv("FLOATSHOT_DATA_DIR");
+      else qputenv("FLOATSHOT_DATA_DIR", previous);
+    });
+    qputenv("FLOATSHOT_DATA_DIR", dir.path().toUtf8());
+    ApplicationController controller(true);
+    auto source = editingFixture(controller.store, "rect");
+    controller.overlay = source;
+    source->output = [&](const QImage &image, const QRect &region, const QString &action) {
+      return controller.imageOutput(image, region, action);
+    };
+    const auto anchor = source->globalSelection().topLeft();
+    QVERIFY(source->complete("scroll"));
+    auto session = source->scrollCapture.data();
+    QVERIFY(session);
+    const auto document = scrollDocument(480, 1200);
+    QCOMPARE(session->acceptFrame(document.copy(0, 0, 480, 300)), ScrollStitcher::Started);
+    if (extend)
+      QCOMPARE(session->acceptFrame(document.copy(0, 120, 480, 300), 1), ScrollStitcher::Appended);
+    QSignalSpy finished(session, &ScrollCapture::finished);
+    if (entry == "global") {
+      MSG message{}; message.message = WM_HOTKEY; message.wParam = 2;
+      QVERIFY(controller.nativeEventFilter({}, &message, nullptr));
+    } else if (entry == "local") {
+      QTest::keyClick(session, Qt::Key_F3);
+    } else {
+      auto button = session->findChild<QToolButton *>("scroll_pin");
+      QVERIFY(button); QVERIFY(button->toolTip().contains("F3"));
+      QTest::mouseClick(button, Qt::LeftButton);
+    }
+    QCOMPARE(finished.count(), 1);
+    QVERIFY(finished.first().first().toBool());
+    QVERIFY(!source->isVisible());
+    QVERIFY(!source->scrollCapture);
+    QCOMPARE(controller.pins.windows.size(), 1);
+    auto pin = controller.pins.windows.first();
+    QVERIFY(pin);
+    QCOMPARE(pin->image, document.copy(0, 0, 480, extend ? 420 : 300));
+    QCOMPARE(pin->contentGeometry().topLeft(), anchor);
+    auto screen = QGuiApplication::screenAt(anchor);
+    QVERIFY(screen); QVERIFY(screen->availableGeometry().contains(pin->contentGeometry()));
+    const auto displayed = pin->contentRect().size();
+    QVERIFY(qAbs(displayed.width() * double(pin->image.height()) / pin->image.width() - displayed.height()) <= 1.);
+  }
   void scrollToolbarEntryAndCancellation() {
     QTemporaryDir dir; Store store(dir.path());
     auto overlay=editingFixture(store,"rect");
