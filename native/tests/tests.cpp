@@ -1313,6 +1313,7 @@ private slots:
     QTest::addColumn<QString>("entry");
     QTest::addColumn<bool>("extend");
     QTest::newRow("global-f3-long") << QString("global") << true;
+    QTest::newRow("global-f3-preview-left") << QString("global-left") << true;
     QTest::newRow("local-f3-long") << QString("local") << true;
     QTest::newRow("toolbar-long") << QString("button") << true;
     QTest::newRow("global-f3-first-frame") << QString("global") << false;
@@ -1333,7 +1334,7 @@ private slots:
     source->output = [&](const QImage &image, const QRect &region, const QString &action) {
       return controller.imageOutput(image, region, action);
     };
-    const auto anchor = source->globalSelection().topLeft();
+    if (entry == "global-left") source->selectRegion({300, 80, 480, 300});
     QVERIFY(source->complete("scroll"));
     auto session = source->scrollCapture.data();
     QVERIFY(session);
@@ -1341,8 +1342,10 @@ private slots:
     QCOMPARE(session->acceptFrame(document.copy(0, 0, 480, 300)), ScrollStitcher::Started);
     if (extend)
       QCOMPARE(session->acceptFrame(document.copy(0, 120, 480, 300), 1), ScrollStitcher::Appended);
+    const auto preview = session->previewGeometry();
+    if (entry == "global-left") QVERIFY(preview.right() < source->globalSelection().left());
     QSignalSpy finished(session, &ScrollCapture::finished);
-    if (entry == "global") {
+    if (entry.startsWith("global")) {
       MSG message{}; message.message = WM_HOTKEY; message.wParam = 2;
       QVERIFY(controller.nativeEventFilter({}, &message, nullptr));
     } else if (entry == "local") {
@@ -1360,8 +1363,8 @@ private slots:
     auto pin = controller.pins.windows.first();
     QVERIFY(pin);
     QCOMPARE(pin->image, document.copy(0, 0, 480, extend ? 420 : 300));
-    QCOMPARE(pin->contentGeometry().topLeft(), anchor);
-    auto screen = QGuiApplication::screenAt(anchor);
+    QCOMPARE(pin->contentGeometry(), preview);
+    auto screen = QGuiApplication::screenAt(preview.center());
     QVERIFY(screen); QVERIFY(screen->availableGeometry().contains(pin->contentGeometry()));
     const auto displayed = pin->contentRect().size();
     QVERIFY(qAbs(displayed.width() * double(pin->image.height()) / pin->image.width() - displayed.height()) <= 1.);
@@ -1446,11 +1449,37 @@ private slots:
     change(false,true,true);
     Store enabled(dir.path()); QVERIFY(enabled.config["startup"].toBool());
   }
+  void recordingDefaultsOrderAndLabels() {
+    QTemporaryDir dir; Store store(dir.path());
+    QCOMPARE(store.config["fps"].toInt(), 60); QCOMPARE(store.config["quality"].toInt(), 14);
+    RecordOptions defaults; QCOMPARE(defaults.fps, 60); QCOMPARE(defaults.quality, 14);
+    const auto empty = savedRecordingOptions({}, {}, {});
+    QCOMPARE(empty.fps, 60); QCOMPARE(empty.quality, 14);
+    QVERIFY(recordingSummary({}).startsWith("60 fps · 原画"));
+    const auto invalid = savedRecordingOptions({{"fps", 120}}, {}, {});
+    QCOMPARE(invalid.fps, 60);
+    RecordingSettingsDialog dialog(&store, {30, 40, 500, 300}, false);
+    auto fps = dialog.findChild<QComboBox *>("recordFps");
+    auto quality = dialog.findChild<QComboBox *>("recordQuality");
+    QCOMPARE(fps->count(), 3); QCOMPARE(fps->currentData().toInt(), 60);
+    const QList<int> frameRates{60, 30, 15}, qualities{14, 18, 22, 28};
+    const QStringList labels{"原画", "高画质", "标准", "省空间"};
+    for (int i = 0; i < frameRates.size(); ++i) QCOMPARE(fps->itemData(i).toInt(), frameRates[i]);
+    QCOMPARE(quality->count(), 4); QCOMPARE(quality->currentData().toInt(), 14);
+    for (int i = 0; i < qualities.size(); ++i) {
+      QCOMPARE(quality->itemData(i).toInt(), qualities[i]);
+      QVERIFY(quality->itemText(i).startsWith(labels[i] + " · "));
+      QVERIFY(quality->itemText(i).contains(i ? "1080p" : "原始分辨率"));
+    }
+    dialog.show(); QApplication::processEvents();
+    QVERIFY(savePreview(&dialog, "recording-settings-defaults.png"));
+  }
   void recordingSettingsPersistenceAndCancel_data() {
     QTest::addColumn<int>("fps"); QTest::addColumn<int>("quality");
-    QTest::newRow("15-clearer") << 15 << 18;
-    QTest::newRow("30-default") << 30 << 22;
+    QTest::newRow("15-high-quality") << 15 << 18;
+    QTest::newRow("30-standard") << 30 << 22;
     QTest::newRow("60-original") << 60 << 14;
+    QTest::newRow("60-smaller-file") << 60 << 28;
   }
   void recordingSettingsPersistenceAndCancel() {
     QFETCH(int, fps); QFETCH(int, quality);
@@ -1479,7 +1508,11 @@ private slots:
     QCOMPARE(options.region,QRect(60,80,1000,600));
     QCOMPARE(reopened.config["countdown"].toInt(),5);
     QVERIFY(recordingSummary(reopened.config).contains(QString("%1 fps").arg(fps)));
-    if (quality==14) QVERIFY(recordingSummary(reopened.config).contains("原画"));
+    const auto label=quality==14?"原画":quality==18?"高画质":quality==28?"省空间":"标准";
+    QVERIFY(recordingSummary(reopened.config).contains(label));
+    RecordingSettingsDialog savedDialog(&reopened, {}, false);
+    QCOMPARE(savedDialog.findChild<QComboBox *>("recordFps")->currentData().toInt(), fps);
+    QCOMPARE(savedDialog.findChild<QComboBox *>("recordQuality")->currentData().toInt(), quality);
     QVERIFY(recordingSummary(reopened.config).contains("点击反馈开"));
     auto saved=reopened.config;
     RecordingSettingsDialog canceled(&reopened,{30,40,500,300},false);
@@ -2175,7 +2208,7 @@ private slots:
     overlay->close();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   }
-  void toolbarAnimationAndStableActions() {
+  void toolbarAnimationFitsContent() {
     QImage image(100, 100, QImage::Format_ARGB32);
     image.fill(Qt::white);
     Annotation a(image);
@@ -2187,18 +2220,28 @@ private slots:
     QVERIFY(motion);
     QCOMPARE(motion->state(), QAbstractAnimation::Stopped);
     const auto mainSize = bar.mainBar->size();
+    auto group = bar.findChild<QWidget *>("annotationToolGroup");
+    QVERIFY(group);
+    const int collapsedWidth = group->width();
     QMap<QToolButton *, QPoint> actionPositions;
     for (auto button : bar.mainBar->findChildren<QToolButton *>()) {
       QCOMPARE(button->size(), QSize(32, 32));
       QCOMPARE(button->iconSize(), QSize(16, 16));
-      if (button->objectName().startsWith("action_"))
-        actionPositions[button] = button->mapToGlobal(QPoint(0, 0));
+      if (button->objectName().startsWith("action_") && button->isVisible())
+        actionPositions[button] = button->mapTo(bar.mainBar, QPoint(0, 0));
     }
-    auto stableActions = [&] {
-      QCOMPARE(bar.mainBar->size(), mainSize);
+    auto fittedActions = [&] {
+      const int expansion = group->width() - collapsedWidth;
+      QCOMPARE(bar.mainBar->width(), mainSize.width() + expansion);
       for (auto button : actionPositions.keys())
-        QCOMPARE(button->mapToGlobal(QPoint(0, 0)), actionPositions[button]);
+        QCOMPARE(button->mapTo(bar.mainBar, QPoint(0, 0)), actionPositions[button] + QPoint(expansion, 0));
+      auto lastTool = bar.findChild<QToolButton *>("tool_number");
+      QCOMPARE(group->width(), lastTool->geometry().right() + 1);
+      auto lastAction = bar.findChild<QToolButton *>("action_copy");
+      const int padding = bar.mainBar->width() - lastAction->mapTo(bar.mainBar, QPoint(lastAction->width(), 0)).x();
+      QVERIFY2(padding >= 6 && padding <= 8, qPrintable(QString("Unexpected right padding: %1").arg(padding)));
     };
+    fittedActions();
     QSignalSpy chosen(&bar, &Toolbar::toolChosen);
     QTest::mouseClick(bar.findChild<QToolButton *>("tool_pen"), Qt::LeftButton);
     QCOMPARE(chosen.takeFirst().first().toString(), QString("pen"));
@@ -2211,7 +2254,8 @@ private slots:
     QVERIFY(pen->width() > 32);
     const auto penDuringTransition = pen->geometry();
     QVERIFY(savePreview(bar.mainBar, "toolbar-pen-transition.png"));
-    stableActions();
+    QVERIFY(bar.mainBar->width() > mainSize.width());
+    fittedActions();
     // Changing width/color while a transition runs must preserve its progress.
     bar.sync(a);
     QCOMPARE(motion->currentTime(), 70);
@@ -2222,8 +2266,7 @@ private slots:
     motion->pause();
     for (int time : {0, 20, 70, 120, 200}) {
       motion->setCurrentTime(time);
-      stableActions();
-      auto group = pen->parentWidget();
+      fittedActions();
       const auto buttons = group->findChildren<QToolButton *>();
       for (int n = 1; n < buttons.size(); ++n)
         QVERIFY(buttons[n - 1]->geometry().right() < buttons[n]->x());
@@ -2232,6 +2275,7 @@ private slots:
     auto text = bar.findChild<QToolButton *>("tool_text");
     QVERIFY(text->width() > 32);
     QVERIFY(text->isChecked());
+    const int shortLabelWidth = bar.mainBar->width();
     const auto main = bar.mainBar->geometry(), options = bar.optionsBar->geometry();
     QCOMPARE(main.left(), options.left());
     QVERIFY(savePreview(&bar, "toolbar-text-options.png"));
@@ -2256,6 +2300,17 @@ private slots:
     QCOMPARE(motion->state(), QAbstractAnimation::Stopped);
     QVERIFY(bar.findChild<QToolButton *>("tool_shapes")->width() > 32);
     QVERIFY(savePreview(&bar, "toolbar-shapes-motion.png"));
+    a.chooseTool("marker"); bar.sync(a); motion->pause();
+    motion->setCurrentTime(motion->duration());
+    fittedActions(); QVERIFY(bar.mainBar->width() > shortLabelWidth);
+    QVERIFY(savePreview(&bar, "toolbar-long-label.png"));
+    a.chooseTool("text"); bar.sync(a); motion->pause();
+    motion->setCurrentTime(motion->duration());
+    fittedActions(); QCOMPARE(bar.mainBar->width(), shortLabelWidth);
+    a.chooseTool("select"); bar.sync(a); motion->pause();
+    motion->setCurrentTime(motion->duration());
+    fittedActions(); QCOMPARE(bar.mainBar->size(), mainSize);
+    QVERIFY(savePreview(&bar, "toolbar-collapsed.png"));
   }
   void toolbarKeyboardRecordingAndPinIntegration() {
     QTemporaryDir dir;
@@ -2271,23 +2326,30 @@ private slots:
     QCOMPARE(copy->mapToGlobal(QPoint(0, 0)), copyPosition);
     auto motion = bar->findChild<QVariantAnimation *>("toolbarSelectionAnimation");
     QVERIFY(motion);
-    QTest::keyClick(overlay, Qt::Key_2, Qt::ControlModifier);
-    QCOMPARE(overlay->annotation->tool, QString("arrow"));
+    QTest::keyClick(overlay, Qt::Key_4, Qt::ControlModifier);
+    QCOMPARE(overlay->annotation->tool, QString("marker"));
     motion->pause();
     QApplication::processEvents();
     struct PaintObserver : QObject {
       int paints = 0;
+      QRegion dirty;
       bool eventFilter(QObject *, QEvent *event) override {
-        if (event->type() == QEvent::Paint) ++paints;
+        if (event->type() == QEvent::Paint) {
+          ++paints; dirty += static_cast<QPaintEvent *>(event)->region();
+        }
         return false;
       }
     } observer;
+    const auto beforeAnimation = bar->geometry();
     overlay->installEventFilter(&observer);
     for (int time : {20, 60, 100, 140, 200}) {
       motion->setCurrentTime(time);
       QApplication::processEvents();
     }
-    QCOMPARE(observer.paints, 0); // A selection transition must not repaint the desktop overlay.
+    const auto affected = beforeAnimation.united(bar->geometry()).adjusted(-2, -2, 2, 2);
+    // Resizing can expose a strip behind the toolbar, but must not repaint the desktop.
+    QVERIFY((observer.dirty - QRegion(affected)).isEmpty());
+    QVERIFY(bar->mainBar->width() > 0);
     overlay->removeEventFilter(&observer);
     bar->findChild<QToolButton *>("action_record")->click();
     QVERIFY(overlay->recording);
@@ -2296,8 +2358,8 @@ private slots:
     QTest::keyClick(overlay, Qt::Key_Escape);
     QVERIFY(!overlay->recording);
     QVERIFY(bar->isVisible());
-    QCOMPARE(overlay->annotation->tool, QString("arrow"));
-    QCOMPARE(copy->mapToGlobal(QPoint(0, 0)), copyPosition);
+    QCOMPARE(overlay->annotation->tool, QString("marker"));
+    QVERIFY(overlay->rect().contains(bar->geometry()));
     QVERIFY(savePreview(overlay, "capture-with-motion-toolbar.png"));
     PinWindow pin(overlay->annotation->render(), &store);
     pin.show();
@@ -2310,6 +2372,27 @@ private slots:
     QCOMPARE(pin.annotation->tool, QString("arrow"));
     pinMotion->setCurrentTime(pinMotion->duration());
     QVERIFY(savePreview(&pin, "pin-with-motion-toolbar.png"));
+  }
+  void toolbarAnimationStaysInsideScreen() {
+    QTemporaryDir dir; Store store(dir.path());
+    auto overlay = editingFixture(store, "text");
+    auto cleanup = qScopeGuard([&] { delete overlay; });
+    overlay->selectRegion({100, 80, 680, 300});
+    auto bar = overlay->toolbar;
+    auto motion = bar->findChild<QVariantAnimation *>("toolbarSelectionAnimation");
+    motion->setCurrentTime(motion->duration());
+    auto copy = bar->findChild<QToolButton *>("action_copy");
+    const int rightEdge = bar->mapToGlobal(bar->mainBar->rect().topRight()).x();
+    for (const auto &tool : QStringList{"marker", "text", "eraser", "line"}) {
+      overlay->chooseTool(tool); motion->pause();
+      for (int time : {0, 30, 80, 140, 200}) {
+        motion->setCurrentTime(time); QApplication::processEvents();
+        QVERIFY(overlay->rect().adjusted(4, 4, -4, -4).contains(bar->geometry()));
+        QCOMPARE(bar->mapToGlobal(bar->mainBar->rect().topRight()).x(), rightEdge);
+        QVERIFY(bar->mainBar->rect().contains(copy->geometry()));
+      }
+    }
+    QVERIFY(savePreview(overlay, "toolbar-right-edge.png"));
   }
   void shapeButtonsFillRenderingHitAndMemory() {
     QTemporaryDir dir;
@@ -2406,8 +2489,7 @@ private slots:
     bar->strength->setValue(6);
     QCOMPARE(a.preferences.intensity, 6);
     QCOMPARE(bar->strengthValue->text(), QString("6"));
-    overlay->setPreference("width", 41);
-    QCOMPARE(bar->widthButton->text(), QString("41"));
+    QVERIFY(!bar->widthButton->isVisible());
     QTest::mouseClick(bar->areaEllipseButton, Qt::LeftButton);
     QCOMPARE(a.preferences.areaShape, QString("ellipse"));
     QTest::mouseClick(bar->areaButton, Qt::LeftButton);
@@ -2432,6 +2514,142 @@ private slots:
     QVERIFY(bar->optionsBar->width() < 350);
     QCOMPARE(bar->optionsBar->size(), bar->optionsBar->sizeHint());
   }
+  void areaEffectSwitchAndWheel_data() {
+    QTest::addColumn<bool>("pin");
+    QTest::addColumn<QString>("tool");
+    QTest::addColumn<QString>("area");
+    for (bool pin : {false, true})
+      for (const auto &tool : QStringList{"mosaic", "blur"})
+        for (const auto &area : QStringList{"rect", "ellipse"}) {
+          const auto name = QString("%1-%2-%3").arg(pin ? "pin" : "capture", tool, area);
+          QTest::newRow(qPrintable(name)) << pin << tool << area;
+        }
+  }
+  void areaEffectSwitchAndWheel() {
+    QFETCH(bool, pin); QFETCH(QString, tool); QFETCH(QString, area);
+    QTemporaryDir dir; Store store(dir.path());
+    // Old brush preferences must not turn the effect tool into a freehand pen.
+    store.config["annotation_options"] = QJsonObject{
+      {"mosaic", QJsonObject{{"area_shape", "stroke"}, {"intensity", 12}}},
+      {"blur", QJsonObject{{"area_shape", "stroke"}, {"intensity", 12}}}};
+    EditingSurface *surface;
+    if (pin) {
+      auto window = new PinWindow(scrollDocument(480, 300), &store, {100, 80, 480, 300});
+      window->show(); window->startEditing(); window->chooseTool(tool); surface = window;
+    } else
+      surface = editingFixture(store, tool);
+    auto cleanup = qScopeGuard([&] { delete surface; });
+    auto &a = *surface->annotation;
+    auto bar = surface->toolbar;
+    QCOMPARE(a.preferences.areaShape, QString("rect"));
+    QVERIFY(!bar->widthButton->isVisible());
+    surface->setPreference("area_shape", area);
+    auto regionButton = area == "rect" ? bar->areaButton : bar->areaEllipseButton;
+    QTest::mouseClick(regionButton, Qt::LeftButton);
+    QCOMPARE(a.preferences.areaShape, area); QVERIFY(regionButton->isChecked());
+
+    auto earlier = a.preferences; earlier.points = {{330, 220}, {440, 260}};
+    a.add(earlier); a.confirm();
+    const auto earlierState = a.marks.first().json();
+    const auto origin = surface->contentRect().topLeft();
+    QTest::mousePress(surface, Qt::LeftButton, Qt::NoModifier, origin + QPoint(80, 60));
+    dragMove(surface, origin + QPoint(270, 165));
+    QTest::mouseRelease(surface, Qt::LeftButton, Qt::NoModifier, origin + QPoint(270, 165));
+    QCOMPARE(a.marks.size(), 2); QCOMPARE(a.selected, 1);
+    QCOMPARE(a.marks.last().points.size(), 2);
+    surface->setPreference("rotation", 31);
+    const auto points = a.marks.last().points;
+    const auto width = a.marks.last().width;
+    const auto beforeWheel = a.cached;
+    wheel(surface, surface->contentRect().center(), 1);
+    QCOMPARE(a.marks.last().intensity, 13); QCOMPARE(a.preferences.intensity, 13);
+    QCOMPARE(a.marks.last().width, width); QCOMPARE(bar->strength->value(), 13);
+    QCOMPARE(bar->strengthValue->text(), QString("13"));
+    QVERIFY(a.cached != beforeWheel);
+    const auto originalEffect = a.cached;
+    const auto other = tool == "mosaic" ? QString("blur") : QString("mosaic");
+    QImage otherEffect;
+    for (const auto &kind : QStringList{other, tool, other, tool}) {
+      QTest::mouseClick(kind == "mosaic" ? bar->mosaicButton : bar->blurButton, Qt::LeftButton);
+      QCOMPARE(a.selected, 1); QCOMPARE(a.marks.size(), 2);
+      QCOMPARE(a.tool, kind); QCOMPARE(a.marks.last().kind, kind);
+      QCOMPARE(a.marks.last().points, points); QCOMPARE(a.marks.last().rotation, 31);
+      QCOMPARE(a.marks.last().areaShape, area); QCOMPARE(a.marks.last().intensity, 13);
+      QCOMPARE(a.marks.first().json(), earlierState);
+      QCOMPARE(markControls(a.marks.last()).size(), 9);
+      QVERIFY(bar->mosaicButton->isChecked() == (kind == "mosaic"));
+      QVERIFY(bar->blurButton->isChecked() == (kind == "blur"));
+      if (kind == tool) QCOMPARE(a.cached, originalEffect);
+      else if (otherEffect.isNull()) { otherEffect = a.cached; QVERIFY(otherEffect != originalEffect); }
+      else QCOMPARE(a.cached, otherEffect);
+    }
+    const auto undoCount = a.undoStates.size();
+    QTest::mouseClick(tool == "mosaic" ? bar->mosaicButton : bar->blurButton, Qt::LeftButton);
+    QCOMPARE(a.selected, 1); QCOMPARE(a.undoStates.size(), undoCount);
+    QVERIFY(savePreview(surface, QString("effect-%1-%2-%3.png").arg(pin ? "pin" : "capture", tool, area)));
+    wheel(surface, surface->contentRect().center(), -1);
+    QCOMPARE(a.marks.last().intensity, 12);
+    for (const auto limit : {2, 40}) {
+      bar->strength->setValue(limit);
+      const auto beforeLimit = a.marks.last().json();
+      const auto beforeUndo = a.undoStates.size();
+      wheel(surface, surface->contentRect().center(), limit == 2 ? -1 : 1);
+      QCOMPARE(a.marks.last().json(), beforeLimit); QCOMPARE(a.undoStates.size(), beforeUndo);
+      QCOMPARE(bar->strengthValue->text(), QString::number(limit));
+    }
+    bar->strength->setValue(15);
+    Store reopened(dir.path()); Annotation restored(a.original, &reopened);
+    restored.chooseTool(tool); QCOMPARE(restored.preferences.intensity, 15);
+    QCOMPARE(restored.preferences.areaShape, area);
+
+    QTest::mouseClick(surface, Qt::LeftButton, Qt::NoModifier, origin + QPoint(25, 270));
+    QCOMPARE(a.selected, -1); QCOMPARE(a.marks.size(), 2);
+    const auto confirmed = a.marks.last().json();
+    wheel(surface, surface->contentRect().center(), 1);
+    QTest::mouseClick(other == "mosaic" ? bar->mosaicButton : bar->blurButton, Qt::LeftButton);
+    QCOMPARE(a.marks.last().json(), confirmed);
+    QTest::mousePress(surface, Qt::LeftButton, Qt::NoModifier, origin + QPoint(40, 220));
+    dragMove(surface, origin + QPoint(210, 270));
+    QTest::mouseRelease(surface, Qt::LeftButton, Qt::NoModifier, origin + QPoint(210, 270));
+    QCOMPARE(a.marks.size(), 3); QCOMPARE(a.marks.last().rotation, 0);
+    QCOMPARE(a.marks[1].json(), confirmed);
+    QTest::mouseClick(tool == "mosaic" ? bar->mosaicButton : bar->blurButton, Qt::LeftButton);
+    const auto switched = a.marks.last().json();
+    QTest::keyClick(surface, Qt::Key_Z, Qt::ControlModifier);
+    QCOMPARE(a.marks.last().kind, other);
+    QTest::keyClick(surface, Qt::Key_Y, Qt::ControlModifier);
+    QCOMPARE(a.marks.last().json(), switched);
+  }
+  void recordingEffectSelectionKeepsOtherRegions() {
+    QTemporaryDir dir; Store store(dir.path());
+    const QRect region(80, 80, 400, 260);
+    auto live = std::make_shared<RecordingLiveState>(physicalRect(region));
+    RecordingEditor editor(&store, region, region.size(), nullptr, live);
+    const auto origin = editor.contentRect().topLeft();
+    auto draw = [&](const QString &kind, QPoint first, QPoint last) {
+      editor.chooseTool(kind);
+      QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, origin + first);
+      dragMove(&editor, origin + last);
+      QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, origin + last);
+    };
+    draw("mosaic", {30, 40}, {170, 120});
+    // Finish the first region before starting a second, different effect.
+    editor.chooseTool("pen");
+    draw("blur", {240, 160}, {350, 220});
+    auto &a = *editor.annotation;
+    QCOMPARE(a.marks.size(), 2); QCOMPARE(a.selected, 1);
+    const auto second = a.marks[1].json();
+    QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, origin + QPoint(90, 75));
+    QCOMPARE(a.selected, 0); QCOMPARE(a.tool, QString("mosaic"));
+    QCOMPARE(a.marks[1].json(), second);
+    wheel(&editor, origin + QPoint(90, 75), 1);
+    QCOMPARE(a.marks[0].intensity, 13); QCOMPARE(a.marks[1].json(), second);
+    const auto points = a.marks[0].points;
+    QTest::mouseClick(editor.toolbar->blurButton, Qt::LeftButton);
+    QCOMPARE(a.selected, 0); QCOMPARE(a.marks[0].kind, QString("blur"));
+    QCOMPARE(a.marks[0].points, points); QCOMPARE(a.marks[1].json(), second);
+    editor.publish(); QVERIFY(live->snapshot().painter);
+  }
   void widthButtonSelectsStrokeWithoutPopup_data() {
     QTest::addColumn<QString>("tool");
     QTest::addColumn<QString>("area");
@@ -2439,8 +2657,7 @@ private slots:
     for (bool pin : {false, true})
       for (const auto &mode : QList<QPair<QString, QString>>{
                {"rect", "filled"}, {"ellipse", "filled"}, {"marker", "rect"},
-               {"mosaic", "rect"}, {"mosaic", "ellipse"}, {"blur", "rect"},
-               {"blur", "ellipse"}, {"eraser", "rect"}, {"eraser", "ellipse"}}) {
+               {"eraser", "rect"}, {"eraser", "ellipse"}}) {
         auto name = (pin ? "pin-" : "capture-") + mode.first + "-" + mode.second;
         QTest::newRow(qPrintable(name)) << mode.first << mode.second << pin;
       }

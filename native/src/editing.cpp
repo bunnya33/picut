@@ -88,6 +88,7 @@ void EditingSurface::showToolbar() {
     toolbar->findChild<QToolButton *>("action_scroll")->setVisible(property("supportsScrolling").toBool());
     toolbar->findChild<QToolButton *>("action_record")->setVisible(property("supportsRecording").toBool());
     connect(toolbar, &Toolbar::toolChosen, this, &EditingSurface::chooseTool);
+    connect(toolbar, &Toolbar::sizeChanged, this, &EditingSurface::positionToolbar);
     connect(toolbar, &Toolbar::preferencesChanged, this,
             &EditingSurface::setPreference);
     connect(toolbar, &Toolbar::actionRequested, this,
@@ -180,9 +181,12 @@ void EditingSurface::setPreference(QString key, QVariant value) {
       p.textOutline = p.color.lightness() < 128 ? Qt::white : Qt::black;
   }
   else if (key == "intensity")
-    p.intensity = value.toInt();
+    p.intensity = qBound(2, value.toInt(), 40);
   else if (key == "area_shape") {
     p.areaShape = value.toString();
+    if ((annotation->tool == "mosaic" || annotation->tool == "blur") &&
+        p.areaShape != "ellipse")
+      p.areaShape = "rect";
     if (annotation->tool == "marker" && p.areaShape != "rect") {
       p.areaShape = "stroke";
       p.rotation = 0;
@@ -496,7 +500,7 @@ bool EditingSurface::annotationRelease(QMouseEvent *e) {
   return false;
 }
 void EditingSurface::annotationWheel(QWheelEvent *e) {
-  if (!annotation)
+  if (!annotation || !e->angleDelta().y())
     return;
   annotation->adjustWidth(e->angleDelta().y() > 0 ? 1 : -1);
   annotation->savePreferences(store);

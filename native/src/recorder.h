@@ -30,7 +30,7 @@ private:
 struct RecordOptions {
   QRect region;
   QString output, speakerId, micId;
-  int fps = 30, quality = 22;
+  int fps = 60, quality = 14;
   bool cursor = true, systemAudio = false, microphone = false, clickFeedback = false;
   RecordingPainter painter;
   std::shared_ptr<RecordingLiveState> live;

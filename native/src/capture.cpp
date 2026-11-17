@@ -891,17 +891,11 @@ bool CaptureOverlay::complete(const QString &action) {
     scrollCapture = new ScrollCapture(store,region,sourceWindow);
     scrollCapture->output = [this,region](const QImage &image,const QString &request) {
       auto target = request == "edit" ? QRect() : region;
-      if (request == "pin") {
-        auto screen = QGuiApplication::screenAt(region.center());
-        if (!screen) screen = QGuiApplication::primaryScreen();
-        const auto available = screen->availableGeometry();
-        const auto anchor = QPoint(qBound(available.left(), region.left(), available.right()),
-                                   qBound(available.top(), region.top(), available.bottom()));
-        // Keep the complete long image in proportion and visible from the
-        // original selection anchor. Exported pixels remain at full resolution.
-        const QSize room(qMin(region.width(), available.right() - anchor.x() + 1),
-                         available.bottom() - anchor.y() + 1);
-        target = QRect(anchor, image.size().scaled(room, Qt::KeepAspectRatio));
+      if (request == "pin" && scrollCapture) {
+        const auto preview = scrollCapture->previewGeometry();
+        // Hand the preview's screen position and display size to the pin.
+        // A final pending strip can change the aspect ratio slightly.
+        target = QRect(preview.topLeft(), image.size().scaled(preview.size(), Qt::KeepAspectRatio));
       }
       if (output && !output(image,target,request)) return false;
       store->config["last_capture_rect"] = QJsonArray{region.x(),region.y(),region.width(),region.height()};

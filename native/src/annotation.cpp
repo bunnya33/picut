@@ -449,12 +449,30 @@ Annotation::Annotation(const QImage &image, Store *store)
 void Annotation::chooseTool(const QString &value) {
   if (tool != "select")
     toolOptions[tool] = preferences.json();
+  const bool effect = value == "mosaic" || value == "blur";
+  if (effect && selected >= 0 && selected < marks.size() &&
+      (marks[selected].kind == "mosaic" || marks[selected].kind == "blur") &&
+      marks[selected].areaShape != "stroke") {
+    // Replace the effect on the editable region, keeping its geometry and
+    // intensity. Render again from the source so repeated switches do not stack.
+    if (marks[selected].kind != value) {
+      checkpoint();
+      marks[selected].kind = value;
+      refresh();
+    }
+    preferences = marks[selected];
+    tool = value;
+    return;
+  }
   auto color = preferences.color;
   preferences = Mark::fromJson(toolOptions[value].toObject());
   preferences.color = color;
   preferences.kind = value;
-  if (!toolOptions.contains(value) && (value == "mosaic" || value == "blur"))
-    preferences.areaShape = "rect";
+  if (effect) {
+    if (preferences.areaShape != "ellipse")
+      preferences.areaShape = "rect";
+    preferences.intensity = qBound(2, preferences.intensity, 40);
+  }
   if (value == "pen") {
     preferences.rotation = 0;
     preferences.areaShape = "stroke";
@@ -529,6 +547,12 @@ void Annotation::adjustWidth(int steps) {
   if (tool == "text" || tool == "number")
     preferences.fontSize = qBound(4.0 / 3, preferences.fontSize + steps * 4.0 / 3,
                                   1600.0 / 3);
+  else if (tool == "mosaic" || tool == "blur") {
+    const int intensity = qBound(2, preferences.intensity + steps, 40);
+    if (intensity == preferences.intensity)
+      return;
+    preferences.intensity = intensity;
+  }
   else
     preferences.width = qBound(1.0, preferences.width + steps, 100.0);
   applyPreferences();

@@ -12,6 +12,7 @@
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidgetAction>
 #include <array>
+#include <functional>
 
 namespace {
 constexpr int toolCount = 8, buttonSize = 32, buttonGap = 3;
@@ -59,8 +60,8 @@ private:
   QIcon normal, selected;
 };
 
-// Only this opaque, small surface repaints during a transition. The capture
-// overlay and its desktop-sized image do not take part in the animation.
+// Animate this small surface and its container's bounds. Any exposed background
+// is limited to the toolbar area, without invalidating the full screenshot.
 class AnimatedToolGroup final : public QWidget {
   struct Pose {
     std::array<QRectF, toolCount> boxes{};
@@ -74,7 +75,7 @@ public:
     setAttribute(Qt::WA_OpaquePaintEvent);
     for (int i = 0; i < toolCount; ++i)
       buttons[i] = new AnimatedToolButton(i, this);
-    updateSize();
+    setFixedHeight(buttonSize);
     apply(layoutFor(-1));
     motion.setObjectName("toolbarSelectionAnimation");
     motion.setParent(this);
@@ -101,6 +102,7 @@ public:
     to = current;
   }
   std::array<AnimatedToolButton *, toolCount> buttons{};
+  std::function<void()> geometryChanged;
   void select(int index, const QString &label) {
     const bool labelChanged = index >= 0 && buttons[index]->text() != label;
     if (active == index && !labelChanged)
@@ -132,7 +134,6 @@ protected:
     QWidget::changeEvent(event);
     if (event->type() == QEvent::FontChange) {
       motion.stop();
-      updateSize();
       to = layoutFor(active);
       apply(to);
     }
@@ -149,13 +150,6 @@ protected:
     }
   }
 private:
-  void updateSize() {
-    int labelRoom = 62;
-    for (const auto &label : toolLabels)
-      labelRoom = qMax(labelRoom, fontMetrics().horizontalAdvance(label) + 7);
-    setFixedSize(toolCount * buttonSize + (toolCount - 1) * buttonGap + labelRoom,
-                 buttonSize);
-  }
   Pose layoutFor(int index) const {
     Pose pose;
     int x = 0;
@@ -181,6 +175,11 @@ private:
         buttons[i]->emphasis = pose.emphasis[i];
         buttons[i]->update();
       }
+    }
+    const int contentWidth = buttons.back()->geometry().right() + 1;
+    if (width() != contentWidth) {
+      setFixedWidth(contentWidth);
+      if (geometryChanged) geometryChanged();
     }
     update(dirty);
   }
@@ -386,11 +385,13 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
       "8px;height:8px;margin:-4px 0;background:white;border:2px solid #2080f0;"
       "border-radius:6px;}");
   auto root = new QVBoxLayout(this);
+  root->setSizeConstraint(QLayout::SetFixedSize);
   root->setContentsMargins(0, 0, 0, 0);
   root->setSpacing(4);
   mainBar = new QFrame;
   mainBar->setObjectName("annotationToolbar");
   auto row = new QHBoxLayout(mainBar);
+  row->setSizeConstraint(QLayout::SetFixedSize);
   row->setContentsMargins(6, 6, 6, 6);
   row->setSpacing(3);
   auto group = new AnimatedToolGroup(mainBar);
@@ -460,7 +461,7 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
     if (currentTool == "rect" || currentTool == "ellipse") {
       if (currentFilled)
         emit preferencesChanged("filled", false);
-    } else if (QStringList{"marker", "mosaic", "blur", "eraser"}.contains(currentTool)) {
+    } else if (currentTool == "marker" || currentTool == "eraser") {
       if (currentAreaShape != "stroke")
         emit preferencesChanged("area_shape", "stroke");
     } else {
@@ -533,10 +534,22 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
   areaButton = option("areaRect", "矩形区域 · 再次点击切回画笔");
   areaEllipseButton = option("areaEllipse", "椭圆区域 · 再次点击切回画笔");
   connect(areaButton, &QToolButton::clicked, this, [this](bool checked) {
-    emit preferencesChanged("area_shape", checked ? "rect" : "stroke");
+    if (currentTool == "mosaic" || currentTool == "blur") {
+      if (currentAreaShape != "rect")
+        emit preferencesChanged("area_shape", "rect");
+      else
+        areaButton->setChecked(true);
+    } else
+      emit preferencesChanged("area_shape", checked ? "rect" : "stroke");
   });
   connect(areaEllipseButton, &QToolButton::clicked, this, [this](bool checked) {
-    emit preferencesChanged("area_shape", checked ? "ellipse" : "stroke");
+    if (currentTool == "mosaic" || currentTool == "blur") {
+      if (currentAreaShape != "ellipse")
+        emit preferencesChanged("area_shape", "ellipse");
+      else
+        areaEllipseButton->setChecked(true);
+    } else
+      emit preferencesChanged("area_shape", checked ? "ellipse" : "stroke");
   });
   effectSeparator = optionSeparator("effectSeparator");
   mosaicButton = option("effectMosaic", "马赛克");
@@ -546,7 +559,7 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
   strength = new QSlider(Qt::Horizontal);
   strength->setRange(2, 40);
   strength->setFixedWidth(90);
-  strength->setToolTip("处理强度");
+  strength->setToolTip("处理强度 · 滚轮 / 1、2 调整当前区域");
   options->addWidget(strength);
   strengthValue = new QLabel;
   strengthValue->setObjectName("effectStrengthValue");
@@ -671,6 +684,19 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
   setContextMenuPolicy(Qt::CustomContextMenu);
   connect(this, &QWidget::customContextMenuRequested, this,
           [this] { emit actionRequested("more"); });
+  group->geometryChanged = [this] { fitContents(); };
+}
+Toolbar::~Toolbar() {
+  static_cast<AnimatedToolGroup *>(tools.first()->parentWidget())->geometryChanged = {};
+}
+void Toolbar::fitContents() {
+  const auto previousSize = size(), previousMainSize = mainBar->size();
+  mainBar->layout()->activate();
+  optionsBar->layout()->activate();
+  layout()->activate();
+  adjustSize();
+  if (!syncing && (size() != previousSize || mainBar->size() != previousMainSize))
+    emit sizeChanged();
 }
 void Toolbar::showWidthMenu() {
   if (!widthButton->isEnabled())
@@ -744,6 +770,8 @@ void Toolbar::sync(const Annotation &a) {
               a.preferences.areaShape == "rect");
   buttonState(areaEllipseButton, "ellipse", group == 4 || group == 6,
               a.preferences.areaShape == "ellipse");
+  areaButton->setToolTip(group == 4 ? "矩形区域" : "矩形区域 · 再次点击切回画笔");
+  areaEllipseButton->setToolTip(group == 4 ? "椭圆区域" : "椭圆区域 · 再次点击切回画笔");
   effectSeparator->setVisible(group == 4);
   buttonState(mosaicButton, "mosaic", group == 4, a.tool == "mosaic");
   buttonState(blurButton, "blur", group == 4, a.tool == "blur");
@@ -752,7 +780,7 @@ void Toolbar::sync(const Annotation &a) {
   strengthValue->setVisible(group == 4);
   strengthValue->setText(QString::number(a.preferences.intensity));
   textControls->setVisible(group == 5);
-  widthButton->setVisible(group >= 0 && group != 5);
+  widthButton->setVisible(group >= 0 && group != 4 && group != 5);
   auto options = qobject_cast<QHBoxLayout *>(optionsBar->layout());
   options->setContentsMargins(6, 6, 6, 6);
   qobject_cast<QVBoxLayout *>(layout())->setSpacing(4);
@@ -818,8 +846,6 @@ void Toolbar::sync(const Annotation &a) {
   optionsBar->setVisible(group >= 0);
   findChild<QToolButton *>("action_undo")->setEnabled(!a.undoStates.isEmpty());
   findChild<QToolButton *>("action_redo")->setEnabled(!a.redoStates.isEmpty());
-  optionsBar->layout()->activate();
-  layout()->activate();
-  adjustSize();
   syncing = false;
+  fitContents();
 }

@@ -1,6 +1,6 @@
-﻿# picut v0.5.48
+﻿# picut v0.5.49
 
-New annotations start at zero degrees while existing marks retain their angles. Mosaic and blur regions use oriented bounds, eight square resize handles and a separate blue rotation handle; active drags show a thin solid outline. Recording adds 60 fps and a native-resolution high-quality preset. See docs/更新记录-v0.5.48-标注旋转与原画录屏.md.
+Mosaic and blur share region-based editing. Switching effects preserves the active region's bounds, rotation and intensity; the mouse wheel adjusts intensity. The toolbar fits the animated selected button without reserved blank space. Recording defaults to 60 fps and native resolution, with descending quality choices and saved preferences retained. See docs/更新记录-v0.5.49-区域效果与工具栏录屏设置.md.
 
 For incremental changes, build only affected targets and select the relevant QtTest functions. Do not run unchanged OCR, translation, recording encoders or the full regression suite for annotation or recording-quality changes. The root build script remains available for an explicitly requested full release audit.
 
@@ -14,7 +14,7 @@ Recordings now accept live annotation updates, including in-progress drafts, dra
 
 The following paragraphs retain earlier release notes.
 
-The accepted toolbar preview is now integrated into screenshot and pin editing. A native 200 ms animation expands the selected tool's label and moves its blue background. A fixed-width tool group keeps the action buttons stationary. Interrupted transitions resume from the visible geometry; repeated preference sync does not restart them. Hidden toolbars settle immediately, and animation repaints stay inside an opaque 339×32 logical-pixel group at the default font size. Recording controls and option bars share the light rounded style.
+The accepted toolbar preview is integrated into screenshot, pin and recording-mark editing. A native 200 ms animation expands the selected tool's label and moves its blue background. The tool group and main toolbar fit their actual contents on each frame, without reserving unused label space. Interrupted transitions resume from the visible geometry; repeated preference sync does not restart them. Hidden toolbars settle immediately, and resizing only invalidates the toolbar area. Recording controls and option bars share the light rounded style.
 
 Settings now include enabled-by-default login startup. Normal primary launches register the quoted current executable with `--tray` in the current user's Windows Run key; disabling the option removes it and persists the opt-out. Old unused placeholder values migrate once. Verification commands never change the startup list, and uninstall removes only the command owned by its installation.
 
@@ -73,7 +73,7 @@ Install Visual Studio 2022 or newer with C++ desktop tools and a Windows 10/11 S
 
 `setup-sdk.ps1` fetches the official Qt MSVC x64 SDK, pinned ZXing-C++ source, and standalone FFmpeg, verifies SHA-256 hashes, and uses Windows tar / Expand-Archive. It does not install anything globally. An existing Qt installation can be used with `build.ps1 -QtDir C:/Qt/6.8.3/msvc2022_64`. `build-native.cmd` is a convenience wrapper. Packaging supports `-QtDir`, `-Ffmpeg`, and `-NoZip`.
 
-This branch builds executables in `build/native-scroll-performance/`. The complete runtime folder and ZIP are in `dist/picut-0.5.48*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
+This branch builds executables in `build/native-scroll-performance/`. The complete runtime folder and ZIP are in `dist/picut-0.5.49*`. Do not distribute the EXE alone. Release packaging rejects Python, PySide, Shiboken, `.pyd`, PDB, and QtTest files.
 
 To build the Windows installer from this deployed runtime, run `./native/build-installer.ps1`. It prepares a local portable Inno Setup 6.7.3 compiler on first use, verifying the official bootstrap's SHA-256 and Authenticode signature and pinning the Chinese translation to the same source tag. No global compiler installation is required. Options `-PackageDir` and `-Iscc` accept an existing runtime/compiler. The app version comes from `picut.exe` metadata. The output is `dist/picut-<version>-setup-x64.exe` plus its SHA-256 file; payload hashes are saved under `build/installer/` for verification.
 

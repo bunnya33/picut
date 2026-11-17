@@ -159,6 +159,8 @@ void RecordingEditor::mousePressEvent(QMouseEvent *event) {
     const int index=markAt(event->position().toPoint());
     if (index>=0) {
       commitText(); const auto mark=annotation->marks[index];
+      // Selecting another mark must not switch the previous region's effect.
+      annotation->confirm();
       annotation->chooseTool(mark.kind); annotation->preferences=mark; annotation->selected=index;
       toolbar->sync(*annotation);
       // Freehand strokes have no resize box, but can be moved as a whole.

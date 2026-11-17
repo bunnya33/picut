@@ -23,5 +23,5 @@ inline void installStartupLog() {
       file.write((QDateTime::currentDateTime().toString(Qt::ISODate)+" ["+QString::number(type)+"] "+message+"\n").toUtf8());
     }
   });
-  qInfo().noquote()<<"picut 0.5.48 startup; Windows"<<QSysInfo::kernelVersion()<<QSysInfo::currentCpuArchitecture();
+  qInfo().noquote()<<"picut 0.5.49 startup; Windows"<<QSysInfo::kernelVersion()<<QSysInfo::currentCpuArchitecture();
 }

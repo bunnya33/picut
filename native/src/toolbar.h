@@ -13,6 +13,7 @@ class Toolbar : public QWidget {
   Q_OBJECT
 public:
   explicit Toolbar(QWidget *parent = nullptr);
+  ~Toolbar() override;
   void sync(const Annotation &annotation);
   QFrame *mainBar;
   QFrame *optionsBar;
@@ -39,9 +40,11 @@ signals:
   void toolChosen(QString tool);
   void preferencesChanged(QString key, QVariant value);
   void actionRequested(QString action);
+  void sizeChanged();
 
 private:
   void showWidthMenu();
+  void fitContents();
   QList<QToolButton *> tools;
   QMap<int, QString> groupTools;
   QList<QWidget *> palette;
