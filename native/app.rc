@@ -1,8 +1,8 @@
 ﻿IDI_ICON1 ICON "../assets/picut.ico"
 1 RT_MANIFEST "app.manifest"
 1 VERSIONINFO
- FILEVERSION 0,5,45,0
- PRODUCTVERSION 0,5,45,0
+ FILEVERSION 0,5,46,0
+ PRODUCTVERSION 0,5,46,0
  FILEOS 0x40004L
  FILETYPE 0x1L
 BEGIN
@@ -12,8 +12,8 @@ BEGIN
   BEGIN
    VALUE "FileDescription", "picut\0"
    VALUE "ProductName", "picut\0"
-   VALUE "FileVersion", "0.5.45\0"
-   VALUE "ProductVersion", "0.5.45\0"
+   VALUE "FileVersion", "0.5.46\0"
+   VALUE "ProductVersion", "0.5.46\0"
    VALUE "OriginalFilename", "picut.exe\0"
   END
  END

@@ -304,6 +304,19 @@ void PinWindow::contextMenuEvent(QContextMenuEvent *e) {
   QMenu menu(this);
   menu.setObjectName("pinMenu");
   menu.setToolTipsVisible(true);
+  bool hasOtherPins = false, hasVisibleOtherPins = false;
+  for (auto widget : QApplication::topLevelWidgets()) {
+    auto other = qobject_cast<PinWindow *>(widget);
+    if (!other || other == this || other->store != store || other->state != "visible")
+      continue;
+    hasOtherPins = true;
+    hasVisibleOtherPins |= other->isVisible();
+  }
+  const QMap<QString, bool> states{
+      {"thumbnail", !thumbnail.isEmpty()}, {"gray", gray},
+      {"invert", inverted}, {"through", through},
+      {"topmost", bool(windowFlags() & Qt::WindowStaysOnTopHint)},
+      {"solo", hasOtherPins && !hasVisibleOtherPins}};
   for (const auto &pair :
        QList<QPair<QString, QString>>{{"select_text", "文字识别"},
                                       {"translate", "图片翻译（本地）"},
@@ -316,7 +329,7 @@ void PinWindow::contextMenuEvent(QContextMenuEvent *e) {
                                       {"invert", "反色"},
                                       {"through", "鼠标穿透"},
                                       {"topmost", "置顶开关"},
-                                      {"solo", "Solo"},
+                                      {"solo", "仅显示此贴图"},
                                       {"scan", "二维码 / 条形码"},
                                       {"close", "关闭"},
                                       {"destroy", "销毁"}}) {
@@ -326,8 +339,11 @@ void PinWindow::contextMenuEvent(QContextMenuEvent *e) {
         {"through", store->config["hotkeys"].toObject()["through"].toString()}}[pair.first];
     auto action=menu.addAction(menuLabel(pair.second, shortcut), this,
                    [this, pair] { emit requested(this, pair.first); });
+    if (states.contains(pair.first)) {
+      action->setCheckable(true);
+      action->setChecked(states.value(pair.first));
+    }
     if (pair.first=="through") {
-      action->setCheckable(true); action->setChecked(through);
       action->setToolTip("开启后鼠标可操作下方窗口。右键托盘 → 恢复穿透贴图，可恢复指定贴图；也可解除全部穿透。"+
           (shortcut.isEmpty()?QString():QString(" 鼠标放在贴图上按 %1 也可切换。").arg(shortcut)));
     }
@@ -482,9 +498,15 @@ void PinManager::handle(PinWindow *pin, const QString &action) {
                        !(pin->windowFlags() & Qt::WindowStaysOnTopHint));
     pin->show();
   } else if (action == "solo") {
+    bool showOthers = true;
+    for (auto other : windows)
+      if (other && other != pin && other->state == "visible" && other->isVisible()) {
+        showOthers = false;
+        break;
+      }
     for (auto other : windows)
       if (other && other != pin && other->state == "visible")
-        other->setVisible(!other->isVisible());
+        other->setVisible(showOthers);
   } else if (output)
     output(pin, action);
   timer.start();

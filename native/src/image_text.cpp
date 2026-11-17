@@ -500,7 +500,9 @@ void ImageTextOverlay::contextMenuEvent(QContextMenuEvent *event) {
     });
     translate->setEnabled(ready && !document.text.isEmpty());
   }
-  menu.addAction(collapsed?"展开文字面板":"收起文字面板",this,[this]{setPanelCollapsed(!collapsed);});
+  auto panel = menu.addAction("显示文字面板",this,[this]{setPanelCollapsed(!collapsed);});
+  panel->setCheckable(true);
+  panel->setChecked(!collapsed);
   menu.addAction("适应窗口\tCtrl+0",this,&ImageTextOverlay::fitImage);
   menu.addAction("100%",this,[this] {
     const auto r=previewRect();

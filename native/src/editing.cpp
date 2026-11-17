@@ -5,6 +5,7 @@
 #include <QtCore/QJsonDocument>
 #include <QtCore/QMimeData>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QActionGroup>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QScreen>
@@ -668,23 +669,36 @@ void EditingSurface::showMore() {
     showRecognition(annotation->render(), true, this);
   });
   auto tools = menu.addMenu("标注工具");
+  auto toolChoices = new QActionGroup(tools);
+  auto addTool = [&](const QString &tool, const QString &title) {
+    auto action = tools->addAction(title, this, [this, tool] { chooseTool(tool); });
+    toolChoices->addAction(action);
+    action->setCheckable(true);
+    action->setChecked(annotation->tool == tool ||
+        (tool == "rect" && annotation->tool == "ellipse") ||
+        (tool == "arrow" && annotation->tool == "line") ||
+        (tool == "mosaic" && annotation->tool == "blur"));
+  };
   QStringList primaryTools{"rect", "arrow", "pen", "marker", "mosaic", "text", "eraser", "number"};
   QStringList titles{"矩形 / 椭圆", "线条 / 箭头", "画笔", "马克笔", "马赛克 / 模糊", "文字", "橡皮擦", "序号"};
   for (int n = 0; n < primaryTools.size(); ++n)
-    tools->addAction(menuLabel(titles[n], "Ctrl+" + QString::number(n + 1)), this,
-                     [this, tool = primaryTools[n]] { chooseTool(tool); });
+    addTool(primaryTools[n], menuLabel(titles[n], "Ctrl+" + QString::number(n + 1)));
   tools->addSeparator();
   for (const auto &pair :
        QList<QPair<QString, QString>>{{"select", "移动 / 调整选区"},
                                       {"polyline", "折线"},
                                       {"magnify", "放大镜标注"}})
-    tools->addAction(pair.second, this,
-                     [this, pair] { chooseTool(pair.first); });
+    addTool(pair.first, pair.second);
   auto dash = menu.addMenu("线条样式");
+  auto dashChoices = new QActionGroup(dash);
   for (const auto &pair : QList<QPair<QString, QString>>{
-           {"solid", "实线"}, {"dash", "虚线"}, {"dot", "点线"}})
-    dash->addAction(pair.second, this,
+           {"solid", "实线"}, {"dash", "虚线"}, {"dot", "点线"}}) {
+    auto action = dash->addAction(pair.second, this,
                     [this, pair] { setPreference("dash", pair.first); });
+    dashChoices->addAction(action);
+    action->setCheckable(true);
+    action->setChecked(annotation->preferences.dash == pair.first);
+  }
   menu.addAction("圆角…", this, [this] {
     bool ok;
     int v = QInputDialog::getInt(
