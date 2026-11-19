@@ -4,6 +4,7 @@
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QJsonArray>
+#include <QtCore/QScopedValueRollback>
 #include <QtCore/QUuid>
 #include <QtGui/QContextMenuEvent>
 #include <QtGui/QActionGroup>
@@ -71,12 +72,33 @@ QImage PinWindow::displayedImage() const {
   return result;
 }
 void PinWindow::setScale(double value) {
+  applyScale(value, std::nullopt);
+}
+void PinWindow::applyScale(double value, std::optional<QPointF> anchor) {
   scale = qBound(.002, value, 5.0);
-  auto size = thumbnail.isEmpty() ? image.size() : thumbnail.size();
-  resize(qMax(32, qRound(size.width() * scale)) + Margin * 2,
-         qMax(24, qRound(size.height() * scale)) + Margin * 2);
+  const auto sourceSize = thumbnail.isEmpty() ? image.size() : thumbnail.size();
+  const QSize contentSize(qMax(32, qRound(sourceSize.width() * scale)),
+                          qMax(24, qRound(sourceSize.height() * scale)));
+  auto topLeft = pos();
+  const auto oldContent = contentRect();
+  if (anchor && !oldContent.isEmpty() && contentSize != oldContent.size()) {
+    const auto offset = *anchor - oldContent.topLeft();
+    const QPointF scaledOffset(offset.x() * contentSize.width() / oldContent.width(),
+                               offset.y() * contentSize.height() / oldContent.height());
+    topLeft += (offset - scaledOffset).toPoint();
+  }
+  const QRect nextGeometry(topLeft, contentSize + QSize(Margin * 2, Margin * 2));
+  if (nextGeometry != geometry()) {
+    QScopedValueRollback updatingGeometry(scaling, true);
+    // Resizing and moving separately exposes the old backing store at an
+    // intermediate position on Windows layered windows.
+    setGeometry(nextGeometry);
+  }
   positionToolbar();
-  update();
+  if (anchor && isVisible() && contentSize != oldContent.size())
+    repaint();
+  else
+    update();
   emit changed();
 }
 void PinWindow::setAlpha(double value) {
@@ -223,16 +245,16 @@ void PinWindow::wheelEvent(QWheelEvent *e) {
     annotationWheel(e);
     return;
   }
-  int direction = e->angleDelta().y() > 0 ? 1 : -1;
-  if (e->modifiers() & Qt::ControlModifier)
-    setAlpha(alpha + direction * .05);
-  else {
-    auto global = mapToGlobal(e->position().toPoint());
-    auto imagePoint =
-        QPointF(e->position().toPoint() - contentRect().topLeft()) / scale;
-    setScale(scale * std::pow(1.1, direction));
-    move(global - (imagePoint * scale).toPoint() - QPoint(Margin, Margin));
+  const double steps = e->angleDelta().y() / 120.0;
+  if (steps == 0) {
+    e->accept();
+    return;
   }
+  if (e->modifiers() & Qt::ControlModifier)
+    setAlpha(alpha + steps * .05);
+  else
+    applyScale(scale * std::pow(1.1, steps), e->position());
+  e->accept();
 }
 void PinWindow::keyPressEvent(QKeyEvent *e) {
   if (e->key() == Qt::Key_F4) {
@@ -369,7 +391,9 @@ void PinWindow::contextMenuEvent(QContextMenuEvent *e) {
   }
   menu.exec(e->globalPos());
 }
-void PinWindow::moveEvent(QMoveEvent *) { emit changed(); }
+void PinWindow::moveEvent(QMoveEvent *) {
+  if (!scaling) emit changed();
+}
 QJsonObject PinWindow::layout() const {
   return {
       {"id", id},

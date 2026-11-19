@@ -1,5 +1,6 @@
 #pragma once
 #include "recognition.h"
+#include <QtCore/QTimer>
 #include <QtGui/QPolygonF>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QLabel>
@@ -29,8 +30,9 @@ public:
 };
 
 struct ImageTextLayout {
+  static constexpr int TitleHeight = 30;
   enum Placement { Right, Left, Split } placement = Split;
-  QRect window, viewport, panel, divider;
+  QRect window, title, viewport, panel, divider;
   static ImageTextLayout arrange(QRect image, QRect available, int panelWidth = 360,
                                  bool collapsed = false);
 };
@@ -86,6 +88,9 @@ private:
   bool ready = false, dragging = false, active = false;
   bool syncing = false, collapsed = false, panning = false, space = false;
   bool resizingPanel = false;
+  bool movingWindow = false;
+  QTimer holdToMove;
+  QPoint windowOffset, windowDragOffset;
   QPointF pan, lastPointer;
   int panelWidth = 360, resizeWidth = 360;
   QPoint resizeOrigin;
@@ -102,6 +107,7 @@ private:
   void ensureImageSelectionVisible();
   void clampPan();
   void zoomAt(double factor, QPointF point);
+  void moveWindow(QPoint global);
   void copySelection();
   void copyAll();
 };

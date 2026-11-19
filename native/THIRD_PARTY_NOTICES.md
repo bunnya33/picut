@@ -1,4 +1,4 @@
-﻿# picut Native v0.5.53 third-party notices
+﻿# picut Native v0.5.54 third-party notices
 
 This release uses native C++ and dynamically linked Qt. Python, PySide6, Shiboken, NumPy, and PyInstaller are not part of this release.
 

@@ -4,6 +4,7 @@
 #include <QtCore/QTimer>
 #include <QtCore/QHash>
 #include <functional>
+#include <optional>
 
 class PinWindow : public EditingSurface {
   Q_OBJECT
@@ -42,8 +43,9 @@ protected:
   void moveEvent(QMoveEvent *) override;
 
 private:
+  void applyScale(double value, std::optional<QPointF> anchor);
   QPoint dragOffset;
-  bool moving = false;
+  bool moving = false, scaling = false;
 };
 class PinManager : public QObject {
   Q_OBJECT

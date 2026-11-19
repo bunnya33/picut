@@ -2032,6 +2032,84 @@ private slots:
     QTest::keyClick(text,Qt::Key_Escape);
     QVERIFY(pin->toolbar->isVisible());
   }
+  void pinWheelZoomUsesFinalGeometryAndIgnoresEmptyDeltas() {
+    QTemporaryDir dir;
+    Store store(dir.path());
+    QImage image(400, 250, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    PinWindow pin(image, &store, {200, 150, 400, 250});
+    pin.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pin));
+    const QPointF anchor = pin.contentRect().topLeft() + QPointF(120, 75);
+    const auto globalAnchor = pin.mapToGlobal(anchor);
+    QList<QRect> published;
+    connect(&pin, &PinWindow::changed, &pin, [&] { published.append(pin.contentGeometry()); });
+
+    wheel(&pin, anchor.toPoint(), 1);
+    QCOMPARE(pin.contentRect().size(), QSize(440, 275));
+    QCOMPARE(pin.mapToGlobal(pin.contentRect().topLeft() + QPointF(132, 82.5)),
+             globalAnchor + QPointF(0, -.5));
+    QCOMPARE(published, QList<QRect>{pin.contentGeometry()});
+    const auto enlarged = pin.geometry();
+    const auto localAnchor = pin.mapFromGlobal(globalAnchor);
+    for (const auto phase : {Qt::ScrollBegin, Qt::ScrollUpdate, Qt::ScrollEnd}) {
+      QWheelEvent noVerticalDelta(localAnchor, globalAnchor, {}, {120, 0}, Qt::NoButton,
+                                  Qt::NoModifier, phase, false);
+      QApplication::sendEvent(&pin, &noVerticalDelta);
+    }
+    QCOMPARE(pin.geometry(), enlarged);
+    QCOMPARE(published.size(), 1);
+    wheel(&pin, localAnchor.toPoint(), -1);
+    QCOMPARE(pin.contentRect().size(), image.size());
+    QCOMPARE(published.size(), 2);
+  }
+  void imageTextMovesFromTitleAndHeldBlankArea() {
+    QTemporaryDir dir;
+    Store store(dir.path());
+    QImage image(480, 300, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    PinWindow pin(image, &store, {100, 80, 480, 300});
+    pin.show();
+    pin.startImageText(image, false);
+    auto text = pin.imageText;
+    QVERIFY(QTest::qWaitForWindowExposed(text));
+    text->setResult(imageTextFixture());
+    text->selectAll();
+    const auto ownerGeometry = pin.geometry();
+    const auto preview = text->previewRect();
+    const auto panel = text->controlBar()->geometry();
+    const QPoint offset(32, 24);
+    auto dragWindow = [&](QPoint press, bool hold) {
+      const auto oldPosition = text->pos();
+      QTest::mousePress(text, Qt::LeftButton, Qt::NoModifier, press);
+      if (hold) {
+        dragMove(text, press + offset);
+        QCOMPARE(text->pos(), oldPosition);
+        QTRY_COMPARE_WITH_TIMEOUT(text->cursor().shape(), Qt::ClosedHandCursor, 1000);
+      }
+      dragMove(text, press + offset);
+      QCOMPARE(text->pos(), oldPosition + offset);
+      QTest::mouseRelease(text, Qt::LeftButton, Qt::NoModifier, press);
+    };
+    dragWindow({40, 15}, false);
+    const auto blank = text->imageToView({350, 220}).toPoint();
+    dragWindow(blank, true);
+    QCOMPARE(text->previewRect(), preview);
+    QCOMPARE(text->controlBar()->geometry(), panel);
+    QCOMPARE(text->selectedText(), text->page().text);
+    QCOMPARE(pin.geometry(), ownerGeometry);
+    const auto draggedPosition = text->pos();
+    QTest::mouseClick(text, Qt::LeftButton, Qt::NoModifier, blank);
+    QVERIFY(text->selectedText().isEmpty());
+    const auto start = text->imageToView({222, 84}).toPoint();
+    const auto end = text->imageToView({296, 84}).toPoint();
+    QTest::mousePress(text, Qt::LeftButton, Qt::NoModifier, start);
+    dragMove(text, end);
+    QTest::mouseRelease(text, Qt::LeftButton, Qt::NoModifier, end);
+    QCOMPARE(text->selectedText(), QString("10.49"));
+    QCOMPARE(text->pos(), draggedPosition);
+    QVERIFY(savePreview(text, "image-text-draggable-title.png"));
+  }
   void imageTextIncludesPendingInlineText_data() {
     QTest::addColumn<bool>("pinWindow");
     QTest::newRow("capture") << false;
@@ -2082,6 +2160,9 @@ private slots:
       QVERIFY(screen.contains(plan.window));
       QVERIFY(QRect(QPoint(),plan.window.size()).contains(plan.panel));
       QVERIFY(!plan.panel.intersects(plan.viewport));
+      QVERIFY(!plan.title.intersects(plan.viewport));
+      QVERIFY(!plan.title.intersects(plan.panel));
+      QVERIFY(!plan.title.intersects(plan.divider));
       if (item.second!=ImageTextLayout::Split)
         QCOMPARE(plan.viewport.translated(plan.window.topLeft()),item.first);
     }
