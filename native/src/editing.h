@@ -38,7 +38,7 @@ public:
   QString editTarget(QPoint point) const;
 
 protected:
-  void showImageText(const QImage &image, bool recognize, bool pinFrame);
+  void showImageText(const QImage &image, bool recognize, bool restorePin);
   bool event(QEvent *event) override;
   void ensureTextEditor();
   int numberLabelIndex = -1;

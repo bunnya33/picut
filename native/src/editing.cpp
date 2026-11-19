@@ -629,31 +629,31 @@ void EditingSurface::commitText() {
 void EditingSurface::startImageText(const QImage &input, bool recognize) {
   showImageText(input, recognize, false);
 }
-void EditingSurface::showImageText(const QImage &input, bool recognize, bool pinFrame) {
+void EditingSurface::showImageText(const QImage &input, bool recognize, bool restorePin) {
   if (imageTranslation && imageTranslation->isVisible()) imageTranslation->finish();
   if (imageText && imageText->isVisible()) { imageText->setFocus(); return; }
   commitText();
   const auto image = input.isNull() && annotation ? annotation->render() : input;
   if (image.isNull()) return;
   if (!imageText) {
-    imageText = new ImageTextOverlay(this, store, [this] { return contentRect(); }, pinFrame);
+    imageText = new ImageTextOverlay(this, store, [this] { return contentRect(); });
     connect(imageText, &ImageTextOverlay::translationRequested, this, [this](QImage image,QJsonObject ocr) {
       imageText->finish(); startImageTranslation(image,false); imageTranslation->setOcrResult(ocr);
     });
-    connect(imageText, &ImageTextOverlay::closed, this, [this, pinFrame] {
-      if (pinFrame) move(imageText->imageGlobalOrigin() - contentRect().topLeft());
+    connect(imageText, &ImageTextOverlay::closed, this, [this, restorePin] {
+      if (restorePin) move(imageText->imageGlobalOrigin() - contentRect().topLeft());
       if (isVisible() && property("imageTextToolbarVisible").toBool() && annotation && toolbar) {
         toolbar->sync(*annotation); positionToolbar(); toolbar->show();
       }
       if (isVisible()) { activateWindow(); setFocus(); }
-      if (pinFrame && isVisible()) repaint();
+      if (restorePin && isVisible()) repaint();
       else update();
     });
   }
   setProperty("imageTextToolbarVisible", toolbar && toolbar->isVisible());
   if (toolbar) toolbar->hide();
   imageText->begin(image, recognize);
-  if (pinFrame) repaint();
+  if (restorePin) repaint();
 }
 void EditingSurface::startImageTranslation(const QImage &input, bool recognize) {
   if (imageTranslation && imageTranslation->isVisible()) { imageTranslation->setFocus(); return; }

@@ -13,7 +13,8 @@
 #include <QtWidgets/QApplication>
 #include <QtCore/QSignalBlocker>
 #include <QtGui/QCloseEvent>
-#include <QtGui/QPainterPath>
+#include <QtGui/QResizeEvent>
+#include <QtGui/QWindow>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QTextEdit>
@@ -129,101 +130,19 @@ QList<QPolygonF> ImageTextPage::highlights(int first, int last) const {
         result << glyph.quad;
   return result;
 }
-ImageTextLayout ImageTextLayout::arrange(QRect image, QRect available,
-                                         int requestedWidth, bool collapsed, bool pinFrame) {
-  if (pinFrame) {
-    constexpr int border = 4;
-    constexpr int gap = 8;
-    ImageTextLayout result;
-    result.viewport = image;
-    result.frame = image.adjusted(-border, -border, border, border);
-    const int gripY = image.top() - GripHeight >= available.top()
-                          ? image.top() - GripHeight
-                          : image.top();
-    result.title = {image.left() - border, gripY, image.width() + 2 * border, GripHeight};
-    result.window = result.frame.united(result.title);
-    if (!collapsed) {
-      const int width = qMin(qMax(260, requestedWidth), available.width());
-      const int height = qMin(available.height(), qMax(260, image.height()));
-      const int top = qBound(available.top(), image.top(), available.bottom() - height + 1);
-      const int rightSpace = available.right() - result.frame.right() - gap;
-      const int leftSpace = result.frame.left() - available.left() - gap;
-      if (rightSpace >= width || (rightSpace >= 260 && leftSpace < width && rightSpace >= leftSpace)) {
-        result.placement = Right;
-        result.panel = {result.frame.right() + gap + 1, top, qMin(width, rightSpace), height};
-      } else if (leftSpace >= 260) {
-        const int panelWidth = qMin(width, leftSpace);
-        result.placement = Left;
-        result.panel = {result.frame.left() - gap - panelWidth, top, panelWidth, height};
-      } else {
-        const int panelWidth = qMin(width, qMax(260, available.width() / 3));
-        const int right = qBound(available.left() + panelWidth - 1, image.right(), available.right());
-        result.panel = {right - panelWidth + 1, top, panelWidth, height};
-        if (result.title.intersects(result.panel)) {
-          result.panel.setTop(result.title.bottom() + 1);
-          if (result.panel.height() < 100)
-            result.panel.moveTop(available.top());
-        }
-      }
-      result.window = result.window.united(result.panel);
-    }
-    const auto origin = -result.window.topLeft();
-    result.viewport.translate(origin);
-    result.frame.translate(origin);
-    result.title.translate(origin);
-    if (!result.panel.isEmpty()) result.panel.translate(origin);
-    return result;
-  }
-  const bool imageFits = available.contains(image);
-  available.adjust(0, TitleHeight, 0, 0);
-  if (imageFits && image.height() <= available.height() && image.top() < available.top())
-    image.moveTop(available.top());
-  ImageTextLayout result;
-  result.window = available;
-  const int width = qBound(260, requestedWidth, qMax(260, available.width() - 160));
-  if (collapsed) {
-    result.viewport = QRect(QPoint(), available.size()).adjusted(12, 12, -12, -12);
-  } else {
-    QRect panel;
-    if (available.contains(image) && available.right() - image.right() >= width + 12) {
-      result.placement = Right;
-      panel = {image.right() + 13, available.top(), width,
-               qMin(available.height(), qMax(400, image.height()))};
-    } else if (available.contains(image) && image.left() - available.left() >= width + 12) {
-      result.placement = Left;
-      panel = {image.left() - width - 12, available.top(), width,
-               qMin(available.height(), qMax(400, image.height()))};
-    }
-    if (!panel.isEmpty()) {
-      panel.moveTop(qBound(available.top(), image.top(),
-                          available.bottom() - panel.height() + 1));
-      result.window = image.united(panel).adjusted(-8, -8, 8, 8).intersected(available);
-      result.viewport = image.translated(-result.window.topLeft());
-      result.panel = panel.translated(-result.window.topLeft());
-    } else {
-      result.panel = {qMax(1, available.width() - width), 0,
-                      qMin(width, available.width() - 1), available.height()};
-      result.viewport = QRect(12, 12, qMax(1, result.panel.left() - 24),
-                              qMax(1, available.height() - 24));
-      result.divider = {result.panel.left() - 5, 0, 6, available.height()};
-    }
-  }
-  result.window.adjust(0, -TitleHeight, 0, 0);
-  result.title = {0, 0, result.window.width(), TitleHeight};
-  result.viewport.translate(0, TitleHeight);
-  if (!result.panel.isEmpty()) result.panel.translate(0, TitleHeight);
-  if (!result.divider.isEmpty()) result.divider.translate(0, TitleHeight);
-  return result;
-}
 ImageTextOverlay::ImageTextOverlay(QWidget *parent, Store *s,
-                                   std::function<QRect()> rect, bool pinFrame)
-    : QWidget(parent, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint),
-      store(s), imageRect(std::move(rect)), pinFrame(pinFrame), job(this) {
+                                   std::function<QRect()> rect)
+    : QWidget(parent, Qt::Window | Qt::WindowTitleHint | Qt::WindowSystemMenuHint |
+                         Qt::WindowMinMaxButtonsHint | Qt::WindowCloseButtonHint |
+                         Qt::WindowStaysOnTopHint),
+      store(s), imageRect(std::move(rect)), job(this) {
   setObjectName("imageTextOverlay");
   setWindowTitle("文字识别");
   setWindowModality(Qt::WindowModal);
-  setMouseTracking(true); setFocusPolicy(Qt::StrongFocus);
-  if (pinFrame) setAttribute(Qt::WA_TranslucentBackground);
+  setMinimumSize(440, 260);
+  setMouseTracking(true);
+  setFocusPolicy(Qt::StrongFocus);
+
   if (parent) parent->installEventFilter(this);
   setStyleSheet(
       "QFrame#imageTextControls{background:#f8f8f8;border:1px solid #e2e2e2;}"
@@ -276,11 +195,12 @@ void ImageTextOverlay::begin(const QImage &image,bool autoRecognize) {
   job.cancel();
   source=image; profile=selectedProfile; acceleration=selectedAcceleration;
   anchor=caret=-1; dragging=panning=space=false; active=true; collapsed=false;
-  movingWindow=false; windowOffset={};
+  zoom=1; pan={};
   unsetCursor();
   if (!cached) { ready=false; document={}; }
   updateEditor();
   editor->setPlaceholderText("等待识别结果…");
+  setWindowState(Qt::WindowNoState);
   place(); show(); raise(); activateWindow(); setFocus(Qt::OtherFocusReason);
   if (!cached && autoRecognize) recognize();
   selectionChanged();
@@ -318,7 +238,6 @@ void ImageTextOverlay::setResult(const QJsonObject &result) {
 void ImageTextOverlay::finish() {
   if (!active) return;
   active=false; dragging=panning=space=resizingPanel=false;
-  movingWindow=false;
   job.cancel(); hide(); emit closed();
 }
 void ImageTextOverlay::closeEvent(QCloseEvent *event) { finish(); event->accept(); }
@@ -331,32 +250,62 @@ QRect ImageTextOverlay::sourceGlobalRect() const {
   const auto area=screen->availableGeometry();
   return {area.center()-QPoint(source.width()/2,source.height()/2),source.size()};
 }
-void ImageTextOverlay::place(bool resetView) {
+void ImageTextOverlay::place() {
   if (!active) return;
-  const auto original=sourceGlobalRect().translated(windowOffset);
-  auto screen=QGuiApplication::screenAt(original.center());
-  if (!screen) screen=parentWidget()?parentWidget()->screen():QGuiApplication::primaryScreen();
-  layout=ImageTextLayout::arrange(original,screen->availableGeometry(),panelWidth,collapsed,pinFrame);
-  setGeometry(layout.window);
-  bar->setGeometry(layout.panel); bar->setVisible(!collapsed);
-  divider->setGeometry(layout.divider); divider->setVisible(!collapsed && !layout.divider.isEmpty());
-  if (resetView) { zoom=1; pan={}; }
-  clampPan(); update();
+  const auto original = sourceGlobalRect();
+  auto screen = QGuiApplication::screenAt(original.center());
+  if (!screen) screen = parentWidget() ? parentWidget()->screen() : QGuiApplication::primaryScreen();
+  preferredImageSize = source.size().scaled(original.size(), Qt::KeepAspectRatio);
+  winId();
+  const auto workArea = screen->availableGeometry().marginsRemoved(windowHandle()->frameMargins());
+  const QSize desired(qMax(180, preferredImageSize.width()) + 12 + 6 + panelWidth,
+                      qMax(300, preferredImageSize.height() + 12));
+  resize(desired.boundedTo(workArea.size()));
+  layoutPanes();
+
+  const auto origin = original.topLeft() - fittedImageRect().topLeft().toPoint();
+  const int x = qBound(workArea.left(), origin.x(), qMax(workArea.left(), workArea.right() - width() + 1));
+  const int y = qBound(workArea.top(), origin.y(), qMax(workArea.top(), workArea.bottom() - height() + 1));
+  setGeometry(QRect(QPoint(x, y), size()));
+}
+void ImageTextOverlay::layoutPanes() {
+  constexpr int margin = 6;
+  constexpr int dividerWidth = 6;
+  if (collapsed) {
+    viewport = rect().adjusted(margin, margin, -margin, -margin);
+  } else {
+    const int rightWidth = qBound(220, panelWidth, qMax(220, width() - 180 - dividerWidth));
+    const int panelLeft = width() - rightWidth;
+    bar->setGeometry(panelLeft, 0, rightWidth, height());
+    divider->setGeometry(panelLeft - dividerWidth, 0, dividerWidth, height());
+    viewport = QRect(margin, margin, panelLeft - dividerWidth - 2 * margin, height() - 2 * margin);
+  }
+  bar->setVisible(!collapsed);
+  divider->setVisible(!collapsed);
+  clampPan();
+  update();
+}
+void ImageTextOverlay::resizeEvent(QResizeEvent *event) {
+  QWidget::resizeEvent(event);
+  layoutPanes();
 }
 void ImageTextOverlay::setPanelCollapsed(bool value) {
-  collapsed=value; place(); setFocus();
+  collapsed=value; fitImage(); layoutPanes(); setFocus();
 }
 void ImageTextOverlay::fitImage() { zoom=1; pan={}; update(); }
+QRectF ImageTextOverlay::fittedImageRect() const {
+  if (preferredImageSize.isEmpty() || viewport.isEmpty()) return {};
+  const auto size = QSizeF(preferredImageSize).scaled(viewport.size(), Qt::KeepAspectRatio);
+  const auto fitted = size.boundedTo(preferredImageSize);
+  return {QRectF(viewport).center() - QPointF(fitted.width() / 2, fitted.height() / 2), fitted};
+}
+QPoint ImageTextOverlay::imageGlobalOrigin() const {
+  return mapToGlobal(fittedImageRect().topLeft().toPoint());
+}
 QRectF ImageTextOverlay::previewRect() const {
-  if (source.isNull()) return {};
-  const auto viewport=QRectF(layout.viewport);
-  if (pinFrame) {
-    const auto size = viewport.size() * zoom;
-    return {viewport.center() + pan - QPointF(size.width() / 2, size.height() / 2), size};
-  }
-  const double scale=qMin(viewport.width()/source.width(),viewport.height()/source.height())*zoom;
-  const QSizeF size(source.width()*scale,source.height()*scale);
-  return {viewport.center()+pan-QPointF(size.width()/2,size.height()/2),size};
+  const auto fitted = fittedImageRect();
+  const auto size = fitted.size() * zoom;
+  return {fitted.center() + pan - QPointF(size.width() / 2, size.height() / 2), size};
 }
 QPointF ImageTextOverlay::toImage(QPointF point) const {
   const auto r=previewRect();
@@ -369,7 +318,7 @@ QPointF ImageTextOverlay::imageToView(QPointF point) const {
           r.y()+point.y()*r.height()/qMax(1,source.height())};
 }
 void ImageTextOverlay::clampPan() {
-  const auto r=previewRect(); const auto viewport=layout.viewport;
+  const auto r=previewRect();
   const double x=qMax(0.,(r.width()-viewport.width())/2);
   const double y=qMax(0.,(r.height()-viewport.height())/2);
   pan={qBound(-x,pan.x(),x),qBound(-y,pan.y(),y)};
@@ -394,13 +343,13 @@ bool ImageTextOverlay::eventFilter(QObject *object,QEvent *event) {
       }
     } else if (event->type()==QEvent::MouseMove && resizingPanel) {
       auto mouse=static_cast<QMouseEvent *>(event);
-      panelWidth=qBound(260,resizeWidth+resizeOrigin.x()-qRound(mouse->globalPosition().x()),
-                         qMax(260,qMin(600,int(layout.window.width()*.65))));
-      place(false); return true;
+      panelWidth=qBound(220,resizeWidth+resizeOrigin.x()-qRound(mouse->globalPosition().x()),
+                         qMax(220,qMin(600,width()-186)));
+      layoutPanes(); return true;
     } else if (event->type()==QEvent::MouseButtonRelease && resizingPanel) {
       resizingPanel=false; return true;
     } else if (event->type()==QEvent::MouseButtonDblClick) {
-      panelWidth=360; place(); return true;
+      panelWidth=360; layoutPanes(); return true;
     }
   }
   if (object==editor || object==editor->viewport()) {
@@ -424,25 +373,8 @@ bool ImageTextOverlay::eventFilter(QObject *object,QEvent *event) {
 }
 void ImageTextOverlay::paintEvent(QPaintEvent *) {
   QPainter p(this);
-  if (pinFrame) {
-    p.setCompositionMode(QPainter::CompositionMode_Source);
-    p.fillRect(rect(), Qt::transparent);
-    p.setCompositionMode(QPainter::CompositionMode_SourceOver);
-    QPainterPath ring;
-    ring.addRect(QRectF(layout.frame));
-    ring.addRect(QRectF(layout.viewport));
-    p.fillPath(ring, QColor("#498fe1"));
-  } else {
-    p.fillRect(rect(),QColor("#f1f1f1"));
-    p.fillRect(layout.title,QColor("#f8f8f8"));
-    p.setPen(QColor("#222222"));
-    p.drawText(layout.title.adjusted(12,0,-12,0),Qt::AlignLeft | Qt::AlignVCenter,windowTitle());
-    p.setPen(QColor("#dddddd"));
-    p.drawLine(layout.title.bottomLeft(),layout.title.bottomRight());
-    p.setPen(QColor("#dedede")); p.drawRect(rect().adjusted(0,0,-1,-1));
-  }
-  p.save();
-  p.setClipRect(layout.viewport);
+  p.fillRect(rect(), QColor("#f1f1f1"));
+  p.setClipRect(viewport);
   const auto r=previewRect();
   p.setRenderHint(QPainter::SmoothPixmapTransform,r.width()<source.width());
   p.drawImage(r,source);
@@ -452,14 +384,6 @@ void ImageTextOverlay::paintEvent(QPaintEvent *) {
     for (const auto &line:document.lines) p.drawPolygon(line.quad);
     p.setBrush(QColor(38,133,245,94));
     for (const auto &quad:document.highlights(anchor,caret)) p.drawPolygon(quad);
-  }
-  p.restore();
-  if (pinFrame) {
-    p.fillRect(layout.title, QColor("#498fe1"));
-    const auto center = layout.title.center();
-    p.setPen(QPen(QColor("#eaf4ff"), 1, Qt::SolidLine, Qt::RoundCap));
-    p.drawLine(center + QPoint(-8, -1), center + QPoint(8, -1));
-    p.drawLine(center + QPoint(-8, 2), center + QPoint(8, 2));
   }
 }
 void ImageTextOverlay::selectionChanged(bool fromEditor) {
@@ -493,7 +417,7 @@ void ImageTextOverlay::ensureImageSelectionVisible() {
   if (quads.isEmpty()) return;
   const auto quad=caret>=anchor?quads.last():quads.first();
   const auto point=imageToView(quad.boundingRect().center());
-  auto area=QRectF(layout.viewport);
+  auto area=QRectF(viewport);
   if (area.width()>60 && area.height()>60) area.adjust(20,20,-20,-20);
   pan+=QPointF(qBound(area.left(),point.x(),area.right())-point.x(),
                 qBound(area.top(),point.y(),area.bottom())-point.y());
@@ -515,33 +439,10 @@ void ImageTextOverlay::copyAll() {
   if (document.text.isEmpty()) return;
   QApplication::clipboard()->setText(document.text);
 }
-void ImageTextOverlay::moveWindow(QPoint global) {
-  auto next = global - windowDragOffset;
-  auto screen = QGuiApplication::screenAt(global);
-  if (!screen) screen = this->screen();
-  const auto area = screen->availableGeometry();
-  const int visibleWidth = qMin(80, qMin(layout.title.width(), area.width()));
-  next.setX(qBound(area.left() + visibleWidth - layout.title.right() - 1, next.x(),
-                   area.right() - visibleWidth - layout.title.left() + 1));
-  next.setY(qBound(area.top() - layout.title.top(), next.y(), area.bottom() - layout.title.bottom()));
-  const auto previous = pos();
-  move(next);
-  windowOffset += pos() - previous;
-}
-bool ImageTextOverlay::dragArea(QPoint point) const {
-  return layout.title.contains(point) ||
-      (pinFrame && layout.frame.contains(point) && !layout.viewport.contains(point));
-}
 void ImageTextOverlay::mousePressEvent(QMouseEvent *event) {
   if (event->button()!=Qt::LeftButton && event->button()!=Qt::MiddleButton) return;
   setFocus();
-  if (event->button()==Qt::LeftButton && dragArea(event->position().toPoint())) {
-    windowDragOffset=event->globalPosition().toPoint()-pos();
-    movingWindow=true;
-    setCursor(Qt::ClosedHandCursor);
-    return;
-  }
-  if (!layout.viewport.contains(event->position().toPoint())) return;
+  if (!viewport.contains(event->position().toPoint())) return;
   lastPointer=event->position();
   if (space || event->button()==Qt::MiddleButton) {
     panning=true; setCursor(Qt::ClosedHandCursor); return;
@@ -551,38 +452,27 @@ void ImageTextOverlay::mousePressEvent(QMouseEvent *event) {
   caret=position; dragging=position>=0; selectionChanged();
 }
 void ImageTextOverlay::mouseMoveEvent(QMouseEvent *event) {
-  if (movingWindow) {
-    moveWindow(event->globalPosition().toPoint());
-    return;
-  }
   if (panning) {
     pan+=event->position()-lastPointer; lastPointer=event->position();
     clampPan(); update(); return;
   }
   const auto point=toImage(event->position());
   if (dragging) { caret=document.caretAt(point,true); selectionChanged(); }
-  if (space || dragArea(event->position().toPoint()))
+  if (space)
     setCursor(Qt::OpenHandCursor);
-  else if (ready && layout.viewport.contains(event->position().toPoint()) && document.caretAt(point)>=0)
+  else if (ready && viewport.contains(event->position().toPoint()) && document.caretAt(point)>=0)
     setCursor(Qt::IBeamCursor);
   else
     unsetCursor();
 }
 void ImageTextOverlay::mouseReleaseEvent(QMouseEvent *event) {
-  if (event->button()==Qt::LeftButton && movingWindow) {
-    moveWindow(event->globalPosition().toPoint());
-    movingWindow=false;
-    if (pinFrame) place(false);
-    setCursor(dragArea(mapFromGlobal(event->globalPosition().toPoint())) ? Qt::OpenHandCursor : Qt::ArrowCursor);
-    return;
-  }
   if (panning) { panning=false; setCursor(space?Qt::OpenHandCursor:Qt::ArrowCursor); return; }
   if (event->button()!=Qt::LeftButton || !dragging) return;
   caret=document.caretAt(toImage(event->position()),true);
   dragging=false; selectionChanged();
 }
 void ImageTextOverlay::mouseDoubleClickEvent(QMouseEvent *event) {
-  if (!layout.viewport.contains(event->position().toPoint())) return;
+  if (!viewport.contains(event->position().toPoint())) return;
   const auto point=toImage(event->position());
   int offset=-1;
   for (const auto &line:document.lines)
@@ -631,7 +521,7 @@ void ImageTextOverlay::contextMenuEvent(QContextMenuEvent *event) {
   menu.addAction("适应窗口\tCtrl+0",this,&ImageTextOverlay::fitImage);
   menu.addAction("100%",this,[this] {
     const auto r=previewRect();
-    if (r.width()>0) zoomAt(source.width()/(r.width()*devicePixelRatioF()),layout.viewport.center());
+    if (r.width()>0) zoomAt(source.width()/(r.width()*devicePixelRatioF()),viewport.center());
   });
   menu.addAction("重新识别",this,&ImageTextOverlay::recognize);
   menu.addSeparator(); menu.addAction("退出文字识别\tEsc",this,&ImageTextOverlay::finish);
@@ -656,7 +546,7 @@ QJsonObject ImageTextOverlay::translationSelection() const {
   return {{"lines",lines}};
 }
 void ImageTextOverlay::wheelEvent(QWheelEvent *event) {
-  if (layout.viewport.contains(event->position().toPoint()) && event->angleDelta().y())
+  if (viewport.contains(event->position().toPoint()) && event->angleDelta().y())
     zoomAt(std::pow(1.15,event->angleDelta().y()/120.),event->position());
   event->accept();
 }

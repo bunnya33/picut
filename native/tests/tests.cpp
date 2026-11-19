@@ -2009,11 +2009,10 @@ private slots:
     auto text = pin->imageText;
     text->setResult(imageTextFixture());
     QVERIFY(text->isWindow());
-    QVERIFY(text->windowFlags()&Qt::FramelessWindowHint);
+    QVERIFY(text->windowFlags() & Qt::WindowTitleHint);
     QVERIFY(!text->controlBar()->isWindow());
     pin->move(pin->pos()+QPoint(20,15));
-    if (text->placement()!=ImageTextLayout::Split)
-      QCOMPARE(text->mapToGlobal(text->imageViewport().topLeft()),pin->mapToGlobal(pin->contentRect().topLeft()));
+    QCOMPARE(text->imageGlobalOrigin(), pin->contentGeometry().topLeft());
     pin->setScale(.5);
     auto start = text->imageToView({222,84}).toPoint();
     auto end = text->imageToView({296,84}).toPoint();
@@ -2145,7 +2144,7 @@ private slots:
     for (qsizetype i = 1; i < widths.size(); ++i)
       QVERIFY2(widths[i] + 2 >= widths[i - 1], qPrintable(QString("Zoom width fell from %1 to %2 pixels").arg(widths[i - 1]).arg(widths[i])));
   }
-  void imageTextMovesFromFrameAndRestoresPin() {
+  void imageTextMovesAsNativeWindowAndRestoresPin() {
     QTemporaryDir dir;
     Store store(dir.path());
     QImage image(480, 300, QImage::Format_RGB32);
@@ -2163,23 +2162,33 @@ private slots:
     const QPoint offset(32, 24);
     QCOMPARE(text->imageGlobalOrigin(), pin.contentGeometry().topLeft());
     QCOMPARE(preview, QRectF(text->imageViewport()));
-    const auto frameGrip = text->imageViewport().topLeft() + QPoint(40, -6);
-    const auto oldPosition = text->pos();
-    QTest::mousePress(text, Qt::LeftButton, Qt::NoModifier, frameGrip);
-    dragMove(text, frameGrip + offset);
-    QCOMPARE(text->pos(), oldPosition + offset);
-    QTest::mouseRelease(text, Qt::LeftButton, Qt::NoModifier, frameGrip);
+    QVERIFY(panel.left() > text->imageViewport().right());
+    if (QGuiApplication::platformName() == "windows") {
+      const auto hwnd = reinterpret_cast<HWND>(text->winId());
+      QVERIFY((GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CAPTION) == WS_CAPTION);
+      RECT frame{};
+      QVERIFY(GetWindowRect(hwnd, &frame));
+      const auto point = QPoint(frame.left, frame.top) + QPoint(140, 18) * text->devicePixelRatioF();
+      QCOMPARE(SendMessageW(hwnd, WM_NCHITTEST, 0, MAKELPARAM(point.x(), point.y())), LRESULT(HTCAPTION));
+      const auto move = offset * text->devicePixelRatioF();
+      QVERIFY(SetWindowPos(hwnd, nullptr, frame.left + move.x(),
+                          frame.top + move.y(), 0, 0,
+                          SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE));
+      QTRY_COMPARE(text->imageGlobalOrigin(), pin.contentGeometry().topLeft() + offset);
+    } else {
+      text->move(text->pos() + offset);
+    }
     const auto blank = text->imageToView({350, 220}).toPoint();
     QCOMPARE(text->previewRect(), preview);
     QCOMPARE(text->controlBar()->geometry(), panel);
     QCOMPARE(text->selectedText(), text->page().text);
     QCOMPARE(pin.geometry(), ownerGeometry);
-    const auto draggedPosition = text->pos();
+    const auto draggedPosition = text->imageGlobalOrigin();
     QTest::mousePress(text, Qt::LeftButton, Qt::NoModifier, blank);
     QTest::qWait(275);
     dragMove(text, blank + offset);
     QTest::mouseRelease(text, Qt::LeftButton, Qt::NoModifier, blank + offset);
-    QCOMPARE(text->pos(), draggedPosition);
+    QCOMPARE(text->imageGlobalOrigin(), draggedPosition);
     QVERIFY(text->selectedText().isEmpty());
     const auto start = text->imageToView({222, 84}).toPoint();
     const auto end = text->imageToView({296, 84}).toPoint();
@@ -2187,8 +2196,13 @@ private slots:
     dragMove(text, end);
     QTest::mouseRelease(text, Qt::LeftButton, Qt::NoModifier, end);
     QCOMPARE(text->selectedText(), QString("10.49"));
-    QCOMPARE(text->pos(), draggedPosition);
-    QVERIFY(savePreview(text, "image-text-pin-frame.png"));
+    QCOMPARE(text->imageGlobalOrigin(), draggedPosition);
+    const auto previewPath = qEnvironmentVariable("FLOATSHOT_ANNOTATION_TEST_DIR");
+    if (!previewPath.isEmpty() && QGuiApplication::platformName() == "windows") {
+      QVERIFY(QDir().mkpath(previewPath));
+      const auto frame = captureDesktopRegion(text->frameGeometry());
+      QVERIFY(frame.save(QDir(previewPath).filePath("image-text-two-panes.png")));
+    }
     const auto destination = text->imageGlobalOrigin();
     QCOMPARE(destination, pin.contentGeometry().topLeft() + offset);
     QTest::mouseClick(text->findChild<QPushButton *>("imageTextCancel"),Qt::LeftButton);
@@ -2197,7 +2211,7 @@ private slots:
     QCOMPARE(pin.contentGeometry(), QRect(destination, image.size()));
     pin.startImageText(image,false);
     QCOMPARE(text->imageGlobalOrigin(), destination);
-    QTest::keyClick(text, Qt::Key_Escape);
+    QVERIFY(text->close());
     QCOMPARE(pin.contentGeometry(), QRect(destination, image.size()));
   }
   void imageTextIncludesPendingInlineText_data() {
@@ -2299,36 +2313,23 @@ private slots:
     delete pin;
     QVERIFY(!QFileInfo::exists(temporary));
   }
-  void imageTextLayoutsPreserveCoordinates() {
-    const QRect screen(0,0,1400,900);
-    for (const auto &item:QList<QPair<QRect,ImageTextLayout::Placement>>{
-        {{100,100,360,250},ImageTextLayout::Right},
-        {{1000,200,360,300},ImageTextLayout::Left},
-        {screen,ImageTextLayout::Split},
-        {{0,0,700,1400},ImageTextLayout::Split}}) {
-      auto plan=ImageTextLayout::arrange(item.first,screen);
-      QCOMPARE(plan.placement,item.second);
-      QVERIFY(screen.contains(plan.window));
-      QVERIFY(QRect(QPoint(),plan.window.size()).contains(plan.panel));
-      QVERIFY(!plan.panel.intersects(plan.viewport));
-      QVERIFY(!plan.title.intersects(plan.viewport));
-      QVERIFY(!plan.title.intersects(plan.panel));
-      QVERIFY(!plan.title.intersects(plan.divider));
-      if (item.second!=ImageTextLayout::Split)
-        QCOMPARE(plan.viewport.translated(plan.window.topLeft()),item.first);
-    }
-    const QRect secondary(-1920,-200,1920,1080), image(-500,120,450,300);
-    auto plan=ImageTextLayout::arrange(image,secondary);
-    QCOMPARE(plan.placement,ImageTextLayout::Left);
-    QCOMPARE(plan.viewport.translated(plan.window.topLeft()),image);
-    QVERIFY(secondary.contains(plan.window));
-    auto collapsed=ImageTextLayout::arrange(secondary,secondary,360,true);
-    QVERIFY(collapsed.panel.isEmpty());
-    QVERIFY(collapsed.viewport.width()>plan.viewport.width());
-    const auto framed=ImageTextLayout::arrange(screen,screen,360,false,true);
-    QCOMPARE(framed.placement,ImageTextLayout::Split);
-    QCOMPARE(framed.viewport.translated(framed.window.topLeft()),screen);
-    QVERIFY(!framed.title.intersects(framed.panel));
+  void imageTextPanesFitWhenPinIsNearRightEdge() {
+    const auto area = QGuiApplication::primaryScreen()->availableGeometry();
+    QTemporaryDir dir;
+    Store store(dir.path());
+    QImage image(320, 200, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    PinWindow pin(image, &store, QRect(area.topRight() + QPoint(-329, 90), image.size()));
+    pin.show();
+    pin.startImageText(image, false);
+    const auto text = pin.imageText;
+    QVERIFY(QTest::qWaitForWindowExposed(text));
+    QVERIFY(area.adjusted(-1, -1, 1, 1).contains(text->frameGeometry()));
+    QVERIFY(text->controlBar()->geometry().left() > text->imageViewport().right());
+    QCOMPARE(text->previewRect().size(), QSizeF(image.size()));
+    const auto position = text->imageGlobalOrigin();
+    text->finish();
+    QCOMPARE(pin.contentGeometry(), QRect(position, image.size()));
   }
   void imageTextFullscreenDividerPanCollapseAndReturn() {
     QTemporaryDir dir; Store store(dir.path());
@@ -2336,7 +2337,7 @@ private slots:
     QImage image(1600,1000,QImage::Format_RGB32); image.fill(Qt::white);
     ImageTextOverlay text(&owner,&store,[&] {return owner.rect();});
     auto originalGeometry=owner.geometry(); text.begin(image,false); text.setResult(imageTextFixture());
-    QCOMPARE(text.placement(),ImageTextLayout::Split);
+    QVERIFY(text.controlBar()->geometry().left() > text.imageViewport().right());
     auto divider=text.findChild<QWidget *>("imageTextDivider");
     auto width=text.controlBar()->width();
     QTest::mousePress(divider,Qt::LeftButton,Qt::NoModifier,{2,100});
