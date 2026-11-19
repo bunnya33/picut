@@ -24,6 +24,7 @@ public:
   void setAlpha(double value);
   void setThrough(bool value);
   void startEditing();
+  void startImageText(const QImage &image = {}, bool recognize = true) override;
   void endEditing();
   bool complete(const QString &action) override;
   QJsonObject layout() const;
@@ -44,6 +45,8 @@ protected:
 
 private:
   void applyScale(double value, std::optional<QPointF> anchor);
+  bool presentScale(const QRect &geometry);
+  void paintPin(QPainter &painter, const QRect &bounds);
   QPoint dragOffset;
   bool moving = false, scaling = false;
 };

@@ -420,12 +420,15 @@ bool ApplicationController::imageOutput(const QImage &image, QRect region,
     pin->startEditing();
     return true;
   }
-  if (action == "pin") {
-    pins.create(image, region);
+  if (action == "pin" || action == "ocr") {
+    auto pin = pins.create(image, region);
     auto output = store.config["auto_save"].toBool()
         ? store.reserveOutputPath(store.config["image_dir"].toString(), "截图", "png") : QString();
     store.addImageAsync(image, output);
-    notify("已贴到桌面");
+    if (action == "ocr")
+      pin->startImageText();
+    else
+      notify("已贴到桌面");
     return true;
   }
   QString output;

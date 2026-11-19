@@ -2,6 +2,7 @@
 #include <thread>
 #include <chrono>
 #include <mutex>
+#include <atomic>
 #include "annotation.h"
 #include "application.h"
 #include "capture.h"
@@ -1925,9 +1926,11 @@ private slots:
   void imageTextSelectionCopyCacheAndExport() {
     QTemporaryDir dir;
     Store store(dir.path());
-    auto overlay = editingFixture(store, "rect");
-    QPointer<CaptureOverlay> alive = overlay;
-    auto cleanup = qScopeGuard([&] { if (alive) delete alive; });
+    QImage image(480,300,QImage::Format_ARGB32); image.fill(Qt::white);
+    auto overlay = std::make_unique<PinWindow>(image,&store,QRect(100,80,480,300));
+    overlay->show();
+    overlay->startEditing();
+    overlay->chooseTool("rect");
     const auto original = overlay->annotation->render();
     auto savedClipboard = std::make_unique<QMimeData>();
     if (auto mime = QApplication::clipboard()->mimeData())
@@ -2063,7 +2066,86 @@ private slots:
     QCOMPARE(pin.contentRect().size(), image.size());
     QCOMPARE(published.size(), 2);
   }
-  void imageTextMovesFromTitleAndHeldBlankArea() {
+  void pinWheelZoomCompositorFrames() {
+    if (QGuiApplication::platformName() != "windows" ||
+        !qEnvironmentVariableIsSet("PICUT_TEST_COMPOSITOR"))
+      QSKIP("Requires an interactive Windows desktop");
+    const auto area = QGuiApplication::primaryScreen()->availableGeometry();
+    QVERIFY(area.width() >= 660 && area.height() >= 300);
+    const QPoint center = area.center();
+    QWidget backdrop(nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+    backdrop.setStyleSheet("background: #18202a");
+    backdrop.setGeometry(QRect(center - QPoint(320, 145), QSize(640, 290)));
+    backdrop.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&backdrop));
+    QTemporaryDir dir;
+    Store store(dir.path());
+    QImage image(220, 94, QImage::Format_RGB32);
+    image.fill(QColor("#fd2672"));
+    PinWindow pin(image, &store, QRect(center - QPoint(110, 47), image.size()));
+    pin.show();
+    pin.raise();
+    QVERIFY(QTest::qWaitForWindowExposed(&pin));
+    const auto strip = physicalRect(QRect(center - QPoint(280, 0), QSize(560, 1)));
+    const auto hwnd = reinterpret_cast<HWND>(pin.winId());
+    const auto pointer = physicalRect(QRect(center, QSize(1, 1))).topLeft();
+    std::atomic<bool> stop = false;
+    std::atomic<int> latest = -1;
+    QList<int> widths;
+    std::thread sampler([&] {
+      const auto desktop = GetDC(nullptr);
+      const auto dc = CreateCompatibleDC(desktop);
+      BITMAPINFO info{};
+      info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+      info.bmiHeader.biWidth = strip.width();
+      info.bmiHeader.biHeight = -1;
+      info.bmiHeader.biPlanes = 1;
+      info.bmiHeader.biBitCount = 32;
+      void *pixels = nullptr;
+      const auto bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+      if (desktop && dc && bitmap) {
+        const auto previous = SelectObject(dc, bitmap);
+        while (!stop.load()) {
+          if (BitBlt(dc, 0, 0, strip.width(), 1, desktop, strip.x(), strip.y(), SRCCOPY | CAPTUREBLT)) {
+            GdiFlush();
+            int width = 0;
+            const auto row = static_cast<const QRgb *>(pixels);
+            for (int x = 0; x < strip.width(); ++x)
+              if ((row[x] & 0x00ffffff) == 0x00fd2672)
+                ++width;
+            if (widths.isEmpty() || widths.last() != width)
+              widths.append(width);
+            latest.store(width);
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        SelectObject(dc, previous);
+      }
+      if (bitmap) DeleteObject(bitmap);
+      if (dc) DeleteDC(dc);
+      if (desktop) ReleaseDC(nullptr, desktop);
+    });
+    const auto join = qScopeGuard([&] {
+      stop.store(true);
+      if (sampler.joinable()) sampler.join();
+    });
+    const auto dpr = pin.devicePixelRatioF();
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(latest.load() - qRound(220 * dpr)) <= 2, 2000);
+    for (int step = 0; step < 8; ++step) {
+      SendMessageW(hwnd, WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA),
+                   MAKELPARAM(pointer.x(), pointer.y()));
+      QTest::qWait(24);
+    }
+    const auto finalWidth = qRound(pin.contentRect().width() * dpr);
+    QVERIFY(finalWidth > qRound(440 * dpr));
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(latest.load() - finalWidth) <= 2, 2000);
+    stop.store(true);
+    sampler.join();
+    QVERIFY(widths.size() >= 4);
+    for (qsizetype i = 1; i < widths.size(); ++i)
+      QVERIFY2(widths[i] + 2 >= widths[i - 1], qPrintable(QString("Zoom width fell from %1 to %2 pixels").arg(widths[i - 1]).arg(widths[i])));
+  }
+  void imageTextMovesFromFrameAndRestoresPin() {
     QTemporaryDir dir;
     Store store(dir.path());
     QImage image(480, 300, QImage::Format_RGB32);
@@ -2079,27 +2161,25 @@ private slots:
     const auto preview = text->previewRect();
     const auto panel = text->controlBar()->geometry();
     const QPoint offset(32, 24);
-    auto dragWindow = [&](QPoint press, bool hold) {
-      const auto oldPosition = text->pos();
-      QTest::mousePress(text, Qt::LeftButton, Qt::NoModifier, press);
-      if (hold) {
-        dragMove(text, press + offset);
-        QCOMPARE(text->pos(), oldPosition);
-        QTRY_COMPARE_WITH_TIMEOUT(text->cursor().shape(), Qt::ClosedHandCursor, 1000);
-      }
-      dragMove(text, press + offset);
-      QCOMPARE(text->pos(), oldPosition + offset);
-      QTest::mouseRelease(text, Qt::LeftButton, Qt::NoModifier, press);
-    };
-    dragWindow({40, 15}, false);
+    QCOMPARE(text->imageGlobalOrigin(), pin.contentGeometry().topLeft());
+    QCOMPARE(preview, QRectF(text->imageViewport()));
+    const auto frameGrip = text->imageViewport().topLeft() + QPoint(40, -6);
+    const auto oldPosition = text->pos();
+    QTest::mousePress(text, Qt::LeftButton, Qt::NoModifier, frameGrip);
+    dragMove(text, frameGrip + offset);
+    QCOMPARE(text->pos(), oldPosition + offset);
+    QTest::mouseRelease(text, Qt::LeftButton, Qt::NoModifier, frameGrip);
     const auto blank = text->imageToView({350, 220}).toPoint();
-    dragWindow(blank, true);
     QCOMPARE(text->previewRect(), preview);
     QCOMPARE(text->controlBar()->geometry(), panel);
     QCOMPARE(text->selectedText(), text->page().text);
     QCOMPARE(pin.geometry(), ownerGeometry);
     const auto draggedPosition = text->pos();
-    QTest::mouseClick(text, Qt::LeftButton, Qt::NoModifier, blank);
+    QTest::mousePress(text, Qt::LeftButton, Qt::NoModifier, blank);
+    QTest::qWait(275);
+    dragMove(text, blank + offset);
+    QTest::mouseRelease(text, Qt::LeftButton, Qt::NoModifier, blank + offset);
+    QCOMPARE(text->pos(), draggedPosition);
     QVERIFY(text->selectedText().isEmpty());
     const auto start = text->imageToView({222, 84}).toPoint();
     const auto end = text->imageToView({296, 84}).toPoint();
@@ -2108,12 +2188,64 @@ private slots:
     QTest::mouseRelease(text, Qt::LeftButton, Qt::NoModifier, end);
     QCOMPARE(text->selectedText(), QString("10.49"));
     QCOMPARE(text->pos(), draggedPosition);
-    QVERIFY(savePreview(text, "image-text-draggable-title.png"));
+    QVERIFY(savePreview(text, "image-text-pin-frame.png"));
+    const auto destination = text->imageGlobalOrigin();
+    QCOMPARE(destination, pin.contentGeometry().topLeft() + offset);
+    QTest::mouseClick(text->findChild<QPushButton *>("imageTextCancel"),Qt::LeftButton);
+    QVERIFY(!text->isVisible());
+    QVERIFY(pin.isVisible());
+    QCOMPARE(pin.contentGeometry(), QRect(destination, image.size()));
+    pin.startImageText(image,false);
+    QCOMPARE(text->imageGlobalOrigin(), destination);
+    QTest::keyClick(text, Qt::Key_Escape);
+    QCOMPARE(pin.contentGeometry(), QRect(destination, image.size()));
   }
   void imageTextIncludesPendingInlineText_data() {
     QTest::addColumn<bool>("pinWindow");
     QTest::newRow("capture") << false;
     QTest::newRow("pin") << true;
+  }
+  void captureOcrPinsSelection_data() {
+    QTest::addColumn<bool>("useToolbar");
+    QTest::newRow("F4") << false;
+    QTest::newRow("toolbar") << true;
+  }
+  void captureOcrPinsSelection() {
+    QFETCH(bool, useToolbar);
+    QTemporaryDir dir;
+    const auto previous = qgetenv("FLOATSHOT_DATA_DIR");
+    const auto restore = qScopeGuard([&] {
+      if (previous.isNull()) qunsetenv("FLOATSHOT_DATA_DIR");
+      else qputenv("FLOATSHOT_DATA_DIR", previous);
+    });
+    qputenv("FLOATSHOT_DATA_DIR", dir.path().toUtf8());
+    ApplicationController controller(true);
+    QPointer<CaptureOverlay> source = editingFixture(controller.store, "rect");
+    controller.overlay = source;
+    connect(source, &CaptureOverlay::finished, &controller, [&] { controller.overlay = nullptr; });
+    source->output = [&](const QImage &image, const QRect &region, const QString &action) {
+      return controller.imageOutput(image, region, action);
+    };
+    const QRect region = source->globalSelection();
+    const QImage original = source->annotation->render();
+    if (useToolbar) {
+      auto button = source->toolbar->findChild<QToolButton *>("action_select_text");
+      QVERIFY(button && button->isVisible());
+      QTest::mouseClick(button, Qt::LeftButton);
+    } else {
+      QTest::keyClick(source, Qt::Key_F4);
+    }
+    QVERIFY(!controller.overlay);
+    QCOMPARE(controller.pins.windows.size(), 1);
+    const auto pin = controller.pins.windows.first();
+    QVERIFY(pin && pin->imageText && pin->imageText->isVisible());
+    QCOMPARE(pin->contentGeometry(), region);
+    QCOMPARE(pin->imageText->imageGlobalOrigin(), region.topLeft());
+    QCOMPARE(pin->imageText->sourceImage(), original);
+    QTest::keyClick(pin->imageText, Qt::Key_Escape);
+    QCOMPARE(pin->contentGeometry(), region);
+    QVERIFY(pin->isVisible() && !pin->imageText->isVisible());
+    if (source) delete source;
   }
   void imageTextIncludesPendingInlineText() {
     QFETCH(bool,pinWindow);
@@ -2126,12 +2258,31 @@ private slots:
       pin->show(); pin->startEditing(); surface=pin;
     } else surface=editingFixture(store,"text");
     auto cleanup=qScopeGuard([&] { delete surface; });
+    PinManager pins(&store);
+    QImage captured;
+    if (!pinWindow) {
+      auto overlay=qobject_cast<CaptureOverlay *>(surface);
+      overlay->output=[&](const QImage &image,const QRect &region,const QString &action) {
+        if (action!="ocr") return false;
+        captured=image;
+        pins.create(image,region)->startImageText(image,false);
+        return true;
+      };
+    }
     QTest::mouseClick(surface,Qt::LeftButton,Qt::NoModifier,surface->contentRect().topLeft()+QPoint(60,60));
     auto editor=surface->findChild<InlineTextEditor *>(); QVERIFY(editor);
     QTest::keyClicks(editor,"Pending text 123");
     auto expected=surface->annotation->render(); paintMark(expected,editor->value());
     QTest::keyClick(editor,Qt::Key_F4);
-    QVERIFY(!editor->isVisible()); QVERIFY(surface->imageText->isVisible());
+    QVERIFY(!editor->isVisible());
+    if (!pinWindow) {
+      QCOMPARE(captured,expected);
+      QVERIFY(!surface->isVisible());
+      QCOMPARE(pins.windows.size(),1);
+      QVERIFY(pins.windows.first()->imageText->isVisible());
+      return;
+    }
+    QVERIFY(surface->imageText->isVisible());
     QCOMPARE(surface->imageText->sourceImage(),expected);
     QVERIFY(!surface->toolbar->isVisible());
     QTest::keyClick(surface->imageText,Qt::Key_Escape);
@@ -2174,6 +2325,10 @@ private slots:
     auto collapsed=ImageTextLayout::arrange(secondary,secondary,360,true);
     QVERIFY(collapsed.panel.isEmpty());
     QVERIFY(collapsed.viewport.width()>plan.viewport.width());
+    const auto framed=ImageTextLayout::arrange(screen,screen,360,false,true);
+    QCOMPARE(framed.placement,ImageTextLayout::Split);
+    QCOMPARE(framed.viewport.translated(framed.window.topLeft()),screen);
+    QVERIFY(!framed.title.intersects(framed.panel));
   }
   void imageTextFullscreenDividerPanCollapseAndReturn() {
     QTemporaryDir dir; Store store(dir.path());

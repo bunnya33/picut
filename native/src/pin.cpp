@@ -1,9 +1,11 @@
 #include "pin.h"
 #include "menu.h"
+#include "native_windows.h"
 #include "recognition.h"
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QJsonArray>
+#include <QtCore/QScopeGuard>
 #include <QtCore/QScopedValueRollback>
 #include <QtCore/QUuid>
 #include <QtGui/QContextMenuEvent>
@@ -90,16 +92,72 @@ void PinWindow::applyScale(double value, std::optional<QPointF> anchor) {
   const QRect nextGeometry(topLeft, contentSize + QSize(Margin * 2, Margin * 2));
   if (nextGeometry != geometry()) {
     QScopedValueRollback updatingGeometry(scaling, true);
-    // Resizing and moving separately exposes the old backing store at an
-    // intermediate position on Windows layered windows.
-    setGeometry(nextGeometry);
+    const bool presented = contentSize != oldContent.size() && presentScale(nextGeometry);
+    if (geometry() != nextGeometry)
+      setGeometry(nextGeometry);
+    if (!presented && isVisible())
+      repaint();
   }
   positionToolbar();
-  if (anchor && isVisible() && contentSize != oldContent.size())
-    repaint();
-  else
-    update();
+  update();
   emit changed();
+}
+bool PinWindow::presentScale(const QRect &target) {
+  if (!isVisible() || editing || (imageText && imageText->isVisible()) ||
+      QGuiApplication::platformName() != "windows")
+    return false;
+  const auto hwnd = reinterpret_cast<HWND>(winId());
+  if (!(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_LAYERED))
+    return false;
+  RECT current{};
+  if (!GetWindowRect(hwnd, &current))
+    return false;
+
+  const auto dpr = devicePixelRatioF();
+  const auto pixels = target.size() * dpr;
+  const auto offset = (target.topLeft() - pos()) * dpr;
+  POINT destination{current.left + offset.x(), current.top + offset.y()};
+  SIZE size{pixels.width(), pixels.height()};
+  const auto dc = CreateCompatibleDC(nullptr);
+  if (!dc)
+    return false;
+  const auto releaseDc = qScopeGuard([&] { DeleteDC(dc); });
+
+  BITMAPINFO info{};
+  info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  info.bmiHeader.biWidth = size.cx;
+  info.bmiHeader.biHeight = -size.cy;
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+  void *bits = nullptr;
+  const auto bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!bitmap)
+    return false;
+  const auto releaseBitmap = qScopeGuard([&] { DeleteObject(bitmap); });
+  const auto previous = SelectObject(dc, bitmap);
+  if (!previous || previous == HGDI_ERROR)
+    return false;
+  const auto restoreBitmap = qScopeGuard([&] { SelectObject(dc, previous); });
+
+  QImage frame(static_cast<uchar *>(bits), size.cx, size.cy,
+               QImage::Format_ARGB32_Premultiplied);
+  frame.fill(Qt::transparent);
+  {
+    QPainter painter(&frame);
+    painter.scale(dpr, dpr);
+    paintPin(painter, QRect(QPoint(), target.size()));
+  }
+  // Commit the new bitmap and HWND geometry in the same compositor update.
+  POINT source{};
+  BLENDFUNCTION blend{AC_SRC_OVER, 0, BYTE(qRound(alpha * 255)), AC_SRC_ALPHA};
+  if (!UpdateLayeredWindow(hwnd, nullptr, &destination, &size, dc,
+                           &source, 0, &blend, ULW_ALPHA))
+    return false;
+  // UpdateLayeredWindow can change the HWND without Qt receiving a move or
+  // resize notification. WM_MOVE makes the Windows plugin read the new rect.
+  SendMessageW(hwnd, WM_MOVE, 0, MAKELPARAM(destination.x, destination.y));
+  return true;
 }
 void PinWindow::setAlpha(double value) {
   alpha = qBound(.05, value, 1.0);
@@ -135,6 +193,10 @@ void PinWindow::startEditing() {
   activateWindow();
   setFocus();
 }
+void PinWindow::startImageText(const QImage &input, bool recognize) {
+  commitText();
+  showImageText(input.isNull() ? displayedImage() : input, recognize, true);
+}
 void PinWindow::endEditing() {
   if (!annotation)
     return;
@@ -164,7 +226,12 @@ void PinWindow::paintEvent(QPaintEvent *) {
   p.setCompositionMode(QPainter::CompositionMode_Source);
   p.fillRect(rect(), Qt::transparent);
   p.setCompositionMode(QPainter::CompositionMode_SourceOver);
-  auto r = contentRect();
+  if (imageText && imageText->isVisible())
+    return;
+  paintPin(p, rect());
+}
+void PinWindow::paintPin(QPainter &p, const QRect &bounds) {
+  const auto r = bounds.adjusted(Margin, Margin, -Margin, -Margin);
   QRectF frame = QRectF(r).adjusted(-.5, -.5, .5, .5);
   p.setRenderHint(QPainter::Antialiasing, true);
   p.setBrush(Qt::NoBrush);
@@ -173,7 +240,7 @@ void PinWindow::paintEvent(QPaintEvent *) {
     p.setPen(QPen(QColor(96, 166, 244, alphas[n - 1]), 1));
     p.drawRoundedRect(frame.adjusted(-n, -n, n, n), n + 1, n + 1);
   }
-  if (background.contains("棋盘")) {
+  if (image.hasAlphaChannel() && background.contains("棋盘")) {
     p.save();
     p.setClipRect(r);
     bool light = background.startsWith("亮");
@@ -191,7 +258,7 @@ void PinWindow::paintEvent(QPaintEvent *) {
              : displayedImage());
   p.setPen(QPen(QColor(170, 207, 249), 1));
   p.drawRect(frame);
-  if (!imageText || !imageText->isVisible()) paintEditing(p);
+  if (editing) paintEditing(p);
   if (selected) {
     p.setPen(QColor("#1688ef"));
     p.drawRect(r.adjusted(-1, -1, 0, 0));

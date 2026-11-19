@@ -33,11 +33,12 @@ public:
   void annotationWheel(QWheelEvent *event);
   void commitText();
   void showMore();
-  void startImageText(const QImage &image = {}, bool recognize = true);
+  virtual void startImageText(const QImage &image = {}, bool recognize = true);
   void startImageTranslation(const QImage &image = {}, bool recognize = true);
   QString editTarget(QPoint point) const;
 
 protected:
+  void showImageText(const QImage &image, bool recognize, bool pinFrame);
   bool event(QEvent *event) override;
   void ensureTextEditor();
   int numberLabelIndex = -1;

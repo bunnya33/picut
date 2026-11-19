@@ -35,6 +35,7 @@ public:
   QRect contentRect() const override { return selection; }
   QRect globalSelection() const { return selection.translated(pos()); }
   bool complete(const QString &action) override;
+  void startImageText(const QImage &image = {}, bool recognize = true) override;
   void selectRegion(QRect region);
   void setRecordingMode(bool enabled);
   quintptr recordingWindow() const { return targetRecordingWindow; }

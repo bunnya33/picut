@@ -319,7 +319,6 @@ void CaptureOverlay::setRecordingMode(bool enabled) {
   if (toolbar) toolbar->hide();
   if (auto bar=findChild<QFrame *>("recordToolbar")) bar->hide();
   if (auto summary=findChild<QLabel *>("recordSummary")) summary->hide();
-  if (imageText) imageText->hide();
   if (imageTranslation) imageTranslation->hide();
   updateSelectionToolbar(!selection.isEmpty());
   setCursor(recording?Qt::CrossCursor:Qt::ArrowCursor);
@@ -474,13 +473,12 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
             QString::number(annotation ? annotation->original.height()
                                        : r.height()));
   }
-  const bool selectingText = imageText && imageText->isVisible();
-  if (!selectingText && !recording) paintEditing(p);
+  if (!recording) paintEditing(p);
   bool brush = annotation &&
                QStringList{"pen", "line", "arrow", "marker", "eraser", "text"}.contains(
                    annotation->tool) &&
                selection.contains(pointer);
-  if (!recording && !selectingText && (alt || (!brush && (!annotation || (!annotation->draft && !dragOriginal)))))
+  if (!recording && (alt || (!brush && (!annotation || (!annotation->draft && !dragOriginal)))))
     paintMagnifier(p, preview);
   p.setPen(Qt::white);
   if (!recording || selection.isEmpty()) p.drawText(
@@ -869,6 +867,10 @@ bool CaptureOverlay::confirmExit() {
     store->saveConfig();
   }
   return accepted;
+}
+void CaptureOverlay::startImageText(const QImage &, bool) {
+  if (!recording && output)
+    complete("ocr");
 }
 bool CaptureOverlay::complete(const QString &action) {
   if (action == "pin" && scrollCapture) {

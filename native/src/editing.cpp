@@ -627,28 +627,33 @@ void EditingSurface::commitText() {
   update();
 }
 void EditingSurface::startImageText(const QImage &input, bool recognize) {
+  showImageText(input, recognize, false);
+}
+void EditingSurface::showImageText(const QImage &input, bool recognize, bool pinFrame) {
   if (imageTranslation && imageTranslation->isVisible()) imageTranslation->finish();
   if (imageText && imageText->isVisible()) { imageText->setFocus(); return; }
   commitText();
   const auto image = input.isNull() && annotation ? annotation->render() : input;
   if (image.isNull()) return;
   if (!imageText) {
-    imageText = new ImageTextOverlay(this, store, [this] { return contentRect(); });
+    imageText = new ImageTextOverlay(this, store, [this] { return contentRect(); }, pinFrame);
     connect(imageText, &ImageTextOverlay::translationRequested, this, [this](QImage image,QJsonObject ocr) {
       imageText->finish(); startImageTranslation(image,false); imageTranslation->setOcrResult(ocr);
     });
-    connect(imageText, &ImageTextOverlay::closed, this, [this] {
+    connect(imageText, &ImageTextOverlay::closed, this, [this, pinFrame] {
+      if (pinFrame) move(imageText->imageGlobalOrigin() - contentRect().topLeft());
       if (isVisible() && property("imageTextToolbarVisible").toBool() && annotation && toolbar) {
         toolbar->sync(*annotation); positionToolbar(); toolbar->show();
       }
       if (isVisible()) { activateWindow(); setFocus(); }
-      update();
+      if (pinFrame && isVisible()) repaint();
+      else update();
     });
   }
   setProperty("imageTextToolbarVisible", toolbar && toolbar->isVisible());
-  setProperty("imageTextWasEditing", editing);
   if (toolbar) toolbar->hide();
   imageText->begin(image, recognize);
+  if (pinFrame) repaint();
 }
 void EditingSurface::startImageTranslation(const QImage &input, bool recognize) {
   if (imageTranslation && imageTranslation->isVisible()) { imageTranslation->setFocus(); return; }

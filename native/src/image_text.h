@@ -1,6 +1,5 @@
 #pragma once
 #include "recognition.h"
-#include <QtCore/QTimer>
 #include <QtGui/QPolygonF>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QLabel>
@@ -31,10 +30,11 @@ public:
 
 struct ImageTextLayout {
   static constexpr int TitleHeight = 30;
+  static constexpr int GripHeight = 12;
   enum Placement { Right, Left, Split } placement = Split;
-  QRect window, title, viewport, panel, divider;
+  QRect window, title, frame, viewport, panel, divider;
   static ImageTextLayout arrange(QRect image, QRect available, int panelWidth = 360,
-                                 bool collapsed = false);
+                                 bool collapsed = false, bool pinFrame = false);
 };
 
 // Draws selection on the original image; selected text never enters the bitmap.
@@ -42,7 +42,7 @@ class ImageTextOverlay : public QWidget {
   Q_OBJECT
 public:
   ImageTextOverlay(QWidget *parent, Store *store,
-                   std::function<QRect()> imageRect);
+                   std::function<QRect()> imageRect, bool pinFrame = false);
   void begin(const QImage &image, bool recognize = true);
   void finish();
   void setResult(const QJsonObject &result);
@@ -53,6 +53,7 @@ public:
   QFrame *controlBar() const { return bar; }
   QTextEdit *resultEditor() const { return editor; }
   QRect imageViewport() const { return layout.viewport; }
+  QPoint imageGlobalOrigin() const { return mapToGlobal(layout.viewport.topLeft()); }
   QRectF previewRect() const;
   QPointF imageToView(QPointF point) const;
   ImageTextLayout::Placement placement() const { return layout.placement; }
@@ -78,6 +79,7 @@ protected:
 private:
   Store *store;
   std::function<QRect()> imageRect;
+  const bool pinFrame;
   PaddleOcrJob job;
   ImageTextPage document;
   QImage source;
@@ -89,7 +91,6 @@ private:
   bool syncing = false, collapsed = false, panning = false, space = false;
   bool resizingPanel = false;
   bool movingWindow = false;
-  QTimer holdToMove;
   QPoint windowOffset, windowDragOffset;
   QPointF pan, lastPointer;
   int panelWidth = 360, resizeWidth = 360;
@@ -108,6 +109,7 @@ private:
   void clampPan();
   void zoomAt(double factor, QPointF point);
   void moveWindow(QPoint global);
+  bool dragArea(QPoint point) const;
   void copySelection();
   void copyAll();
 };

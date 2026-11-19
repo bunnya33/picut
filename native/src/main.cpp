@@ -18,7 +18,7 @@ static int runApplication(int argc, char **argv) {
   app.setApplicationName("picut");
   app.setApplicationDisplayName("picut");
   app.setOrganizationName("picut");
-  app.setApplicationVersion("0.5.54");
+  app.setApplicationVersion("0.5.55");
   // Retain the accepted scrolling profile so settings, history and pins carry forward.
   if (qEnvironmentVariableIsEmpty("FLOATSHOT_DATA_DIR"))
     qputenv("FLOATSHOT_DATA_DIR", (QStandardPaths::writableLocation(
