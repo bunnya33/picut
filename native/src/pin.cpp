@@ -103,6 +103,10 @@ void PinWindow::applyScale(double value, std::optional<QPointF> anchor) {
   emit changed();
 }
 bool PinWindow::presentScale(const QRect &target) {
+#ifdef Q_OS_MACOS
+  Q_UNUSED(target);
+  return false;
+#else
   if (!isVisible() || editing || (imageText && imageText->isVisible()) ||
       QGuiApplication::platformName() != "windows")
     return false;
@@ -158,6 +162,7 @@ bool PinWindow::presentScale(const QRect &target) {
   // resize notification. WM_MOVE makes the Windows plugin read the new rect.
   SendMessageW(hwnd, WM_MOVE, 0, MAKELPARAM(destination.x, destination.y));
   return true;
+#endif
 }
 void PinWindow::setAlpha(double value) {
   alpha = qBound(.05, value, 1.0);
@@ -169,6 +174,9 @@ void PinWindow::setThrough(bool value) {
   setWindowFlag(Qt::WindowTransparentForInput, value);
   if (state == "visible")
     show();
+#ifdef Q_OS_MACOS
+  macSetClickThrough(this, value);
+#endif
   emit changed();
 }
 void PinWindow::startEditing() {

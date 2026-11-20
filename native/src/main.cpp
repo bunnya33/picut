@@ -11,10 +11,17 @@
 #include <QtNetwork/QLocalServer>
 #include <QtNetwork/QLocalSocket>
 #include <QtWidgets/QApplication>
+#include <cstdio>
+#ifdef Q_OS_MACOS
+#include "screen_capture.h"
+#endif
 
 static int runApplication(int argc, char **argv) {
   enableDpi();
   QApplication app(argc, argv);
+#ifdef Q_OS_MACOS
+  const bool loginLaunch = macLoginLaunch();
+#endif
   app.setApplicationName("picut");
   app.setApplicationDisplayName("picut");
   app.setOrganizationName("picut");
@@ -45,13 +52,31 @@ static int runApplication(int argc, char **argv) {
       QCommandLineOption("verify-desktop-memory",
                          "Profile twenty desktop captures without writing "
                          "screen pixels or modifying the clipboard."));
-  parser.addOption(QCommandLineOption("verify-pin-latency", "Measure synthetic F3 latency with ninety history records."));
+  parser.addOption(QCommandLineOption("verify-pin-latency", "Measure synthetic pin shortcut latency with ninety history records."));
+#ifdef Q_OS_MACOS
+  parser.addOption(QCommandLineOption("verify-recording", "Encode a synthetic MP4 and exit."));
+  parser.addOption(QCommandLineOption("verify-scroll", "Stitch synthetic scrolling frames and exit."));
+  parser.addOption(QCommandLineOption("verify-translation", "Translate synthetic screenshots and exit."));
+#endif
   parser.process(app);
+#ifdef Q_OS_MACOS
+  if (parser.isSet("verify-recording"))
+    return verifyMacRecording(qEnvironmentVariable("FLOATSHOT_DATA_DIR")) ? 0 : 1;
+  if (parser.isSet("verify-scroll"))
+    return verifyMacScroll(qEnvironmentVariable("FLOATSHOT_DATA_DIR")) ? 0 : 1;
+#endif
   bool checking = parser.isSet("verify-pin-latency") || parser.isSet("verify-desktop-memory") || parser.isSet("verify-ocr-memory") ||
                   parser.isSet("verify-ui") ||
                   parser.isSet("verify-features") ||
                   parser.isSet("verify-memory") || parser.isSet("smoke-test");
+#ifdef Q_OS_MACOS
+  checking = checking || parser.isSet("verify-translation");
+#endif
   ApplicationController controller(checking);
+#ifdef Q_OS_MACOS
+  if (parser.isSet("verify-translation"))
+    return verifyMacTranslation(&controller.store) ? 0 : 1;
+#endif
   if (parser.isSet("verify-pin-latency"))
     return verifyPinLatency(controller, controller.store.root) ? 0 : 1;
   if (parser.isSet("verify-ocr-memory"))
@@ -76,7 +101,11 @@ static int runApplication(int argc, char **argv) {
     QLocalSocket socket;
     socket.connectToServer(lock);
     if (socket.waitForConnected(250)) {
-      socket.write(parser.isSet("show-home") ? "home\n" : "tray\n");
+      bool show = parser.isSet("show-home");
+#ifdef Q_OS_MACOS
+      show = show || (!parser.isSet("tray") && !loginLaunch);
+#endif
+      socket.write(show ? "home\n" : "tray\n");
       socket.waitForBytesWritten(250);
       return 0;
     }
@@ -105,7 +134,11 @@ static int runApplication(int argc, char **argv) {
       }
     });
   }
-  if (parser.isSet("show-home") || parser.isSet("smoke-test"))
+  bool show = parser.isSet("show-home") || parser.isSet("smoke-test");
+#ifdef Q_OS_MACOS
+  show = show || (!parser.isSet("tray") && !loginLaunch);
+#endif
+  if (show)
     controller.showHome();
   if (parser.isSet("smoke-test"))
     QTimer::singleShot(500, &app, [&] {
@@ -121,7 +154,11 @@ int main(int argc, char **argv) {
   catch (const std::exception &error) {
     const auto message=QString::fromUtf8(error.what())+"\n启动日志："+startupLogPath();
     qCritical().noquote()<<message;
+#ifdef Q_OS_MACOS
+    std::fprintf(stderr, "%s\n", qPrintable(message));
+#else
     MessageBoxW(nullptr,reinterpret_cast<LPCWSTR>(message.utf16()),L"picut 启动失败",MB_OK|MB_ICONERROR);
+#endif
     return 1;
   }
 }

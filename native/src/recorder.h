@@ -17,10 +17,14 @@ QList<AudioDevice> audioDevices(bool capture);
 using RecordingPainter = std::function<void(QImage &)>;
 class RecordingLiveState {
 public:
-  struct Snapshot { QRect region; RecordingPainter painter; QRect controls; };
+  struct Snapshot { QRect region; RecordingPainter painter; QRect controls; QSize logicalSize; };
   explicit RecordingLiveState(QRect region, RecordingPainter painter = {}):value{region,std::move(painter)} {}
   Snapshot snapshot() const { std::lock_guard lock(mutex); return value; }
-  void setRegion(QRect region) { std::lock_guard lock(mutex); value.region=region; }
+  void setRegion(QRect region, QSize logicalSize = {}) {
+    std::lock_guard lock(mutex);
+    value.region=region;
+    value.logicalSize=logicalSize;
+  }
   void setPainter(RecordingPainter painter) { std::lock_guard lock(mutex); value.painter=std::move(painter); }
   void setControls(QRect controls) { std::lock_guard lock(mutex); value.controls=controls; }
 private:
@@ -29,6 +33,9 @@ private:
 };
 struct RecordOptions {
   QRect region;
+#ifdef Q_OS_MACOS
+  QRect logicalRegion;
+#endif
   QString output, speakerId, micId;
   int fps = 60, quality = 14;
   bool cursor = true, systemAudio = false, microphone = false, clickFeedback = false;
@@ -64,7 +71,9 @@ public:
   void setTargetUnavailable(bool unavailable);
   void stop();
   void setMuted(bool system, bool value);
+#ifndef Q_OS_MACOS
   static QString ffmpegPath();
+#endif
 signals:
   void started();
   void status(QString text);

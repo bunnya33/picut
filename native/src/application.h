@@ -54,6 +54,8 @@ private:
   quint64 clipboardPinRequest = 0;
   void tryPinClipboard(quint64 request, quint32 sequence, int attempt);
   void registerHotkeys();
+  void clearHotkeys();
+  bool dispatchHotkey(int id);
   void updateTrayMenu();
   void makeRecorder();
   void restoreRecordSource();
@@ -67,3 +69,7 @@ bool verifyDesktopMemory(ApplicationController &controller,
                          const QString &folder);
 
 bool verifyPinLatency(ApplicationController &controller, const QString &folder);
+
+#ifdef Q_OS_MACOS
+bool verifyMacTranslation(Store *store);
+#endif

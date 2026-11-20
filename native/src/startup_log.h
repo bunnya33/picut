@@ -5,12 +5,17 @@
 #include <QtCore/QFileInfo>
 #include <QtCore/QMutex>
 #include <QtCore/QSysInfo>
+#include <QtCore/QStandardPaths>
 #include <QtCore/QDebug>
 
 inline QString &startupLogPath() { static QString path; return path; }
 inline void installStartupLog() {
   auto root=qEnvironmentVariable("FLOATSHOT_DATA_DIR");
+#ifdef Q_OS_MACOS
+  if (root.isEmpty()) root=QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)+"/FloatShot/FloatShotNative-ScrollPerformanceTrial";
+#else
   if (root.isEmpty()) root=qEnvironmentVariable("LOCALAPPDATA")+"/FloatShot/FloatShotNative-ScrollPerformanceTrial";
+#endif
   if (!QDir().mkpath(root+"/logs")) root=QDir::tempPath()+"/picut";
   QDir().mkpath(root+"/logs"); startupLogPath()=root+"/logs/startup.log";
   if (QFileInfo(startupLogPath()).size()>1024*1024) {
@@ -23,5 +28,5 @@ inline void installStartupLog() {
       file.write((QDateTime::currentDateTime().toString(Qt::ISODate)+" ["+QString::number(type)+"] "+message+"\n").toUtf8());
     }
   });
-  qInfo().noquote()<<"picut 0.5.56 startup; Windows"<<QSysInfo::kernelVersion()<<QSysInfo::currentCpuArchitecture();
+  qInfo().noquote()<<"picut 0.5.56 startup"<<QSysInfo::productType()<<QSysInfo::kernelVersion()<<QSysInfo::currentCpuArchitecture();
 }

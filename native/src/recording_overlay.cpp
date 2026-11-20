@@ -13,7 +13,9 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QToolButton>
+#ifndef Q_OS_MACOS
 #include <dwmapi.h>
+#endif
 
 class RecordingFrame : public QWidget {
 public:
@@ -312,7 +314,11 @@ RecordingOverlay::RecordingOverlay(Recorder *recorder, QRect region,
           this->recorder->setMuted(system, value);
       });
 }
-RecordingOverlay::~RecordingOverlay() { timer.stop(); }
+RecordingOverlay::~RecordingOverlay() {
+  // Cocoa can deliver focus events synchronously while closing the controls.
+  panel->moveRegion->removeEventFilter(this);
+  hide();
+}
 QWidget *RecordingOverlay::boundary() const { return frame.get(); }
 QWidget *RecordingOverlay::controls() const { return panel.get(); }
 void RecordingOverlay::setArtwork(const QImage &image) {
@@ -324,7 +330,7 @@ void RecordingOverlay::setArtwork(const QImage &image) {
   if (shown) { showArtwork(); refresh(); }
 }
 void RecordingOverlay::showArtwork() {
-  if (!markLayer || compatibility || QGuiApplication::platformName()!="windows") return;
+  if (!markLayer || compatibility || QGuiApplication::platformName()=="offscreen") return;
   auto exclude=[this](QWidget *widget) { return exclusion?exclusion(widget):excludeCapture(widget); };
   artworkExcluded=exclude(markLayer.get());
   if (artworkExcluded) {
@@ -333,7 +339,9 @@ void RecordingOverlay::showArtwork() {
   }
   if (!artworkExcluded) {
     markLayer->hide();
+#ifndef Q_OS_MACOS
     SetWindowDisplayAffinity(reinterpret_cast<HWND>(markLayer->winId()),WDA_NONE);
+#endif
   }
 }
 void RecordingOverlay::configureLive(std::shared_ptr<RecordingLiveState> state, quintptr window) {
@@ -359,11 +367,11 @@ void RecordingOverlay::setRegion(QRect value) {
     outsideControls=!value.intersects(panel->geometry());
     if (!movingRegion) outsideControls=panel->placeOutside(value);
   }
-  if (live) live->setRegion(physicalRect(value));
+  if (live) live->setRegion(physicalRect(value), value.size());
   emit regionChanged(value);
 }
 bool RecordingOverlay::eventFilter(QObject *watched,QEvent *event) {
-  if (watched!=panel->moveRegion || targetWindow) return false;
+  if (!panel || watched!=panel->moveRegion || targetWindow) return false;
   if (event->type()!=QEvent::MouseButtonPress && event->type()!=QEvent::MouseMove && event->type()!=QEvent::MouseButtonRelease) return false;
   auto mouse=static_cast<QMouseEvent *>(event);
   if (event->type()==QEvent::MouseButtonPress && mouse->button()==Qt::LeftButton) {
@@ -395,25 +403,33 @@ bool RecordingOverlay::show() {
   if (compatibility) {
     shown=true; frame->show(); refresh(); timer.start(); return true;
   }
-  const bool windows = QGuiApplication::platformName() == "windows";
+#ifdef Q_OS_MACOS
+  const bool nativeDesktop = QGuiApplication::platformName() == "cocoa";
+#else
+  const bool nativeDesktop = QGuiApplication::platformName() == "windows";
+#endif
   auto exclude = [this](QWidget *widget) { return exclusion ? exclusion(widget) : excludeCapture(widget); };
-  excluded = windows && !compatibility && exclude(frame.get()) && exclude(panel.get());
+  excluded = nativeDesktop && !compatibility && exclude(frame.get()) && exclude(panel.get());
   frame->show();
   frame->raise();
   panel->show();
   panel->raise();
-  if (windows && !compatibility) {
+  if (nativeDesktop && !compatibility) {
     excluded = exclude(frame.get()) && exclude(panel.get());
     showArtwork();
+#ifndef Q_OS_MACOS
     DwmFlush();
+#endif
   }
-  if ((windows || exclusion) && !excluded && !compatibility) {
+  if ((nativeDesktop || exclusion) && !excluded && !compatibility) {
     compatibility=true;
     // Never leave WDA_MONITOR's black rectangle over the captured pixels.
-    if (windows) {
+#ifndef Q_OS_MACOS
+    if (nativeDesktop) {
       SetWindowDisplayAffinity(reinterpret_cast<HWND>(frame->winId()), WDA_NONE);
       SetWindowDisplayAffinity(reinterpret_cast<HWND>(panel->winId()), WDA_NONE);
     }
+#endif
     outsideControls=panel->placeOutside(logicalRegion);
   }
   shown=true;
@@ -476,7 +492,11 @@ void RecordingOverlay::refresh() {
   panel->pause->setEnabled(begun && recorder->active() && !saving);
   panel->annotate->setEnabled(begun && recorder->active() && !saving && !compatibility && excluded && !targetHidden);
   if (compatibility) panel->annotate->setToolTip("当前系统不支持捕获排除，录制中编辑标记需要 Windows 10 2004 或更新版本。");
+#ifdef Q_OS_MACOS
+  if (live) live->setControls(panel->isVisible() ? panel->geometry() : QRect());
+#else
   if (live) live->setControls(panel->isVisible()?physicalRect(panel->geometry()):QRect());
+#endif
   panel->moveRegion->setEnabled(!saving && !counting);
   panel->stop->setEnabled(counting || (begun && recorder->active() && !saving));
   panel->stop->setIcon(recordingIcon(counting?"cancel":"stop"));

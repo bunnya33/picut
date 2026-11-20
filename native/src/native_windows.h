@@ -1,4 +1,7 @@
 #pragma once
+#if defined(__APPLE__)
+#include "platform.h"
+#else
 #include <QtCore/QJsonObject>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
@@ -88,3 +91,5 @@ inline QRect physicalRect(const QRect &logical) {
   return {qRound(logical.x() * ratio), qRound(logical.y() * ratio),
           qRound(logical.width() * ratio), qRound(logical.height() * ratio)};
 }
+
+#endif

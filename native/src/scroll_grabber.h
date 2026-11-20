@@ -30,6 +30,9 @@ public:
   qint64 maximumQueuedBytes() const { return queuedBytesMaximum.load(); }
   QString backendName() const;
   QString captureError() const;
+#ifdef Q_OS_MACOS
+  void setNativeSize(QSize pixels) { nativeSize = pixels; }
+#endif
   void setExternalBackend(const QString &name);
   double captureRate() const { const auto span=lastCapture.load()-firstCapture.load(); return span>0?(captured.load()-1)*1e9/span:0.; }
   double maximumCaptureIntervalMs() const { return maximumCaptureInterval.load()/1000000.; }
@@ -38,6 +41,9 @@ protected:
   void run() override;
 private:
   QRect region;
+#ifdef Q_OS_MACOS
+  QSize nativeSize;
+#endif
   std::function<QImage()> provider;
   mutable std::mutex mutex;
   std::condition_variable wake;

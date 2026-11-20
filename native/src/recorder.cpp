@@ -1,7 +1,9 @@
 #include "recorder.h"
 #include "native_windows.h"
 #include "recording_capture.h"
+#ifndef Q_OS_MACOS
 #include "recording_clicks.h"
+#endif
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDataStream>
 #include <QtCore/QElapsedTimer>
@@ -11,6 +13,7 @@
 #include <QtCore/QProcess>
 #include <QtCore/QStorageInfo>
 #include <QtCore/QUuid>
+#ifndef Q_OS_MACOS
 #include <audioclient.h>
 #include <dwmapi.h>
 #include <cmath>
@@ -62,6 +65,7 @@ QList<AudioDevice> audioDevices(bool capture) {
   }
   return list;
 }
+#endif
 void ActiveClock::start() {
   std::lock_guard lock(mutex);
   begun = std::chrono::steady_clock::now();
@@ -103,6 +107,7 @@ void ActiveClock::finish() {
   elapsedAtPause = accumulated;
   active = false;
 }
+#ifndef Q_OS_MACOS
 class ScreenGrabber {
   HDC desktop = nullptr, memory = nullptr;
   HBITMAP bitmap = nullptr;
@@ -295,6 +300,7 @@ struct AudioTrack {
     }
   }
 };
+#endif
 Recorder::Recorder(QString folder, QObject *parent)
     : QObject(parent), root(std::move(folder)) {}
 Recorder::~Recorder() {
@@ -302,6 +308,7 @@ Recorder::~Recorder() {
   if (worker.joinable())
     worker.join();
 }
+#ifndef Q_OS_MACOS
 QString Recorder::ffmpegPath() {
   auto file =
       QDir(QCoreApplication::applicationDirPath()).filePath("ffmpeg.exe");
@@ -310,6 +317,7 @@ QString Recorder::ffmpegPath() {
   auto override = qEnvironmentVariable("FLOATSHOT_FFMPEG");
   return override.isEmpty() ? QString("ffmpeg") : override;
 }
+#endif
 void Recorder::start(RecordOptions options, std::function<QImage()> source) {
   if (active())
     throw std::runtime_error("已有录制正在进行。");
@@ -357,6 +365,7 @@ void Recorder::stop() {
 void Recorder::setMuted(bool system, bool value) {
   (system ? muteSystem : muteMic).store(value);
 }
+#ifndef Q_OS_MACOS
 void Recorder::run(const RecordOptions &options,
                    const std::function<QImage()> &source) {
   auto work = QDir(root).filePath(QUuid::createUuid().toString(QUuid::Id128));
@@ -620,3 +629,5 @@ void Recorder::run(const RecordOptions &options,
     emit failed(QString::fromUtf8(e.what()) + (detail.isEmpty()?QString():"\n编码器详情：\n"+detail) + "\n原始录制目录：" + work);
   }
 }
+
+#endif

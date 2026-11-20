@@ -1,8 +1,13 @@
 #include "capture.h"
 #include "recording_capture.h"
+#ifdef __APPLE__
+#include "screen_capture.h"
+#else
 #include "element_detector.h"
+#endif
 #include "native_windows.h"
 #include "compact_ui.h"
+#include "hotkey.h"
 #include "recording_settings.h"
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QJsonArray>
@@ -21,6 +26,7 @@
 #include <QtWidgets/QPushButton>
 #include <cstring>
 
+#ifndef Q_OS_MACOS
 static void captureCursor(DesktopSnapshot &snapshot) {
   CURSORINFO cursor{sizeof(CURSORINFO)};
   if (!GetCursorInfo(&cursor) || !(cursor.flags & CURSOR_SHOWING))
@@ -197,6 +203,10 @@ DesktopSnapshot DesktopSnapshot::capture() {
   desktop.timings["window_detection_ms"] = timer.nsecsElapsed() / 1000000.0;
   return desktop;
 }
+#else
+QImage captureDesktopRegion(QRect global) { return captureMacRegion(global); }
+DesktopSnapshot DesktopSnapshot::capture() { return captureMacDesktop(); }
+#endif
 QImage DesktopSnapshot::crop(QRect region, bool cursor) const {
   region = region.intersected(bounds);
   if (region.isEmpty())
@@ -349,6 +359,13 @@ void CaptureOverlay::updateSelectionToolbar(bool show) {
       showToolbar();
     else
       positionToolbar();
+#ifdef Q_OS_MACOS
+    if (toolbar) {
+      const auto shortcut = pinShortcut(store->config).toString(QKeySequence::NativeText);
+      toolbar->findChild<QToolButton *>("action_pin")->setToolTip(
+          shortcut.isEmpty() ? QString("贴图") : "贴图 · " + shortcut);
+    }
+#endif
   } else if (auto bar = findChild<QFrame *>("recordToolbar")) {
     positionBar(bar);
     if (show)
@@ -481,10 +498,17 @@ void CaptureOverlay::paintEvent(QPaintEvent *) {
   if (!recording && (alt || (!brush && (!annotation || (!annotation->draft && !dragOriginal)))))
     paintMagnifier(p, preview);
   p.setPen(Qt::white);
-  if (!recording || selection.isEmpty()) p.drawText(
-      QRect(15, height() - 46, 560, 36), Qt::AlignLeft | Qt::AlignVCenter,
-      recording ? "拖动框选录屏区域 · Esc 取消"
-                : "Ctrl+1～8 标注工具 · Enter 复制 · F3 原位置贴图 · Esc 退出");
+  if (!recording || selection.isEmpty()) {
+#ifdef Q_OS_MACOS
+    const auto shortcut = pinShortcut(store->config).toString(QKeySequence::NativeText);
+    const auto pinHint = shortcut.isEmpty() ? QString() : " · " + shortcut + " 原位置贴图";
+    const auto captureHint = "⌘1～8 标注工具 · Enter 复制" + pinHint + " · Esc 退出";
+#else
+    const auto captureHint = "Ctrl+1～8 标注工具 · Enter 复制 · F3 原位置贴图 · Esc 退出";
+#endif
+    p.drawText(QRect(15, height() - 46, 560, 36), Qt::AlignLeft | Qt::AlignVCenter,
+               recording ? "拖动框选录屏区域 · Esc 取消选择" : captureHint);
+  }
 }
 void CaptureOverlay::paintMagnifier(QPainter &p, const QImage &preview) {
   if (store && !store->config["magnifier_enabled"].toBool(true) && !alt)
@@ -754,9 +778,13 @@ void CaptureOverlay::keyPressEvent(QKeyEvent *e) {
     complete("cancel");
     return;
   }
+#ifdef Q_OS_MACOS
+  const bool pin = matchesPinShortcut(e, store->config);
+#else
+  const bool pin = e->key() == Qt::Key_F3;
+#endif
   if (!recording &&
-      (e->key() == Qt::Key_F3 ||
-       (e->key() == Qt::Key_T && e->modifiers() & Qt::ControlModifier))) {
+      (pin || (e->key() == Qt::Key_T && e->modifiers() & Qt::ControlModifier))) {
     complete("pin");
     return;
   }
@@ -890,6 +918,9 @@ bool CaptureOverlay::complete(const QString &action) {
     if (scrollCapture) { scrollCapture->raise(); return true; }
     if (annotation) annotation->savePreferences(store);
     auto region = globalSelection();
+#ifdef Q_OS_MACOS
+    sourceWindow = recordingWindowAt(region.center());
+#endif
     scrollCapture = new ScrollCapture(store,region,sourceWindow);
     scrollCapture->output = [this,region](const QImage &image,const QString &request) {
       auto target = request == "edit" ? QRect() : region;
@@ -977,6 +1008,7 @@ void CaptureOverlay::showEvent(QShowEvent *event) {
   EditingSurface::showEvent(event);
   activateWindow();
   setFocus();
+#ifndef Q_OS_MACOS
   if (recording || !desktop.foreground)
     return;
   QList<QPair<QRect, QRect>> mappings;
@@ -999,4 +1031,5 @@ void CaptureOverlay::showEvent(QShowEvent *event) {
             }
           });
   worker->start();
+#endif
 }

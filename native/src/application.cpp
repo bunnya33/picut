@@ -11,6 +11,10 @@
 #include <future>
 #include <iterator>
 #include "native_windows.h"
+#ifdef Q_OS_MACOS
+#include "screen_capture.h"
+#include "image_translation.h"
+#endif
 #include "recognition.h"
 #include <QtCore/QDateTime>
 #include <QtCore/QDebug>
@@ -22,6 +26,7 @@
 #include <QtCore/QJsonDocument>
 #include <QtCore/QLibrary>
 #include <QtCore/QMimeData>
+#include <QtCore/QRegularExpression>
 #include <QtCore/QSaveFile>
 #include <QtCore/QScopeGuard>
 #include <QtCore/QThread>
@@ -49,6 +54,7 @@
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QStatusBar>
 #include <QtWidgets/QTabWidget>
+#include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
 
 ApplicationController::ApplicationController(bool test)
@@ -110,15 +116,18 @@ ApplicationController::ApplicationController(bool test)
     if (store.config["restore_pins"].toBool(true))
       pins.restore();
   }
+#ifndef Q_OS_MACOS
   QApplication::instance()->installNativeEventFilter(this);
+#endif
 }
 ApplicationController::~ApplicationController() {
   quitting = true;
   if (recordCountdown) delete recordCountdown;
   QObject::disconnect(&store, nullptr, this, nullptr);
-  for (int id : hotkeyIds)
-    UnregisterHotKey(nullptr, id);
+  clearHotkeys();
+#ifndef Q_OS_MACOS
   QApplication::instance()->removeNativeEventFilter(this);
+#endif
   pins.persist();
   store.flushIo();
   for (auto pin : pins.windows)
@@ -149,8 +158,8 @@ void ApplicationController::updateTrayMenu() {
     trayMenu->findChild<QAction *>("clearPinThrough")->setEnabled(count>0);
   }
   auto bindings = store.config["hotkeys"].toObject();
-  const auto capture = bindings["capture"].toString();
-  const auto pin = bindings["pin"].toString();
+  const auto capture = hotkeyDisplay(bindings["capture"].toString());
+  const auto pin = hotkeyDisplay(bindings["pin"].toString());
   tray.setToolTip(QString("picut %1\n截图快捷键：%2\n贴图快捷键：%3")
       .arg(QCoreApplication::applicationVersion(),
            capture.isEmpty() ? QString("未设置") : capture,
@@ -160,7 +169,7 @@ void ApplicationController::updateTrayMenu() {
     if (label.isEmpty())
       continue;
     auto key = action->property("hotkey_action").toString();
-    action->setText(menuLabel(label, key.isEmpty() ? QString() : bindings[key].toString()));
+    action->setText(menuLabel(label, key.isEmpty() ? QString() : hotkeyDisplay(bindings[key].toString())));
     if (key == "pause" || key == "stop")
       action->setEnabled(recording() && !recorder->finalizing());
   }
@@ -169,18 +178,26 @@ void ApplicationController::updateTrayMenu() {
       const auto key = button->property("hotkey_action").toString();
       if (key.isEmpty()) continue;
       const auto label = button->property("base_label").toString();
-      const auto shortcut = bindings[key].toString();
+      const auto shortcut = hotkeyDisplay(bindings[key].toString());
       button->setText(label + (shortcut.isEmpty() ? QString() : " · " + shortcut));
     }
     home->statusBar()->showMessage(QString("%1 截图 / 录屏选区 · %2 贴图")
-        .arg(bindings["capture"].toString(), bindings["pin"].toString()));
+        .arg(capture, pin));
   }
+}
+void ApplicationController::clearHotkeys() {
+  for (int id : hotkeyIds) {
+#ifdef Q_OS_MACOS
+    unregisterMacHotkey(id);
+#else
+    UnregisterHotKey(nullptr, id);
+#endif
+  }
+  hotkeyIds.clear();
 }
 void ApplicationController::registerHotkeys() {
   updateTrayMenu();
-  for (int id : hotkeyIds)
-    UnregisterHotKey(nullptr, id);
-  hotkeyIds.clear();
+  clearHotkeys();
   auto bindings = store.config["hotkeys"].toObject();
   QStringList actions{"capture", "pin",   "toggle_pins", "through",
                       "",  "pause", "stop"};
@@ -188,53 +205,55 @@ void ApplicationController::registerHotkeys() {
   for (int n = 0; n < actions.size(); ++n) {
     const auto value = bindings[actions[n]].toString();
     if (value.isEmpty()) continue;
-    UINT modifiers = 0, vk = 0;
+    unsigned modifiers = 0, vk = 0;
     const bool supported = nativeHotkey(hotkeySequence(value), modifiers, vk);
-    if (supported && RegisterHotKey(nullptr, n + 1, modifiers, vk))
-      hotkeyIds.append(n + 1);
+#ifdef Q_OS_MACOS
+    const bool registered = supported && registerMacHotkey(n + 1, modifiers, vk, [this, id = n + 1] {
+      dispatchHotkey(id);
+    });
+#else
+    const bool registered = supported && RegisterHotKey(nullptr, n + 1, modifiers, vk);
+#endif
+    if (registered) hotkeyIds.append(n + 1);
     else {
-      const auto error = supported ? GetLastError() : ERROR_INVALID_PARAMETER;
       failures.append(value);
-      qWarning().noquote() << "Hotkey registration failed:" << actions[n]
-                           << value << "Windows error:" << error;
+      qWarning().noquote() << "Hotkey registration failed:" << actions[n] << value;
     }
   }
   if (!failures.isEmpty())
     notify("快捷键冲突：" + failures.join("、"));
 }
-bool ApplicationController::nativeEventFilter(const QByteArray &, void *raw,
-                                              qintptr *) {
+bool ApplicationController::nativeEventFilter(const QByteArray &, void *raw, qintptr *) {
+#ifdef Q_OS_MACOS
+  Q_UNUSED(raw);
+  return false;
+#else
   auto message = static_cast<MSG *>(raw);
-  if (message->message == WM_HOTKEY) {
-    if (message->wParam < 1 || message->wParam > 7 || message->wParam==5) return false;
-    if (hotkeysSuspended) return true;
-    switch (message->wParam) {
-    case 1:
-      beginCapture();
-      break;
-    case 2:
-      qInfo() << "Global pin hotkey received";
-      pinClipboard();
-      break;
-    case 3:
-      pins.toggleAll();
-      break;
-    case 4:
-      pins.toggleThrough();
-      break;
-    case 6:
-      if (recorder)
-        recorder->pause();
-      break;
-    case 7:
-      if (recorder)
-        recorder->stop();
-      break;
-    }
-    return true;
+  return message->message == WM_HOTKEY && dispatchHotkey(int(message->wParam));
+#endif
+}
+bool ApplicationController::dispatchHotkey(int id) {
+  if (id < 1 || id > 7 || id == 5) return false;
+  if (hotkeysSuspended) return true;
+  switch (id) {
+  case 1: beginCapture(); break;
+  case 2: pinClipboard(); break;
+  case 3: pins.toggleAll(); break;
+  case 4: pins.toggleThrough(); break;
+  case 6: if (recorder) recorder->pause(); break;
+  case 7: if (recorder) recorder->stop(); break;
   }
+  return true;
+}
+#ifdef Q_OS_MACOS
+static bool ensureScreenPermission(QWidget *parent) {
+  if (checkMacScreenPermission(true)) return true;
+  if (QMessageBox::question(parent, "需要屏幕录制权限",
+      "请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许 picut，然后重新打开应用。\n\n打开系统设置？") == QMessageBox::Yes)
+    showMacScreenSettings();
   return false;
 }
+#endif
 void ApplicationController::notify(QString text) {
   if (!store.config["notifications_enabled"].toBool(false))
     return;
@@ -244,6 +263,9 @@ void ApplicationController::notify(QString text) {
     tray.showMessage("picut", text, QSystemTrayIcon::Information, 4000);
 }
 void ApplicationController::showHome() {
+#ifdef Q_OS_MACOS
+  macActivate();
+#endif
   if (!home) {
     home = new QMainWindow;
     home->setAttribute(Qt::WA_DeleteOnClose);
@@ -373,6 +395,9 @@ void ApplicationController::beginCapture(bool recordingMode) {
   }
   if (pending)
     return;
+#ifdef Q_OS_MACOS
+  if (!ensureScreenPermission(home)) return;
+#endif
   ++clipboardPinRequest;
   pending = true;
   bool visible = home && home->isVisible();
@@ -398,6 +423,9 @@ void ApplicationController::beginCapture(bool recordingMode) {
                 auto painter=source && source->annotation?recordingPainter(*source->annotation,physicalRect(region).size()):RecordingPainter();
                 prepareRecord(region,false,std::move(painter),source);
               });
+#ifdef Q_OS_MACOS
+      macActivate();
+#endif
       overlay->show();
       overlay->activateWindow();
       overlay->setFocus();
@@ -488,15 +516,25 @@ void ApplicationController::pinClipboard() {
     return;
   }
   qInfo() << "Clipboard pin requested";
+#ifdef Q_OS_MACOS
+  tryPinClipboard(request, macClipboardSequence(), 0);
+#else
   tryPinClipboard(request, QGuiApplication::platformName() == "windows"
                                ? GetClipboardSequenceNumber() : 0, 0);
+#endif
 }
 void ApplicationController::tryPinClipboard(quint64 request, quint32 sequence,
                                            int attempt) {
   // Never complete an old request after a new copy, a second F3 or a capture.
+#ifdef Q_OS_MACOS
+  const bool nativeClipboard = false;
+  const bool clipboardChanged = sequence != macClipboardSequence();
+#else
   const bool nativeClipboard = QGuiApplication::platformName() == "windows";
+  const bool clipboardChanged = nativeClipboard && sequence != GetClipboardSequenceNumber();
+#endif
   if (quitting || request != clipboardPinRequest || overlay || pending ||
-      hotkeysSuspended || (nativeClipboard && sequence != GetClipboardSequenceNumber()))
+      hotkeysSuspended || clipboardChanged)
     return;
   auto retry = [this, request, sequence, attempt] {
     static constexpr int delays[] = {40, 100, 200, 400};
@@ -512,6 +550,7 @@ void ApplicationController::tryPinClipboard(quint64 request, quint32 sequence,
   // An OpenClipboard(nullptr) lock has no HWND, so GetOpenClipboardWindow alone
   // cannot distinguish it from an unlocked clipboard. Probe without reading or
   // changing any content, then release immediately before Qt/OLE reads it.
+#ifndef Q_OS_MACOS
   if (nativeClipboard) {
     if (!OpenClipboard(nullptr)) { retry(); return; }
     SetLastError(ERROR_SUCCESS);
@@ -521,6 +560,7 @@ void ApplicationController::tryPinClipboard(quint64 request, quint32 sequence,
     if (!formats && error != ERROR_SUCCESS) { retry(); return; }
     if (!formats) { pins.restoreClosed(); return; }
   }
+#endif
   auto clipboard = QApplication::clipboard();
   auto mime = clipboard->mimeData();
   if (!mime || mime->formats().isEmpty()) {
@@ -551,10 +591,13 @@ void ApplicationController::tryPinClipboard(quint64 request, quint32 sequence,
     }
     return;
   }
-  if (hasImage ||
-      (nativeClipboard &&
-       (GetOpenClipboardWindow() || IsClipboardFormatAvailable(CF_DIB) ||
-        IsClipboardFormatAvailable(CF_DIBV5) || IsClipboardFormatAvailable(CF_BITMAP)))) {
+  const bool imageUnavailable = hasImage
+#ifndef Q_OS_MACOS
+      || (nativeClipboard && (GetOpenClipboardWindow() || IsClipboardFormatAvailable(CF_DIB) ||
+          IsClipboardFormatAvailable(CF_DIBV5) || IsClipboardFormatAvailable(CF_BITMAP)))
+#endif
+      ;
+  if (imageUnavailable) {
     retry();
     return;
   }
@@ -593,8 +636,7 @@ void ApplicationController::openSettings() {
   if (hotkeysSuspended) return;
   ++clipboardPinRequest;
   hotkeysSuspended = true;
-  for (int id : hotkeyIds) UnregisterHotKey(nullptr, id);
-  hotkeyIds.clear();
+  clearHotkeys();
   auto resumeHotkeys = qScopeGuard([this] {
     hotkeysSuspended = false;
     if (!testing) registerHotkeys();
@@ -685,7 +727,11 @@ void ApplicationController::openSettings() {
   tabs->addTab(hotkeys, "全局快捷键");
   auto ocr = new QWidget;
   auto ocrForm = new QFormLayout(ocr);
+#ifdef Q_OS_MACOS
+  auto ocrEngine = new QLabel("Apple Vision（离线识别）");
+#else
   auto ocrEngine = new QLabel("PaddleOCR · Small（离线识别）");
+#endif
   auto ocrProfile = new QComboBox;
   auto ocrModels = PaddleOcrJob::profiles();
   for (auto it = ocrModels.begin(); it != ocrModels.end(); ++it)
@@ -694,12 +740,17 @@ void ApplicationController::openSettings() {
   ocrForm->addRow("识别器", ocrEngine);
   ocrForm->addRow("文字语言组", ocrProfile);
   auto ocrAcceleration=new QComboBox;
+#ifdef Q_OS_MACOS
+  ocrAcceleration->addItem("系统自动","auto");
+  auto ocrHelp = new QLabel("所有识别都在本机完成。可在识别窗口复制文字，或在原图中直接选字。");
+#else
   ocrAcceleration->addItem("自动 · 大图显卡加速","auto");
   ocrAcceleration->addItem("CPU","cpu");
   ocrAcceleration->addItem("显卡","gpu");
   ocrAcceleration->setCurrentIndex(qMax(0,ocrAcceleration->findData(store.config["ocr_acceleration"].toString("auto"))));
   ocrForm->addRow("运算设备",ocrAcceleration);
   auto ocrHelp = new QLabel("所有识别都在本机完成，不上传截图。PaddleOCR 使用 Small 模型，按需启动，识别结束后退出释放内存。支持中简繁、英文、日文及拉丁字母语种；结果不会自动纠正或猜测数字。");
+#endif
   ocrHelp->setWordWrap(true); ocrForm->addRow(ocrHelp);
   tabs->addTab(ocr, "文字识别");
   auto buttons =
@@ -712,7 +763,7 @@ void ApplicationController::openSettings() {
     for (auto edit : bindings) {
       const auto sequence = edit->keySequence();
       if (sequence.isEmpty()) continue;
-      UINT modifiers = 0, vk = 0;
+      unsigned modifiers = 0, vk = 0;
       const bool valid = nativeHotkey(sequence, modifiers, vk);
       const quint64 signature = (quint64(modifiers) << 32) | vk;
       if (!valid || used.contains(signature)) {
@@ -795,6 +846,9 @@ void ApplicationController::restoreRecordSource() {
 void ApplicationController::prepareRecord(QRect region, bool showSettings,
                                            RecordingPainter painter, CaptureOverlay *source) {
   if (recording() || recordSetup || pending || (overlay && overlay!=source)) return;
+#ifdef Q_OS_MACOS
+  if (!ensureScreenPermission(home)) { if (source) source->show(); return; }
+#endif
   recordSource=source;
   const auto target=source?source->recordingWindow():0;
   const auto windowInfo=recordingWindowInfo(target);
@@ -816,7 +870,13 @@ void ApplicationController::prepareRecord(QRect region, bool showSettings,
   auto options=savedRecordingOptions(store.config,target?windowInfo.physical:physicalRect(region),{});
   options.painter=std::move(painter);
   options.window=target;
+#ifdef Q_OS_MACOS
+  options.logicalRegion = target ? windowInfo.logical : region;
+#endif
   options.live=std::make_shared<RecordingLiveState>(options.region,options.painter);
+#ifdef Q_OS_MACOS
+  options.live->setRegion(options.region, options.logicalRegion.size());
+#endif
   PaddleOcrJob::releaseIdleModel();
   makeRecorder();
   int seconds=qBound(0,store.config["countdown"].toInt(3),10);
@@ -909,6 +969,60 @@ void ApplicationController::quit() {
   pins.persist();
   QApplication::quit();
 }
+#ifdef Q_OS_MACOS
+bool verifyMacTranslation(Store *store) {
+  const auto root = store->root;
+  QWidget host;
+  host.resize(760, 300);
+  host.show();
+  ImageTranslationOverlay overlay(&host, store, [&host] { return host.rect(); });
+  auto job = overlay.findChild<LocalTranslationJob *>("localTranslationJob");
+  auto status = overlay.findChild<QLabel *>("translationStatus");
+  if (!job || !status) return false;
+  QJsonArray results;
+  for (const auto &direction : {QStringLiteral("zh"), QStringLiteral("en")}) {
+    QImage image(760, 300, QImage::Format_ARGB32);
+    image.fill(Qt::white);
+    const QString sentence = direction == "zh" ? "Save the screenshot on the desktop." : "请先选择截图区域，然后保存图片。";
+    {
+      QPainter painter(&image);
+      auto font = painter.font();
+      font.setPixelSize(32);
+      painter.setFont(font);
+      painter.setPen(Qt::black);
+      painter.drawText(QPoint(27, 100), sentence);
+    }
+    store->config["translation_source"] = "auto";
+    store->config["translation_target"] = direction;
+    QEventLoop loop;
+    QTimer deadline;
+    deadline.setSingleShot(true);
+    QObject::connect(&deadline, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QJsonObject result;
+    const auto connection = QObject::connect(job, &LocalTranslationJob::finished, &loop,
+        [&](const QJsonObject &value) { result = value; loop.quit(); });
+    overlay.begin(image);
+    if (result.isEmpty()) {
+      deadline.start(55000);
+      loop.exec();
+    }
+    QObject::disconnect(connection);
+    if (result.isEmpty() || result.contains("error") || !overlay.hasCompletedTranslation()) {
+      qWarning() << "Translation verification failed:" << direction << status->text() << result;
+      return false;
+    }
+    const auto text = overlay.page().text();
+    const auto pattern = direction == "zh" ? QStringLiteral("\\p{Han}") : QStringLiteral("image|picture|photo");
+    if (text == sentence || !text.contains(QRegularExpression(pattern, QRegularExpression::CaseInsensitiveOption)))
+      return false;
+    overlay.translatedImage().save(root + "/translated-" + direction + ".png");
+    results.append(QJsonObject{{"target", direction}, {"text", text}});
+    overlay.finish();
+  }
+  return Store::writeJson(root + "/translation-report.json", QJsonObject{{"results", results}});
+}
+#endif
+
 bool verifyOcrMemory(ApplicationController &, const QString &folder) {
   QJsonArray stages{QJsonObject{{"stage", "startup"}, {"memory", memoryUsage()}}};
   QImage image(660,120,QImage::Format_RGB32); image.fill(Qt::white);
@@ -926,7 +1040,11 @@ bool verifyOcrMemory(ApplicationController &, const QString &folder) {
     runs.append(result);
     stages.append(QJsonObject{{"stage",QString("after_%1").arg(i+1)},{"memory",memoryUsage()}});
   }
+#ifdef Q_OS_MACOS
+  const bool loaded = false;
+#else
   bool loaded = GetModuleHandleW(L"onnxruntime.dll") != nullptr;
+#endif
   passed &= !loaded;
   return Store::writeJson(folder+"/ocr-memory-report.json",QJsonObject{{"passed",passed},{"onnx_loaded_in_main",loaded},
     {"synthetic_only",true},{"stages",stages},{"runs",runs}}) && passed;
@@ -937,6 +1055,14 @@ bool verifyNativeFeatures(ApplicationController &controller,
   stages.append(QJsonObject{{"stage", "startup"}, {"memory", memoryUsage()}});
   QImage image(1920, 1080, QImage::Format_ARGB32);
   image.fill(Qt::white);
+#ifdef Q_OS_MACOS
+  {
+    Annotation fresh;
+    fresh.chooseTool("arrow");
+    if (fresh.preferences.arrowHead != "tapered")
+      return false;
+  }
+#endif
   int count = memory ? 20 : 2;
   for (int n = 0; n < count; ++n) {
     DesktopSnapshot desktop;
@@ -998,6 +1124,10 @@ bool verifyNativeFeatures(ApplicationController &controller,
 }
 
 void ApplicationController::previewVideo(const QString &file) {
+#ifdef Q_OS_MACOS
+  if (!QDesktopServices::openUrl(QUrl::fromLocalFile(file)))
+    QMessageBox::warning(home, "无法打开预览", file);
+#else
   static QLibrary library(QCoreApplication::applicationDirPath() +
                           "/NativeVideoPreview.dll");
   using Creator = QWidget *(*)(const QString &, QWidget *);
@@ -1007,6 +1137,7 @@ void ApplicationController::previewVideo(const QString &file) {
     create(file, home);
   else
     QMessageBox::warning(home, "无法打开预览", library.errorString());
+#endif
 }
 
 bool verifyNativeUi(ApplicationController &controller, const QString &folder) {
@@ -1172,7 +1303,7 @@ bool verifyDesktopMemory(ApplicationController &controller,
                                       {"clipboard_changed", false}});
 }
 
-// Synthetic fixture: the same F3 handler as interactive capture, with no desktop reads.
+// Synthetic fixture exercises the interactive pin shortcut without reading the desktop.
 bool verifyPinLatency(ApplicationController &controller, const QString &folder) {
   QImage image(2560, 1440, QImage::Format_RGB32);
   image.fill(QColor("#f5f6f8"));
@@ -1240,7 +1371,12 @@ bool verifyPinLatency(ApplicationController &controller, const QString &folder) 
     paint.ms = -1;
     auto reads = controller.historyThumbnailReads;
     paint.elapsed.start();
+#ifdef Q_OS_MACOS
+    const auto shortcut = pinShortcut(controller.store.config);
+    QKeyEvent key(QEvent::KeyPress, shortcut[0].key(), shortcut[0].keyboardModifiers());
+#else
     QKeyEvent key(QEvent::KeyPress, Qt::Key_F3, Qt::NoModifier);
+#endif
     QApplication::sendEvent(overlay, &key);
     double handler = paint.elapsed.nsecsElapsed() / 1e6;
     while (paint.ms < 0 && paint.elapsed.elapsed() < handler + 5000)

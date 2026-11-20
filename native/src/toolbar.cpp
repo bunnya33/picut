@@ -436,7 +436,11 @@ Toolbar::Toolbar(QWidget *parent) : QWidget(parent) {
                                          {"scroll", "滚动截屏"},
                                          {"record", "录制此区域"},
                                          {"cancel", "取消 · Esc"},
+#ifdef Q_OS_MACOS
+                                         {"pin", "贴图"},
+#else
                                          {"pin", "贴图 · F3"},
+#endif
                                          {"save", "保存 · Ctrl+S"},
                                          {"copy", "复制 · Enter"}}[action]);
     row->addWidget(b);

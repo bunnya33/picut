@@ -1,4 +1,7 @@
 #pragma once
+#if defined(__APPLE__)
+#include "platform.h"
+#else
 #include <QtCore/QDir>
 #include <QtCore/QSettings>
 
@@ -21,3 +24,5 @@ inline bool setLoginStartupEnabled(
   if (error) *error = "无法更新 Windows 当前用户的开机启动项，请检查系统权限后重试。";
   return false;
 }
+
+#endif

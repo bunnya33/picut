@@ -12,8 +12,12 @@
 #include <QtCore/QJsonObject>
 #include <QtCore/QSaveFile>
 #include <QtCore/QThread>
+#ifdef Q_OS_MACOS
+#include <sys/resource.h>
+#else
 #include <Windows.h>
 #include <Psapi.h>
+#endif
 #include <iostream>
 #include <memory>
 
@@ -56,7 +60,11 @@ int main(int argc, char **argv) {
   parser.process(app);
   QJsonObject result; QElapsedTimer total; total.start();
   try {
+#ifdef Q_OS_MACOS
+    setpriority(PRIO_PROCESS, 0, 5);
+#else
     SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+#endif
     const auto request = readJson(parser.value("input"));
     const auto target = request["target"].toString();
     const auto selectedSource = request["source"].toString("auto");
@@ -160,13 +168,20 @@ int main(int argc, char **argv) {
       translated.append(item); ++done;
       event({{"phase", "translating"}, {"done", done}, {"total", blocks.size()}});
     }
-    PROCESS_MEMORY_COUNTERS_EX memory{}; memory.cb = sizeof(memory);
-    GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&memory), sizeof(memory));
     result = {{"blocks", translated}, {"elapsed_ms", total.elapsed()}, {"output_tokens", outputTokens},
-              {"peak_working_set", qint64(memory.PeakWorkingSetSize)}, {"private_bytes", qint64(memory.PrivateUsage)},
               {"protected_terms",protectedTerms},{"term_fallbacks",termFallbacks},
               {"preserved_language_spans",preservedLanguageSpans},
               {"engine", "CTranslate2 4.6.0 / Ruy / CPU INT8"}};
+#ifdef Q_OS_MACOS
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) == 0)
+      result["peak_working_set"] = qint64(usage.ru_maxrss);
+#else
+    PROCESS_MEMORY_COUNTERS_EX memory{}; memory.cb = sizeof(memory);
+    GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&memory), sizeof(memory));
+    result["peak_working_set"] = qint64(memory.PeakWorkingSetSize);
+    result["private_bytes"] = qint64(memory.PrivateUsage);
+#endif
   } catch (const std::exception &error) {
     result = {{"error", QString::fromUtf8(error.what())}, {"elapsed_ms", total.elapsed()}};
   }

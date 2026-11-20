@@ -1,13 +1,40 @@
 #pragma once
+#include <QtCore/QJsonObject>
+#include <QtGui/QKeyEvent>
 #include <QtGui/QKeySequence>
 #include <QtWidgets/QKeySequenceEdit>
 #include <QtWidgets/QLineEdit>
+#ifdef Q_OS_MACOS
+#include "platform.h"
+#else
 #include <Windows.h>
+#endif
 
 inline QKeySequence hotkeySequence(QString text) {
   text.replace("Win+", "Meta+", Qt::CaseInsensitive);
   return QKeySequence::fromString(text, QKeySequence::PortableText);
 }
+inline QString hotkeyDisplay(const QString &text) {
+#ifdef Q_OS_MACOS
+  return hotkeySequence(text).toString(QKeySequence::NativeText);
+#else
+  return text;
+#endif
+}
+
+#ifdef Q_OS_MACOS
+inline constexpr auto defaultPinHotkey = "Ctrl+Alt+Shift+P";
+inline QKeySequence pinShortcut(const QJsonObject &config) {
+  return hotkeySequence(config["hotkeys"].toObject()["pin"].toString());
+}
+inline bool matchesPinShortcut(const QKeyEvent *event, const QJsonObject &config) {
+  return pinShortcut(config) == QKeySequence(event->keyCombination());
+}
+#else
+inline constexpr auto defaultPinHotkey = "F3";
+#endif
+
+#ifndef Q_OS_MACOS
 inline bool nativeHotkey(const QKeySequence &sequence, UINT &modifiers, UINT &vk) {
   modifiers = MOD_NOREPEAT; vk = 0;
   if (sequence.isEmpty() || sequence.count() != 1) return false;
@@ -53,6 +80,8 @@ inline bool nativeHotkey(const QKeySequence &sequence, UINT &modifiers, UINT &vk
   }
   return vk != 0;
 }
+
+#endif
 
 class HotkeyEdit : public QKeySequenceEdit {
 public:

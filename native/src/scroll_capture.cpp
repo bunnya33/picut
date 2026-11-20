@@ -1,10 +1,12 @@
 #include "scroll_capture.h"
 #include "scroll_grabber.h"
 #include "capture.h"
+#include "hotkey.h"
 #include "toolbar.h"
 #include "compact_ui.h"
 #include "native_windows.h"
 #include <QtCore/QScopeGuard>
+#include <QtCore/QDir>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QScreen>
@@ -15,12 +17,17 @@
 #include <QtWidgets/QToolButton>
 #include <chrono>
 #include <utility>
+#ifdef Q_OS_MACOS
+#include "screen_capture.h"
+#else
 #include <dwmapi.h>
+#endif
 
 namespace {
 qint64 monotonicNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+#ifndef Q_OS_MACOS
 bool supportsCaptureExclusion() {
   // Before 2004 WDA_EXCLUDEFROMCAPTURE behaves like WDA_MONITOR (black),
   // even if Set/GetWindowDisplayAffinity accepts the flag value.
@@ -53,6 +60,7 @@ LRESULT CALLBACK scrollKeyboardHook(int code, WPARAM kind, LPARAM raw) {
   }
   return CallNextHookEx(nullptr,code,kind,raw);
 }
+#endif
 class LongPreview : public QWidget {
 public:
   explicit LongPreview(ScrollStitcher::Preview *value, QWidget *parent)
@@ -120,7 +128,13 @@ ScrollCapture::ScrollCapture(Store *value, QRect source, quintptr window, QWidge
           this, [this] { finish("edit"); });
   connect(button("save", "save", "保存长截图"), &QToolButton::clicked,
           this, [this] { finish("save"); });
-  connect(button("pin", "pin", "完成并贴图 · F3"), &QToolButton::clicked,
+#ifdef Q_OS_MACOS
+  const auto shortcut = pinShortcut(store->config).toString(QKeySequence::NativeText);
+  const auto pinHint = shortcut.isEmpty() ? QString("完成并贴图") : "完成并贴图 · " + shortcut;
+#else
+  const auto pinHint = "完成并贴图 · F3";
+#endif
+  connect(button("pin", "pin", pinHint), &QToolButton::clicked,
           this, [this] { finish("pin"); });
   connect(button("cancel", "cancel", "取消滚动截屏 · Esc", QColor("#ff3849")),
           &QToolButton::clicked, this, [this] { finish("cancel"); });
@@ -129,6 +143,13 @@ ScrollCapture::ScrollCapture(Store *value, QRect source, quintptr window, QWidge
   status = new QLabel("手动纵向滚动正文 · 避开固定栏和滚动条",this);
   status->setObjectName("scrollStatus");
   status->setWordWrap(true);
+#ifdef Q_OS_MACOS
+  for (auto widget : {preview, static_cast<QWidget *>(bar), static_cast<QWidget *>(status)}) {
+    widget->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint |
+                           Qt::WindowDoesNotAcceptFocus);
+    widget->setAttribute(Qt::WA_ShowWithoutActivating);
+  }
+#endif
   status->setStyleSheet("background:rgba(28,28,28,210);color:white;padding:5px 8px;border-radius:3px;");
   frameProvider = [this] { return captureDesktopRegion(region.translated(pos())); };
   timer.setTimerType(Qt::PreciseTimer);
@@ -155,6 +176,37 @@ void ScrollCapture::stopPumps(bool drain) {
   framePump.reset();
 }
 void ScrollCapture::begin(bool enableLive) {
+#ifdef Q_OS_MACOS
+  live = enableLive && QGuiApplication::platformName() == "cocoa";
+  excluded = live;
+  show();
+  macSetClickThrough(this, true);
+  place();
+  if (!live) return;
+  auto hotkey = [this](int id, Qt::Key key, const QString &action) {
+    unsigned modifiers = 0, code = 0;
+    if (nativeHotkey(QKeySequence(key), modifiers, code) &&
+        registerMacHotkey(id, modifiers, code, [this, action] { finish(action); }))
+      hotkeys.append(id);
+  };
+  hotkey(2201, Qt::Key_Escape, "cancel");
+  hotkey(2202, Qt::Key_Return, "copy");
+  const auto global = region.translated(pos());
+  const auto screen = QGuiApplication::screenAt(global.center());
+  if (!screen || !screen->geometry().contains(global)) {
+    status->setText("请在同一显示器内框选滚动正文");
+    return;
+  }
+  if (sourceWindow) activateMacWindow(sourceWindow);
+  framePump = std::make_unique<ScrollFramePump>(global);
+  framePump->setNativeSize(physicalRect(global).size());
+  backgroundAcquisition = true;
+  framePump->start();
+  matchSerial = 0;
+  matchPump = std::make_unique<ScrollMatchPump>(framePump.get(), &stitcher);
+  matchPump->start();
+  timer.start(16);
+#else
   live = enableLive && QGuiApplication::platformName() == "windows";
   show();
   if (live && QGuiApplication::platformName() == "windows") {
@@ -194,26 +246,37 @@ void ScrollCapture::begin(bool enableLive) {
       timer.start(backgroundAcquisition ? 8 : 16);
     });
   }
+#endif
 }
 void ScrollCapture::installInputHooks() {
+#ifndef Q_OS_MACOS
   releaseInputHooks(); inputSession=this;
   mouseHook=reinterpret_cast<quintptr>(SetWindowsHookExW(WH_MOUSE_LL,scrollMouseHook,GetModuleHandleW(nullptr),0));
   keyboardHook=reinterpret_cast<quintptr>(SetWindowsHookExW(WH_KEYBOARD_LL,scrollKeyboardHook,GetModuleHandleW(nullptr),0));
   if (!mouseHook || !keyboardHook)
     qWarning("Scroll input hook unavailable; continuous image sampling remains active");
+#endif
 }
 void ScrollCapture::releaseInputHooks() {
+#ifndef Q_OS_MACOS
   if (mouseHook) UnhookWindowsHookEx(reinterpret_cast<HHOOK>(mouseHook));
   if (keyboardHook) UnhookWindowsHookEx(reinterpret_cast<HHOOK>(keyboardHook));
   mouseHook=keyboardHook=0;
   if (inputSession==this) inputSession=nullptr;
+#endif
 }
 bool ScrollCapture::acceptsScrollInput(QPoint point, bool keyboard) const {
+#ifdef Q_OS_MACOS
+  Q_UNUSED(point);
+  Q_UNUSED(keyboard);
+  return false;
+#else
   if (!live || closing || finishing) return false;
   if (keyboard) return sourceWindow && GetForegroundWindow()==reinterpret_cast<HWND>(sourceWindow);
   if (!physicalRect(region.translated(pos())).contains(point)) return false;
   POINT native{point.x(),point.y()};
   return !sourceWindow || GetAncestor(WindowFromPoint(native),GA_ROOT)==reinterpret_cast<HWND>(sourceWindow);
+#endif
 }
 void ScrollCapture::noteScrollInput(int direction, bool manual) {
   if (!direction || closing || finishing) return;
@@ -227,7 +290,11 @@ void ScrollCapture::noteScrollInput(int direction, bool manual) {
   }
 }
 void ScrollCapture::releaseHotkeys() {
+#ifdef Q_OS_MACOS
+  for (int id : hotkeys) unregisterMacHotkey(id);
+#else
   for (int id : hotkeys) UnregisterHotKey(reinterpret_cast<HWND>(winId()), id);
+#endif
   hotkeys.clear();
 }
 void ScrollCapture::setAutomatic(bool enabled) {
@@ -236,6 +303,7 @@ void ScrollCapture::setAutomatic(bool enabled) {
   automatic->setIcon(recordingIcon(enabled ? "pause" : "play"));
   idleTime.restart();
   stalledScrolls = 0;
+#ifndef Q_OS_MACOS
   if (enabled) {
     status->setText("自动滚动中 · 再次点击暂停，可随时完成");
     if (live) {
@@ -243,7 +311,9 @@ void ScrollCapture::setAutomatic(bool enabled) {
       auto center = physicalRect(region.translated(pos())).center();
       SetCursorPos(center.x(),center.y());
     }
-  } else if (!imageSize().isEmpty())
+  } else
+#endif
+  if (!imageSize().isEmpty())
     status->setText(QString("%1 × %2 · 滚动页面继续截取").arg(imageSize().width()).arg(imageSize().height()));
   place();
 }
@@ -256,7 +326,12 @@ QImage ScrollCapture::takeFrame() {
   if (hidePreview) preview->hide();
   if (hideBar) bar->hide();
   if (hideStatus) status->hide();
-  if (hidePreview || hideBar || hideStatus) { updateMask(); DwmFlush(); }
+  if (hidePreview || hideBar || hideStatus) {
+    updateMask();
+#ifndef Q_OS_MACOS
+    DwmFlush();
+#endif
+  }
   auto restore = qScopeGuard([&] {
     if (hidePreview) preview->show();
     if (hideBar) bar->show();
@@ -302,6 +377,7 @@ void ScrollCapture::sample() {
       reportAlignmentFailure(pendingFailure);
     }
   }
+#ifndef Q_OS_MACOS
   if (autoScrolling && pendingFailure==ScrollStitcher::Unchanged && idleTime.elapsed()>=120) {
     if (stalledScrolls >= 3) {
       setAutomatic(false);
@@ -325,6 +401,7 @@ void ScrollCapture::sample() {
     ++stalledScrolls;
     idleTime.restart();
   }
+#endif
 }
 void ScrollCapture::reportAlignmentFailure(ScrollStitcher::Result result) {
   if (pendingFailure!=result) failureReported=false;
@@ -390,20 +467,21 @@ void ScrollCapture::place() {
   if (inside) x = available.right()-size.width()+1;
   else if (x == available.left()) x = region.left()-12-size.width();
   const int y = qBound(available.top(),region.top(),qMax(available.top(),available.bottom()-size.height()+1));
-  preview->setGeometry({{x,y},size});
+  const auto offset = preview->isWindow() ? pos() : QPoint();
+  preview->setGeometry({QPoint(x,y) + offset,size});
   status->setFixedWidth(qMin(450,qMax(180,region.width()))); status->adjustSize();
   int controlsX = qBound(available.left(),region.right()-bar->width()+1,
                                qMax(available.left(),available.right()-bar->width()+1));
   int controlsY = region.bottom()+9;
   if (controlsY+bar->height()>available.bottom()) controlsY=region.top()-bar->height()-9;
   controlsY=qBound(available.top(),controlsY,qMax(available.top(),available.bottom()-bar->height()+1));
-  if (preview->isVisible() && QRect(QPoint(controlsX,controlsY),bar->size()).intersects(preview->geometry()))
-    controlsX=qBound(available.left(),preview->x()-bar->width()-8,
+  if (preview->isVisible() && QRect(QPoint(controlsX,controlsY),bar->size()).intersects(preview->geometry().translated(-offset)))
+    controlsX=qBound(available.left(),preview->x()-offset.x()-bar->width()-8,
                      qMax(available.left(),available.right()-bar->width()+1));
-  bar->move(controlsX,controlsY);
+  bar->move(QPoint(controlsX,controlsY) + offset);
   int statusY = region.top()-status->height()-6;
   if (statusY<available.top()) statusY=region.top()+6;
-  status->move(qBound(available.left(),region.left(),qMax(available.left(),available.right()-status->width()+1)),statusY);
+  status->move(QPoint(qBound(available.left(),region.left(),qMax(available.left(),available.right()-status->width()+1)),statusY) + offset);
   const bool acquiring=backgroundAcquisition && framePump && framePump->isRunning();
   preview->setVisible(!live || excluded || !preview->geometry().intersects(region));
   bar->setVisible(excluded || !acquiring || !bar->geometry().intersects(region));
@@ -411,14 +489,22 @@ void ScrollCapture::place() {
   updateMask(); update();
 }
 void ScrollCapture::updateMask() {
+#ifdef Q_OS_MACOS
+  return;
+#else
   QRegion visible(rect()); visible -= QRegion(region);
   for (auto widget : {preview,static_cast<QWidget *>(bar),static_cast<QWidget *>(status)})
     if (!widget->isHidden()) visible += widget->geometry();
   setMask(visible);
+#endif
 }
-QRect ScrollCapture::previewGeometry() const { return preview->geometry().translated(pos()); }
+QRect ScrollCapture::previewGeometry() const { return preview->isWindow() ? preview->geometry() : preview->geometry().translated(pos()); }
 void ScrollCapture::paintEvent(QPaintEvent *) {
-  QPainter painter(this); painter.fillRect(rect(),QColor(0,0,0,80));
+  QPainter painter(this);
+#ifdef Q_OS_MACOS
+  painter.setClipRegion(QRegion(rect()).subtracted(QRegion(region)));
+#endif
+  painter.fillRect(rect(),QColor(0,0,0,80));
   painter.setPen(QPen(QColor("#2080f0"),2));
   painter.drawRect(region.adjusted(-2,-2,2,2));
 }
@@ -439,7 +525,10 @@ void ScrollCapture::finish(const QString &action) {
   // Include the latest stable screen if completion was clicked immediately
   // after a manual scroll; a bad alignment never replaces captured strips.
   if (live) {
-    QImage first = takeFrame(); DwmFlush();
+    QImage first = takeFrame();
+#ifndef Q_OS_MACOS
+    DwmFlush();
+#endif
     if (!first.isNull() && first == takeFrame())
       acceptFrame(first,scrollDirection());
   }
@@ -490,17 +579,48 @@ void ScrollCapture::closeEvent(QCloseEvent *event) {
   event->accept();
 }
 bool ScrollCapture::nativeEvent(const QByteArray &, void *raw, qintptr *result) {
+#ifdef Q_OS_MACOS
+  Q_UNUSED(raw);
+  Q_UNUSED(result);
+#else
   auto message=static_cast<MSG *>(raw);
   if (message->message==WM_HOTKEY && hotkeys.contains(int(message->wParam))) {
     finish(message->wParam==2201 ? "cancel" : message->wParam==2203 ? "pin" : "copy"); *result=0; return true;
   }
+ #endif
   return false;
 }
 void ScrollCapture::keyPressEvent(QKeyEvent *event) {
-  if (event->key() == Qt::Key_F3) {
+#ifdef Q_OS_MACOS
+  const bool pin = matchesPinShortcut(event, store->config);
+#else
+  const bool pin = event->key() == Qt::Key_F3;
+#endif
+  if (pin) {
     if (!event->isAutoRepeat()) finish("pin");
     event->accept();
     return;
   }
   QWidget::keyPressEvent(event);
 }
+
+#ifdef Q_OS_MACOS
+bool verifyMacScroll(const QString &folder) {
+  QImage page(360, 540, QImage::Format_RGB32);
+  page.fill(Qt::white);
+  QPainter painter(&page);
+  for (int i = 0; i < 27; ++i) {
+    painter.setPen(QColor::fromHsv((i * 47) % 360, 180, 160));
+    painter.drawText(14 + (i % 4) * 13, 18 + i * 20, QString("Scroll fixture %1 / %2").arg(i).arg(i * i));
+    painter.drawLine(14, 19 + i * 20, 240 - (i * 67 % 120), 19 + i * 20);
+  }
+  painter.end();
+  ScrollStitcherV2 stitcher;
+  for (int y : {0, 40, 80, 120, 160, 200, 240})
+    stitcher.accept(page.copy(0, y, 360, 300), 1);
+  const auto image = stitcher.image();
+  if (image.isNull() || image.height() != page.height() || image != page) return false;
+  QDir().mkpath(folder);
+  return image.save(folder + "/stitched.png");
+}
+#endif

@@ -1,13 +1,19 @@
 #include "scroll_grabber.h"
+#ifdef __APPLE__
+#include "screen_capture.h"
+#else
 #include <Windows.h>
+#endif
 #include <chrono>
 #include <memory>
 #include <algorithm>
 #include <vector>
 #include <QtCore/QDebug>
+#ifndef Q_OS_MACOS
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
+#endif
 
 namespace {
 qint64 monotonicNs() {
@@ -15,6 +21,7 @@ qint64 monotonicNs() {
 }
 // GDI objects are created, used and destroyed on the acquiring thread. A DIB is
 // reused for the whole session; only changed frames need an owned pixel copy.
+#ifndef Q_OS_MACOS
 class RegionGrabber {
 public:
   explicit RegionGrabber(QRect value): region(value) {
@@ -167,6 +174,7 @@ private:
   ComPtr<IDXGIOutputDuplication> duplication;
   ComPtr<ID3D11Texture2D> staging;
 };
+#endif
 }
 ScrollFramePump::ScrollFramePump(QRect area,std::function<QImage()> value)
     :region(area),provider(std::move(value)) {}
@@ -218,6 +226,30 @@ void ScrollFramePump::enqueue(const QImage &frame,qint64 presentedAtNs) {
   wake.notify_all();
 }
 void ScrollFramePump::run() {
+#ifdef Q_OS_MACOS
+  try {
+    auto stream = provider ? nullptr : std::make_unique<MacScreenStream>(region, nativeSize, 30, false);
+    setExternalBackend(stream ? "ScreenCaptureKit" : "test provider");
+    const auto start = monotonicNs();
+    for (;;) {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(16);
+      { std::lock_guard lock(mutex); if (stopping) break; }
+      auto frame = provider ? provider() : stream->frame();
+      if (stream) {
+        const auto failure = stream->failure();
+        if (!failure.isEmpty()) throw std::runtime_error(failure.toStdString());
+        if (frame.isNull() && monotonicNs() - start > 5000000000LL)
+          throw std::runtime_error("未能读取滚动区域的画面。");
+      }
+      enqueue(frame);
+      std::unique_lock lock(mutex);
+      if (wake.wait_until(lock, deadline, [&] { return stopping; })) break;
+    }
+  } catch (const std::exception &failure) {
+    std::lock_guard lock(mutex);
+    error = QString::fromUtf8(failure.what());
+  }
+#else
   std::unique_ptr<RegionGrabber> grabber;
   std::unique_ptr<DuplicationGrabber> duplication;
   if(!provider) duplication=std::make_unique<DuplicationGrabber>(region);
@@ -253,6 +285,7 @@ void ScrollFramePump::run() {
     std::unique_lock lock(mutex);
     if(wake.wait_until(lock,deadline,[&] { return stopping; })) break;
   }
+#endif
 }
 ScrollMatchPump::ScrollMatchPump(ScrollFramePump *value,ScrollStitcher *stitcher):source(value) {
   engineName="legacy comparison";

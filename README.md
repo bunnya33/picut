@@ -4,6 +4,10 @@ C++20 + Qt 6.8.3 的 Windows 截图、标注、贴图与录屏工具，包含离
 
 运行 `run.ps1` 或 `dist/picut-0.5.56/picut.exe`，默认静默进入托盘。安装包为 `dist/picut-0.5.56-setup-x64.exe`，免安装包为 `dist/picut-0.5.56-win-x64.zip`。保留整个程序目录，更新前先从托盘退出旧版。
 
+## macOS
+
+macOS 版沿用此仓库的 Qt 界面，支持截图标注、贴图、滚动截屏、离线 OCR 和 MP4 录制。系统要求 macOS 15 或更新版本。使用方式和构建说明见 [macOS 版说明](native/macos/README.md)。
+
 ## 截图和录屏
 
 - F1 框选区域，Ctrl+1～8 标注，Enter 复制，F3 在原位置贴图。

@@ -12,7 +12,13 @@
 #include <algorithm>
 #include <cmath>
 
-QString LocalTranslationJob::modelsPath() { return QCoreApplication::applicationDirPath() + "/translation"; }
+QString LocalTranslationJob::modelsPath() {
+#ifdef Q_OS_MACOS
+  return QCoreApplication::applicationDirPath() + "/../Resources/translation";
+#else
+  return QCoreApplication::applicationDirPath() + "/translation";
+#endif
+}
 LocalTranslationJob::LocalTranslationJob(QObject *parent) : QObject(parent) {
   setObjectName("localTranslationJob"); timeout.setSingleShot(true);
   connect(&timeout, &QTimer::timeout, this, [this] {
@@ -69,7 +75,12 @@ void LocalTranslationJob::start(const QJsonArray &blocks, const QString &source,
   input.close();
   process.setWorkingDirectory(QCoreApplication::applicationDirPath());
   process.setProcessChannelMode(QProcess::SeparateChannels);
-  process.start(QCoreApplication::applicationDirPath() + "/FloatShotTranslate.exe",
+#ifdef Q_OS_MACOS
+  const auto worker = QStringLiteral("/picut-translate");
+#else
+  const auto worker = QStringLiteral("/FloatShotTranslate.exe");
+#endif
+  process.start(QCoreApplication::applicationDirPath() + worker,
       {"--input", temporary->path() + "/request.json", "--output", temporary->path() + "/result.json", "--models", modelsPath()});
   timeout.start(180000);
 }

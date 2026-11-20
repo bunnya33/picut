@@ -1,5 +1,7 @@
 #include "recognition.h"
+#ifndef __APPLE__
 #include "ocr_service.h"
+#endif
 #include "image_text.h"
 #include "store.h"
 #include <BarcodeFormat.h>
@@ -24,12 +26,16 @@
 #include <QtWidgets/QVBoxLayout>
 #include <ReadBarcode.h>
 #include <ReaderOptions.h>
+#ifndef Q_OS_MACOS
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Imaging.h>
 #include <winrt/Windows.Media.Ocr.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/base.h>
+#endif
+#include <QtCore/QTimer>
 
+#ifndef Q_OS_MACOS
 QString PaddleOcrJob::modelsPath() {
   return QCoreApplication::applicationDirPath() + "/ocr";
 }
@@ -62,6 +68,7 @@ void PaddleOcrJob::start(const QImage &image, const QString &profile, int rotati
   if (qint64(image.width())*image.height()>40000000) { complete(generation,{{"error", "图片超过 4000 万像素，请分区域识别。"}}); return; }
   OcrService::instance()->submit(this,image,profile,rotation,acceleration);
 }
+#endif
 QString recognizeText(const QImage &image) {
   PaddleOcrJob job; QEventLoop loop; QJsonObject result;
   QObject::connect(&job, &PaddleOcrJob::finished, &loop, [&](QJsonObject value) { result = value; loop.quit(); });
@@ -70,6 +77,7 @@ QString recognizeText(const QImage &image) {
   if (result.contains("error")) throw std::runtime_error(result["error"].toString().toUtf8().constData());
   return result["text"].toString();
 }
+#ifndef Q_OS_MACOS
 QString recognizeWindowsText(const QImage &source) {
   using namespace winrt::Windows::Media::Ocr;
   using namespace winrt::Windows::Graphics::Imaging;
@@ -92,6 +100,7 @@ QString recognizeWindowsText(const QImage &source) {
   auto result = engine.RecognizeAsync(bitmap).get();
   return QString::fromWCharArray(result.Text().c_str());
 }
+#endif
 QString recognizeCodes(const QImage &source) {
   auto image = source.convertToFormat(QImage::Format_Grayscale8);
   auto results = ZXing::ReadBarcodes(

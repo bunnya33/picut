@@ -466,7 +466,12 @@ void Annotation::chooseTool(const QString &value) {
     return;
   }
   auto color = preferences.color;
-  preferences = Mark::fromJson(toolOptions[value].toObject());
+  const auto options = toolOptions[value].toObject();
+  preferences = Mark::fromJson(options);
+#ifdef Q_OS_MACOS
+  if (value == "arrow" && options["arrow_head"].toString().isEmpty())
+    preferences.arrowHead = "tapered";
+#endif
   preferences.color = color;
   preferences.kind = value;
   if (effect) {

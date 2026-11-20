@@ -51,7 +51,11 @@ Store::Store(QString directory) {
             {"keep_all_capture_history", false},
             {"copy_image_as_file", false},
             {"pin_file_paths", true},
+#ifdef Q_OS_MACOS
+            {"startup", false},
+#else
             {"startup", true},
+#endif
             {"startup_setting_v1", true},
             {"annotation_color", "#ffff0004"},
             {"annotation_last_tool", "arrow"},
@@ -67,7 +71,7 @@ Store::Store(QString directory) {
             {"speaker_id", ""},
             {"mic_id", ""},
             {"hotkeys", QJsonObject{{"capture", "F1"},
-                                    {"pin", "F3"},
+                                    {"pin", defaultPinHotkey},
                                     {"toggle_pins", "Shift+F3"},
                                     {"through", "Ctrl+Alt+T"},
                                     {"pause", "Ctrl+Alt+P"},
@@ -85,12 +89,22 @@ Store::Store(QString directory) {
   // Earlier releases saved an unused false placeholder. Enable the new setting
   // once on upgrade, then preserve an explicit choice made in the settings UI.
   if (!loaded["startup_setting_v1"].toBool()) {
+#ifndef Q_OS_MACOS
     config["startup"] = true;
+#endif
     config["startup_setting_v1"] = true;
   }
   // Recording now starts from the F1 selection toolbar. Retired bindings must
   // not reserve Shift+F1 (or a former custom combination) after an upgrade.
-  auto keys=config["hotkeys"].toObject(); keys.remove("record"); config["hotkeys"]=keys;
+  auto keys = config["hotkeys"].toObject();
+  keys.remove("record");
+#ifdef Q_OS_MACOS
+  if (!loaded["mac_pin_shortcut_v1"].toBool() &&
+      hotkeySequence(keys["pin"].toString()) == QKeySequence(Qt::Key_F3))
+    keys["pin"] = defaultPinHotkey;
+  config["mac_pin_shortcut_v1"] = true;
+#endif
+  config["hotkeys"] = keys;
   history = readJson(path("history.json"), QJsonArray()).toArray();
 }
 bool Store::importLegacy(const QString &destination, const QString &source) {
